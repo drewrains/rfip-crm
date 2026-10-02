@@ -292,7 +292,7 @@ language plpgsql security definer set search_path = public as $$
 declare r text := public.my_ops_role(); is_ops boolean;
 begin
   is_ops := r = 'admin' or (r = 'lead' and (coalesce(new.department, old.department) = public.my_department() or old.department is null)) or old.pm_id = auth.uid();
-  if not is_ops then
+  if not coalesce(is_ops, false) then
     -- sales may edit the packet and move packet/kicked_back → review only
     if new.status is distinct from old.status and not (old.status in ('packet','kicked_back') and new.status = 'review') then
       raise exception 'Only operations can accept or kick back a handoff.';
@@ -327,7 +327,7 @@ declare
 begin
   select * into h from handoffs where id = hid for update;
   if h.id is null then raise exception 'Handoff not found.'; end if;
-  if not (r = 'admin' or (r = 'lead' and (h.department = public.my_department() or h.department is null)) or h.pm_id = auth.uid()) then
+  if not coalesce(r = 'admin' or (r = 'lead' and (h.department = public.my_department() or h.department is null)) or h.pm_id = auth.uid(), false) then
     raise exception 'Only the department lead, the assigned PM or an admin can accept this handoff.';
   end if;
   if h.status = 'accepted' then return h.project_id; end if;
@@ -450,3 +450,13 @@ do $$ begin
     exception when duplicate_object then null; end;
   end if;
 end $$;
+
+-- Field logins (foremen) see their projects' schedule, materials and logs, but not costs or billing.
+create or replace function public.ops_can_see_money(p uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public.my_ops_role() is distinct from 'field' and public.ops_can_see(p);
+$$;
+revoke execute on function public.ops_can_see_money(uuid) from public, anon;
+grant execute on function public.ops_can_see_money(uuid) to authenticated;
+alter policy cost_lines_read on public.cost_lines using (public.ops_can_see_money(project_id));
+alter policy billings_read on public.billings using (public.ops_can_see_money(project_id));

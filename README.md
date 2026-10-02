@@ -1,6 +1,6 @@
-# RFIP Pipeline (CRM)
+# RFIP Hub (CRM + Operations)
 
-RFIP's sales CRM: deal pipeline, go/no-go scoring, accounts, contacts, tasks, a company dashboard for admins, and per-deal sharing. Reps sign in with their RFIP Microsoft 365 account.
+RFIP's sales CRM and operations platform. The sales side: deal pipeline, go/no-go scoring, accounts, contacts, tasks, a company dashboard for admins, and per-deal sharing. Reps sign in with their RFIP Microsoft 365 account.
 
 **Who sees what** (enforced by the database, not just the screens):
 
@@ -114,3 +114,53 @@ Nothing is deleted or reset at year-end. Open deals carry into the new year auto
 - **Dashboard → year picker** shows results for any year, compared with the year before: won revenue, win rate, average win, where you win (by rep, vertical, service line, source or account type), why you lose, who beats you, and whether go/no-go scores predict wins.
 - **Team → Won-revenue targets**: set the company and per-person targets each January; progress shows on the dashboard.
 - **Notes** can be tagged as a call, meeting, site visit or email.
+
+
+## Operations side (projects, handoff, billing)
+
+The same app has an **Operations** section for delivery: a company overview, projects, the sales-to-ops handoff, and monthly billing. People with both sales and operations access switch between them with the Sales / Operations toggle in the top bar.
+
+**How a won deal becomes a project**
+
+1. A deal is marked **Won** in the CRM. The database opens a **handoff** for it automatically and guesses the department from the deal's service lines.
+2. Sales fills in the **handoff packet** (contract, schedule of values, schedule, the estimate it was priced on, customer contacts, site access) and clicks **Submit to operations**. Submitting is blocked until the required items are in.
+3. The department lead or assigned PM reviews it and either **kicks it back** with what's missing, or clicks **Accept and create project**. Accepting creates the project with its budget (labor hours, material, subs, equipment), a closeout checklist and a starting billing schedule.
+4. From then on operations owns it: percent complete, weekly labor hours, schedule, change orders, materials, daily field logs, crew, closeout and billing. Sales can still see the project's schedule and closeout status (not costs or margin).
+
+**Operations access** (set by an admin on the Team tab):
+
+| Role | Sees | Changes |
+|---|---|---|
+| Admin | Everything | Everything |
+| Sees all projects (execs, accounting) | Every project, costs and billing | Nothing |
+| Department lead | Projects in their department, its handoffs, overview | Their department's projects; accepts handoffs |
+| Project manager | Projects they manage | Their projects; accepts handoffs assigned to them |
+| Field / foreman | Projects they're on the crew roster for (no costs or billing) | Adds daily logs |
+
+"Sales side: No" hides the CRM from ops-only people.
+
+**Database scripts**
+
+- `supabase/ops_schema.sql` adds the operations tables and rules. Run it after `schema.sql`.
+- `supabase/test_seed.sql` loads demo logins and sample projects. **Test database only.**
+
+## Test environment
+
+`config.js` points the live address (`rfip-crm.vercel.app`, and `crm.rfip.com` once set up) at the live database. **Every other address, including Vercel preview links, uses the separate test database** (`rfip-crm-test` in Supabase), so testing never touches real data. A yellow **TEST** tag shows next to the logo there.
+
+Demo logins on the test database all use the password `RfipDemo-2026`:
+
+| Login | Who | What they see |
+|---|---|---|
+| drains@rfip.com | Drew Rains, admin | Sales and Operations, everything |
+| demo-mhochwender@rfip.com | Network department lead | Network projects and handoffs |
+| demo-dayers@rfip.com | DataComm department lead | DataComm projects and handoffs |
+| demo-jpike@rfip.com | Project manager | His two projects |
+| demo-cmoran@rfip.com | Project manager | Clinic tower DAS; can accept the Hospital annex handoff |
+| demo-rdelgado@rfip.com | Field foreman | Concourse Wi-Fi job, daily log (works on a phone) |
+| demo-agrant@rfip.com | Sales rep | His deals and their handoffs |
+| demo-accounting@rfip.com | Accounting | All projects and billing, read-only |
+
+Other leads and PMs: demo-mcapps, demo-hseabolt, demo-ddell, demo-mhale, demo-treese, demo-acole, demo-rbanks, demo-swhitfield (all `@rfip.com`).
+
+Going live later: run `ops_schema.sql` on the live database first, then merge the `ops-test` branch. Don't run `test_seed.sql` on live.

@@ -43,9 +43,10 @@ const sb = configured ? window.supabase.createClient(cfg.supabaseUrl, cfg.supaba
 
 const S = {
   me:null, profiles:[], accounts:[], contacts:[], deals:[], members:[], tasks:[], targets:[], gng:DEFAULT_GNG, year:THIS_YEAR, dim:"owner",
-  view:"dashboard", q:"", stageFilter:"open", ownerFilter:"", started:false,
+  view:"dashboard", q:"", stageFilter:"open", ownerFilter:"", started:false, section:"sales",
 };
-try { const v = localStorage.getItem("rfipcrm.view"); if (v) S.view = v; } catch (e) {}
+try { const v = localStorage.getItem("rfipcrm.view"); if (v) S.view = v; const sec = localStorage.getItem("rfipcrm.section"); if (sec) S.section = sec; } catch (e) {}
+let OPS = null;   // operations side (ops.js), set up just before boot
 
 // ---------------------------------------------------------------- helpers
 const $ = s => document.querySelector(s);
@@ -196,6 +197,7 @@ async function start(session) {
   if (error || !me) { S.started = false; showSignin("Your account isn't set up in the CRM. Ask an admin for access."); await sb.auth.signOut(); return; }
   if (!me.active) { S.started = false; showSignin("Your CRM access is turned off. Ask an admin to turn it back on."); await sb.auth.signOut(); return; }
   S.me = me;
+  if (me.sales_access === false) S.section = "ops";
   $("#meName").textContent = me.full_name || me.email;
   $("#changePw").hidden = !(session.user.app_metadata && (session.user.app_metadata.providers || [session.user.app_metadata.provider]).includes("email"));
   $("#signin").hidden = true; $("#app").hidden = false;
@@ -224,7 +226,7 @@ async function loadTable(key) {
   catch (e) { status("Couldn't load " + key + ": " + friendly(e)); }
 }
 async function loadAll() {
-  await Promise.all(Object.keys(TABLES).map(loadTable).concat([loadGng()]));
+  await Promise.all(Object.keys(TABLES).map(loadTable).concat([loadGng()], OPS ? [OPS.load()] : []));
   const me = byId(S.profiles, S.me.id); if (me) S.me = me;
 }
 async function loadGng() {
@@ -245,6 +247,7 @@ function subscribe() {
   const map = {deals:"deals", deal_members:"members", tasks:"tasks", accounts:"accounts", contacts:"contacts", deal_notes:"notes"};
   sb.channel("crm-changes")
     .on("postgres_changes", {event:"*", schema:"public"}, p => {
+      if (OPS && OPS.tables.includes(p.table)) { OPS.changed(p.table); return; }
       const key = map[p.table];
       if (key === "notes") { if (openNotes && p.new && p.new.deal_id === openNotes.dealId) openNotes.reload(); return; }
       if (key) { scheduleReload(key); if (key === "members") scheduleReload("deals"); }
@@ -258,18 +261,42 @@ function subscribe() {
 }
 
 // ---------------------------------------------------------------- render shell
-const VIEWS = () => [["dashboard","Dashboard"],["pipeline","Pipeline"],["deals","Deals"],["accounts","Accounts"],["contacts","Contacts"],["tasks","Tasks"],["settings","Go/no-go & import"]]
+const hasSales = () => !!S.me && (S.me.sales_access !== false || isAdmin());
+const hasOps = () => !!(OPS && OPS.available());
+const SALES_VIEWS = () => [["dashboard","Dashboard"],["pipeline","Pipeline"],["deals","Deals"],["accounts","Accounts"],["contacts","Contacts"],["tasks","Tasks"]]
+  .concat(OPS ? OPS.salesViews() : []).concat([["settings","Go/no-go & import"]])
   .concat(isAdmin() || isManager() ? [["scorecard","Scorecard"]] : []).concat(isAdmin() ? [["team","Team"]] : []);
+const VIEWS = () => {
+  if (S.section === "ops" && !hasOps()) S.section = "sales";
+  if (S.section === "sales" && !hasSales() && hasOps()) S.section = "ops";
+  return S.section === "ops" ? OPS.views() : SALES_VIEWS();
+};
+function setSection(sec) {
+  S.section = sec; S.q = "";
+  const views = VIEWS(); S.view = views[0][0];
+  try { localStorage.setItem("rfipcrm.section", sec); localStorage.setItem("rfipcrm.view", S.view); } catch (e) {}
+  renderNow();
+}
+function go(view) { S.view = view; try { localStorage.setItem("rfipcrm.view", view); } catch (e) {} renderNow(); window.scrollTo(0, 0); }
 let renderQueued = false;
 function render() { if (renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false; renderNow(); }); }
 function renderNow() {
   if (!S.me) return;
-  const views = VIEWS(); if (!views.some(v => v[0] === S.view)) S.view = "dashboard";
-  $("#tabs").replaceChildren(...views.map(([id, name]) => h("button", {"aria-current": S.view === id ? "page" : null,
-    onclick: () => { S.view = id; S.q = ""; try { localStorage.setItem("rfipcrm.view", id); } catch (e) {} renderNow(); }}, name)));
-  renderStrip();
+  const views = VIEWS();
+  const hidden = OPS ? OPS.hiddenViews() : [];
+  if (!views.some(v => v[0] === S.view) && !hidden.includes(S.view)) S.view = views[0][0];
+  const both = hasSales() && hasOps();
+  $("#sections").hidden = !both;
+  $("#sections").replaceChildren(...[["sales","Sales"],["ops","Operations"]].map(([id, name]) => h("button", {"aria-pressed": String(S.section === id), onclick:() => { if (S.section !== id) setSection(id); }}, name)));
+  $("#brandSub").textContent = S.section === "ops" ? "Operations" : "Pipeline";
+  $("#newDeal").hidden = S.section === "ops";
+  $("#envTag").hidden = cfg.environment !== "test";
+  $("#tabs").replaceChildren(...views.map(([id, name]) => h("button", {"aria-current": S.view === id || (OPS && OPS.parentView(S.view) === id) ? "page" : null,
+    onclick: () => { S.q = ""; go(id); }}, name)));
   const keep = document.activeElement && document.activeElement.id;
-  const fn = {dashboard:viewDashboard, pipeline:viewPipeline, deals:viewDeals, accounts:viewAccounts, contacts:viewContacts, tasks:viewTasks, settings:viewSettings, team:viewTeam, scorecard:viewScorecard}[S.view];
+  let fn;
+  if (S.section === "ops" || (OPS && OPS.owns(S.view))) { OPS.strip($("#strip")); fn = () => OPS.render(S.view); }
+  else { $("#strip").hidden = false; renderStrip(); fn = {dashboard:viewDashboard, pipeline:viewPipeline, deals:viewDeals, accounts:viewAccounts, contacts:viewContacts, tasks:viewTasks, settings:viewSettings, team:viewTeam, scorecard:viewScorecard}[S.view]; }
   $("#view").replaceChildren(fn());
   if (keep) { const k = document.getElementById(keep); if (k && k.tagName === "INPUT" && k.type === "search") { k.focus(); try { k.setSelectionRange(k.value.length, k.value.length); } catch (e) {} } }
 }
@@ -1015,15 +1042,19 @@ function openTask(id, defaults) {
 $("#newDeal").addEventListener("click", () => openDeal());
 
 // ---------------------------------------------------------------- team (admins)
+const OPS_COLS = () => !!(OPS && S.profiles.length && "ops_role" in S.profiles[0]);
 function viewTeam() {
   const wrap = h("div");
   wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Team")),
     h("p", {class:"muted", style:"margin:-6px 0 12px"}, "Everyone with a CRM login. Admins see every deal. A manager (anyone with people reporting to them) sees their team's deals, tasks and targets, plus a team dashboard and scorecard. Turning someone off blocks their access right away; their deals stay put so you can reassign them."));
   const list = S.profiles.slice().sort((a, b) => (b.active - a.active) || (a.full_name || a.email).localeCompare(b.full_name || b.email));
   wrap.append(h("div", {class:"tbl-wrap"}, h("table", null,
-    h("thead", null, h("tr", null, h("th", null, "Name"), h("th", null, "Email"), h("th", null, "Access level"), h("th", null, "Job role"), h("th", null, "Reports to"), h("th", null, "Access"), h("th", {class:"num"}, "Deals owned"), h("th"))),
+    h("thead", null, h("tr", null, h("th", null, "Name"), h("th", null, "Email"), h("th", null, "Access level"), h("th", null, "Job role"), h("th", null, "Reports to"),
+      OPS_COLS() ? [h("th", null, "Operations role"), h("th", null, "Department"), h("th", null, "Sales side")] : null,
+      h("th", null, "Access"), h("th", {class:"num"}, "Deals owned"), h("th"))),
     h("tbody", null, list.map(p => {
       const d = {full_name:p.full_name, role:p.role, active:p.active, manager_id:p.manager_id || null, job_role:p.job_role || null};
+      if (OPS_COLS()) Object.assign(d, {ops_role:p.ops_role || null, department:p.department || null, sales_access:p.sales_access !== false});
       const owned = S.deals.filter(x => x.owner_id === p.id).length;
       return h("tr", null,
         h("td", null, h("input", {class:"inp", id:"tn-" + p.id, value:p.full_name || "", "aria-label":"Name", oninput: e => { d.full_name = e.target.value; }})),
@@ -1033,6 +1064,13 @@ function viewTeam() {
           h("option", {value:""}, "—"), JOB_ROLES.map(([v, t]) => h("option", {value:v, selected:p.job_role === v}, t)))),
         h("td", null, h("select", {class:"inp", "aria-label":"Reports to", onchange: e => { d.manager_id = e.target.value || null; }},
           h("option", {value:""}, "No one (sees own deals)"), activePeople().filter(x => x.id !== p.id).map(x => h("option", {value:x.id, selected:p.manager_id === x.id}, x.full_name || x.email)))),
+        OPS_COLS() ? [
+          h("td", null, h("select", {class:"inp", "aria-label":"Operations role", onchange: e => { d.ops_role = e.target.value || null; }},
+            [["","None"],["viewer","Sees all projects"],["lead","Department lead"],["pm","Project manager"],["field","Field / foreman"]].map(([v, t]) => h("option", {value:v, selected:(p.ops_role || "") === v}, t)))),
+          h("td", null, h("select", {class:"inp", "aria-label":"Department", onchange: e => { d.department = e.target.value || null; }},
+            h("option", {value:""}, "—"), OPS.departments().map(k => h("option", {value:k, selected:p.department === k}, k)))),
+          h("td", null, h("select", {class:"inp", "aria-label":"Sales side", onchange: e => { d.sales_access = e.target.value === "on"; }},
+            h("option", {value:"on", selected:p.sales_access !== false}, "Yes"), h("option", {value:"off", selected:p.sales_access === false}, "No")))] : null,
         h("td", null, h("select", {class:"inp", "aria-label":"Access", onchange: e => { d.active = e.target.value === "on"; }}, h("option", {value:"on", selected:p.active}, "Active"), h("option", {value:"off", selected:!p.active}, "Turned off"))),
         h("td", {class:"num"}, owned ? h("button", {class:"linkish", onclick:() => { S.view = "deals"; S.stageFilter = "all"; S.ownerFilter = p.id; renderNow(); }}, String(owned)) : "0"),
         h("td", null, h("button", {class:"btn small", onclick: async () => {
@@ -1233,6 +1271,13 @@ function exportPanel() {
   };
   return h("div", {class:"panel"}, h("h3", null, "Export"), h("p", {class:"hint"}, "CSV files that open in Excel. Exports include only what you can see" + (isAdmin() ? " (as an admin, that's everything)." : ".")),
     h("div", {style:"display:flex;gap:8px;flex-wrap:wrap"}, ["deals","accounts","contacts","tasks"].map(t => h("button", {class:"btn", onclick:() => dl(t)}, "Export " + t))));
+}
+
+// ---------------------------------------------------------------- operations side
+if (window.RFIP_OPS_INIT) {
+  OPS = window.RFIP_OPS_INIT({h, sb, S, cfg, money, fmtDate, fmtDateTime, daysUntil, todayStr, run, toast, friendly, status, openDrawer, closeDrawer, refreshDrawer,
+    fld, deleteButton, render, renderNow, go, person, personName, activePeople, peopleOptions, isAdmin, byId, acctName, dealName, openDeal, emptyState,
+    plural, nullify, metric, loadTable, STAGE});
 }
 
 boot();
