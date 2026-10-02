@@ -11,12 +11,12 @@ const {h, sb, S, money, fmtDate, daysUntil, todayStr, run, toast, friendly, open
 // ---------------------------------------------------------------- data
 const TABLES = {projects:"projects", handoffs:"handoffs", depts:"departments", costs:"cost_lines", labor:"labor_weeks", ms:"milestones",
   cos:"change_orders", mats:"materials", logs:"daily_logs", plan:"crew_plan", roster:"crew_roster", closeout:"closeout_items",
-  bills:"billings", safety:"safety_events", techs:"techs", asg:"assignments"};
+  bills:"billings", safety:"safety_events", techs:"techs", asg:"assignments", docs:"documents", wu:"weekly_updates"};
 const KEY_OF = Object.fromEntries(Object.entries(TABLES).map(([k, t]) => [t, k]));
 const O = {missing:false, detail:null, q:"", dept:"", pm:"", phase:"active", hand:true, mpMode:"week", mpDate:null, mpDept:""};
 try { const m = localStorage.getItem("rfipops.mpMode"); if (m) O.mpMode = m; } catch (e) {}
 for (const k of Object.keys(TABLES)) O[k] = [];
-O.dir = [];
+O.dir = []; O.docFolder = ""; O.wuWeek = null;
 try { const d = localStorage.getItem("rfipops.detail"); if (d) O.detail = d; } catch (e) {}
 
 async function fetchTable(key) {
@@ -152,6 +152,7 @@ function alertsFor(list) {
     for (const m of c.backordered) out.push({sev:"warn", tag:"Material", what:`${m.item} backordered${m.eta ? " to " + fmtDate(m.eta) : ""}`, where, p});
     if (c.coPend) out.push({sev:"warn", tag:"Change order", what:`${compact(c.coPend)} in change orders waiting on the customer`, where, p});
     if (c.unpriced) out.push({sev:"warn", tag:"Change order", what:`${plural(c.unpriced, "change order")} logged but not priced`, where, p});
+    if (O.wu.length && updateState(p).missing) out.push({sev:"warn", tag:"Update", what:"Weekly update missing for the week of " + fmtDate(reportWeek()), where, p});
     if (p.phase === "closeout" && (c.docsOpen.length || c.ready > 1000)) {
       const bits = []; if (c.docsOpen.length) bits.push(plural(c.docsOpen.length, "closeout item") + " open"); if (c.ready > 1000) bits.push(compact(c.ready) + " not billed");
       out.push({sev:"warn", tag:"Closeout", what:`Work complete, ${bits.join(", ")}`, where, p});
@@ -358,7 +359,7 @@ function viewProjects() {
   wrap.append(h("div", {class:"tbl-wrap"}, h("table", null,
     h("thead", null, h("tr", null, h("th", null, "Project"), h("th", null, "Dept"), h("th", null, "PM"), h("th", null, "Phase"),
       money ? h("th", {class:"num"}, "Contract") : null, h("th", {class:"num"}, "Complete"), h("th", null, "Labor hours used"),
-      money ? h("th", {class:"num"}, "Margin budget → fcst") : null, money ? h("th", {class:"num"}, "Ready to bill") : null, h("th", null, "Flags"))),
+      money ? h("th", {class:"num"}, "Margin budget → fcst") : null, money ? h("th", {class:"num"}, "Ready to bill") : null, h("th", null, "Weekly update"), h("th", null, "Flags"))),
     h("tbody", null, list.length ? list.map(p => { const c = calc(p); const bc = c.burn >= .8 && c.done < .8 ? "bad" : c.burn > c.done + .1 ? "warn" : "";
       return h("tr", {class:"click", tabindex:"0", onclick:() => openProject(p.id), onkeydown: e => { if (e.key === "Enter") openProject(p.id); }},
         h("td", null, h("b", null, p.name), h("div", {class:"muted small"}, p.number + " · " + (acctName(p.account_id) || ""))),
@@ -369,6 +370,7 @@ function viewProjects() {
           h("small", {class:"mono"}, num(c.hu) + " / " + num(c.hb) + " hrs"))),
         money ? h("td", {class:"num"}, pct(c.estM), " → ", h("span", {class: c.fcM < c.estM - .02 ? "bad-t" : ""}, pct(c.fcM))) : null,
         money ? h("td", {class:"num"}, c.ready > 1000 ? compact(c.ready) : "—") : null,
+        h("td", null, (st => st.u ? h("span", {class:"chips"}, stChip(worstOf(st.u))) : chip(st.cls, st.text))(updateState(p))),
         h("td", null, h("span", {class:"chips"}, c.lateDays ? chip("warn", c.lateDays + "d late") : null, c.backordered.length ? chip("warn", "Backorder") : null,
           c.coPend ? chip("acc", "CO pending") : null, p.phase === "mobilizing" && !c.staffed ? chip("bad", "No crew") : null)));
     }) : h("tr", null, h("td", {colspan:"10", class:"empty"}, "No projects match these filters."))))));
@@ -409,6 +411,7 @@ function viewProject() {
     money ? tile("Margin forecast", pct(c.fcM), (c.fcM < c.estM - .005 ? "Down from " : "Budget ") + pct(c.estM), c.fcM < c.estM - .02 ? "bad" : "") : null,
     money ? tile("Ready to bill", compact(c.ready), "Billed " + compact(c.billed) + " · " + compact(c.retH) + " retainage held") : null));
 
+  if (opsView && role() !== "field" || O.wu.some(u => u.project_id === p.id)) wrap.append(updatePanel(p, c, edit));
   if (role() === "field") wrap.append(logPanel(p));
   if (opsView) {
     const over = Math.round(c.projH - c.hb);
@@ -425,6 +428,7 @@ function viewProject() {
   if (money) wrap.append(costPanel(p, c, edit));
   if (opsView) wrap.append(h("div", {class:"o-two even"}, coPanel(p, c, edit, money), matPanel(p, c, edit)));
   wrap.append(h("div", {class:"o-two even"}, opsView && role() !== "field" ? logPanel(p) : null, h("div", {class:"o-stack"}, rosterPanel(p, c, edit), closeoutPanel(p, c, edit))));
+  if (opsView) wrap.append(docsPanel(p));
   if (money) wrap.append(projectBilling(p, c, edit));
   return wrap;
 }
@@ -1093,8 +1097,223 @@ function openTech(t) {
       return saveRow("techs", {name:d.name.trim(), department:d.department, trade:d.trade, profile_id:nullify(d.profile_id), active:d.active !== false, sort:d.sort || 99}, t && t.id); });
 }
 
+// ---------------------------------------------------------------- weekly PM updates
+const UPDATE_DUE = {dow:5, hour:12};
+const worstOf = u => ["off_track", "at_risk"].find(s => [u.schedule_status, u.cost_status, u.safety_status].includes(s)) || "on_track";   // Friday at noon, local time
+const STATUS = [["on_track", "On track", "go"], ["at_risk", "At risk", "warn"], ["off_track", "Off track", "bad"]];
+const stChip = (s, label) => { const x = STATUS.find(y => y[0] === s) || STATUS[0]; return chip(x[2], (label ? label + ": " : "") + x[1]); };
+const reportWeek = () => mondayOf(TODAY);
+const dueAt = wk => { const [y, m, d] = addDays(wk, UPDATE_DUE.dow - 1).split("-").map(Number); return new Date(y, m - 1, d, UPDATE_DUE.hour); };
+const dueLabel = wk => "Due " + dueAt(wk).toLocaleDateString("en-US", {weekday:"short", month:"short", day:"numeric"}) + " at " + dueAt(wk).toLocaleTimeString("en-US", {hour:"numeric", minute:"2-digit"});
+const needsUpdate = p => ["mobilizing", "in_progress", "closeout"].includes(p.phase);
+const updateFor = (projectId, wk) => O.wu.find(u => u.project_id === projectId && u.week_start === wk);
+function updateState(p, wk) {
+  wk = wk || reportWeek();
+  const u = updateFor(p.id, wk);
+  if (u) return {u, cls:"go", text:"Submitted " + new Date(u.submitted_at).toLocaleDateString("en-US", {weekday:"short", month:"short", day:"numeric"})};
+  if (!needsUpdate(p)) return {cls:"", text:"Not needed"};
+  if (new Date() > dueAt(wk)) return {cls:"bad", text:"Missing", missing:true};
+  return {cls:"warn", text:dueLabel(wk).replace("Due ", "Due ")};
+}
+function updatePanel(p, c, edit) {
+  const wk = reportWeek(), st = updateState(p, wk);
+  const hist = O.wu.filter(u => u.project_id === p.id).sort((a, b) => b.week_start.localeCompare(a.week_start));
+  const latest = hist[0];
+  const body = latest ? updateCard(latest, true) : h("div", {class:"empty"}, "No weekly updates yet.");
+  return panel("Weekly update", "Week of " + fmtDate(wk) + " · " + st.text,
+    h("div", {class:"o-pad"},
+      !st.u && needsUpdate(p) ? h("div", {class:"o-due " + st.cls}, h("b", null, st.missing ? "This week's update is missing" : "This week's update isn't in yet"),
+        h("span", null, dueLabel(wk) + (edit ? "" : " · " + personName(p.pm_id) + " writes it")),
+        edit ? h("button", {class:"btn primary small", onclick:() => openUpdate(p, wk)}, "Write this week's update") : null) : null,
+      body,
+      st.u && edit ? h("div", {class:"o-actions", style:"border:0;padding:8px 0 0"}, h("button", {class:"btn small", onclick:() => openUpdate(p, wk)}, "Edit this week's update")) : null,
+      hist.length > 1 ? h("details", {class:"o-hist"}, h("summary", null, "Earlier updates (" + (hist.length - 1) + ")"), hist.slice(1).map(u => updateCard(u, false))) : null));
+}
+function updateCard(u, top) {
+  const field = (label, text) => text ? h("div", {class:"wu-f"}, h("div", {class:"k"}, label), h("p", null, text)) : null;
+  return h("div", {class:"wu-card" + (top ? " top" : "")},
+    h("div", {class:"wu-h"}, h("b", null, "Week of " + fmtDate(u.week_start)), h("span", {class:"chips"}, stChip(u.schedule_status, "Schedule"), stChip(u.cost_status, "Cost"), stChip(u.safety_status, "Safety")),
+      h("span", {class:"muted small"}, (u.pct_complete != null ? Number(u.pct_complete).toFixed(0) + "% complete · " : "") + personName(u.author_id) + " · " + new Date(u.submitted_at).toLocaleDateString("en-US", {month:"short", day:"numeric"}))),
+    field("Done this week", u.accomplished), field("Plan for next week", u.next_week),
+    u.needs ? h("div", {class:"wu-f needs"}, h("div", {class:"k"}, "Needs and decisions"), h("p", null, u.needs)) : null,
+    field("Customer", u.customer_notes));
+}
+function openUpdate(p, wk) {
+  const cur = updateFor(p.id, wk), c = calc(p);
+  const prev = O.wu.filter(u => u.project_id === p.id && u.week_start < wk).sort((a, b) => b.week_start.localeCompare(a.week_start))[0];
+  const logs = O.logs.filter(l => l.project_id === p.id && l.log_date >= wk && l.log_date <= addDays(wk, 6)).sort((a, b) => a.log_date.localeCompare(b.log_date));
+  const hrs = sum(O.labor.filter(l => l.project_id === p.id && l.week_start === wk), l => l.hours);
+  const d = cur ? {...cur, pct_complete:Number(cur.pct_complete)} : {pct_complete:Number(p.pct_complete), schedule_status: c.lateDays ? "at_risk" : "on_track",
+    cost_status: c.fcM < c.estM - .05 ? "off_track" : c.fcM < c.estM - .02 ? "at_risk" : "on_track", safety_status:"on_track",
+    accomplished: logs.map(l => fmtDate(l.log_date) + ": " + l.work).join("\n"), next_week:"", needs:"", customer_notes:""};
+  const facts = h("div", {class:"wu-facts"},
+    h("div", null, h("span", {class:"k"}, "Last week's plan"), h("p", null, prev && prev.next_week || "—")),
+    h("div", null, h("span", {class:"k"}, "This week"), h("p", null, [hrs ? num(hrs) + " labor hours" : "Hours not entered yet", plural(logs.length, "daily log"),
+      c.lateDays ? c.late[0].name + " " + c.lateDays + " days late" : null, c.coPend ? compact(c.coPend) + " in change orders pending" : null, c.backordered.length ? plural(c.backordered.length, "backorder") : null].filter(Boolean).join(" · "))),
+    h("div", null, h("span", {class:"k"}, "Forecast"), h("p", null, "Margin " + pct(c.fcM) + " vs " + pct(c.estM) + " budget · labor " + pct(c.burn) + " used at " + pct(c.done) + " complete")));
+  const sel = (key, label) => fld(d, key, label, "select", {options:STATUS.map(s => [s[0], s[1]]), blank:false});
+  const body = h("div", null, facts, h("div", {class:"form"},
+    fld(d, "pct_complete", "Percent complete (0–100)", "number"), h("div"),
+    sel("schedule_status", "Schedule"), sel("cost_status", "Cost"), sel("safety_status", "Safety"), h("div"),
+    fld(d, "accomplished", "Done this week", "textarea", {full:true}),
+    fld(d, "next_week", "Plan for next week", "textarea", {full:true}),
+    fld(d, "needs", "Needs and decisions (crew, material, customer, from leadership)", "textarea", {full:true}),
+    fld(d, "customer_notes", "Customer (relationship, requests, possible new work)", "textarea", {full:true})),
+    h("p", {class:"muted small"}, "Submitting also updates the project's percent complete, which drives earned revenue and the margin forecast."));
+  openDrawer({title:"Weekly update · " + p.number + " · week of " + fmtDate(wk), body, foot:[
+    h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel"),
+    h("button", {class:"btn primary", onclick: async e => {
+      const v = Number(d.pct_complete);
+      if (!(v >= 0 && v <= 100)) { toast("Percent complete must be between 0 and 100."); return; }
+      if (!(d.accomplished || "").trim()) { toast("Say what got done this week."); return; }
+      const btn = e.currentTarget; btn.disabled = true;
+      const row = {project_id:p.id, week_start:wk, author_id:S.me.id, pct_complete:v, schedule_status:d.schedule_status, cost_status:d.cost_status, safety_status:d.safety_status,
+        accomplished:d.accomplished.trim(), next_week:nullify((d.next_week || "").trim()), needs:nullify((d.needs || "").trim()), customer_notes:nullify((d.customer_notes || "").trim()),
+        submitted_at:new Date().toISOString(), updated_at:new Date().toISOString()};
+      let ok = !!(await run(sb.from("weekly_updates").upsert(row, {onConflict:"project_id,week_start"})));
+      if (ok && v !== Number(p.pct_complete)) ok = !!(await run(sb.from("projects").update({pct_complete:v}).eq("id", p.id)));
+      btn.disabled = false;
+      if (ok) { await Promise.all([reload("wu"), reload("projects")]); render(); closeDrawer(); toast(cur ? "Update saved" : "Weekly update submitted"); }
+    }}, cur ? "Save changes" : "Submit update")]});
+}
+function viewUpdates() {
+  const wrap = h("div", {class:"o-stack"});
+  const wk = O.wuWeek || reportWeek();
+  const rank = p => { const u = updateFor(p.id, wk); return !u ? 0 : {off_track:1, at_risk:2, on_track:3}[worstOf(u)]; };
+  const ps = O.projects.filter(p => needsUpdate(p) || updateFor(p.id, wk)).filter(p => !O.dept || p.department === O.dept)
+    .sort((a, b) => rank(a) - rank(b) || a.department.localeCompare(b.department) || a.number.localeCompare(b.number));
+  const ups = ps.map(p => updateFor(p.id, wk)).filter(Boolean);
+  const past = new Date() > dueAt(wk);
+  const missing = ps.filter(p => !updateFor(p.id, wk) && needsUpdate(p));
+  const worst = u => ["off_track", "at_risk"].find(s => [u.schedule_status, u.cost_status, u.safety_status].includes(s));
+  wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Weekly updates"),
+    h("div", {class:"mp-nav"}, h("button", {class:"btn small", "aria-label":"Previous week", onclick:() => { O.wuWeek = addDays(wk, -7); render(); }}, "‹"),
+      h("button", {class:"btn small", onclick:() => { O.wuWeek = null; render(); }}, "This week"),
+      h("button", {class:"btn small", "aria-label":"Next week", onclick:() => { O.wuWeek = addDays(wk, 7); render(); }}, "›"), h("b", {class:"mp-label"}, "Week of " + fmtDate(wk))),
+    deptKeys().length > 1 && role() !== "pm" ? h("select", {"aria-label":"Department", id:"wu-dept", onchange: e => { O.dept = e.target.value; render(); }},
+      h("option", {value:""}, "All departments"), deptKeys().map(k => h("option", {value:k, selected:O.dept === k}, k))) : null));
+  wrap.append(h("div", {class:"o-tiles"},
+    tile("Submitted", ups.length + " of " + ps.filter(needsUpdate).length, dueLabel(wk)),
+    tile(past ? "Missing" : "Not in yet", String(missing.length), missing.length ? missing.map(p => personName(p.pm_id)).filter((x, i, a) => a.indexOf(x) === i).join(", ") : "Everyone's in", missing.length ? (past ? "bad" : "warn") : ""),
+    tile("Off track", String(ups.filter(u => worst(u) === "off_track").length), "Schedule, cost or safety", ups.some(u => worst(u) === "off_track") ? "bad" : ""),
+    tile("At risk", String(ups.filter(u => worst(u) === "at_risk").length), "Watch list", ups.some(u => worst(u) === "at_risk") ? "warn" : ""),
+    tile("Asks for help", String(ups.filter(u => (u.needs || "").trim()).length), "Needs and decisions to clear")));
+  if (!ps.length) { wrap.append(h("div", {class:"panel"}, emptyState("No active projects", "Weekly updates are due for every active project."))); return wrap; }
+  wrap.append(h("div", {class:"wu-list"}, ps.map(p => { const u = updateFor(p.id, wk);
+    return h("section", {class:"o-panel wu-row" + (u ? "" : past ? " missing" : " pending")},
+      h("header", null, h("div", null, h("button", {class:"linkish", style:"font-weight:600", onclick:() => openProject(p.id)}, p.number + " · " + p.name),
+          h("div", {class:"muted small"}, p.department + " · PM " + personName(p.pm_id) + (u && u.pct_complete != null ? " · " + Number(u.pct_complete).toFixed(0) + "% complete" : ""))),
+        u ? h("span", {class:"chips"}, stChip(u.schedule_status, "Schedule"), stChip(u.cost_status, "Cost"), stChip(u.safety_status, "Safety"))
+          : h("span", {class:"chips"}, chip(past ? "bad" : "warn", past ? "Missing" : "Not in yet"), canEdit(p) ? h("button", {class:"btn primary small", onclick:() => openUpdate(p, wk)}, "Write it") : null)),
+      u ? h("div", {class:"o-pad wu-cols"},
+        h("div", null, h("div", {class:"k"}, "Done this week"), h("p", null, u.accomplished || "—")),
+        h("div", null, h("div", {class:"k"}, "Next week"), h("p", null, u.next_week || "—")),
+        h("div", {class: u.needs ? "needs" : ""}, h("div", {class:"k"}, "Needs"), h("p", null, u.needs || "Nothing")),
+        u.customer_notes ? h("div", null, h("div", {class:"k"}, "Customer"), h("p", null, u.customer_notes)) : null) : null); })));
+  return wrap;
+}
+
+// ---------------------------------------------------------------- documents
+const FOLDERS = [["contract", "Contract and PO", true], ["scope", "Scope and estimate", true], ["submittals", "Submittals"], ["drawings", "Drawings"],
+  ["change_orders", "Change orders"], ["pay_apps", "Pay apps", true], ["field", "Field photos and daily reports"], ["tests", "Test results"], ["closeout", "Closeout"], ["safety", "Safety"]];
+const folderName = k => (FOLDERS.find(f => f[0] === k) || [k, k])[1];
+const canReadFolder = (p, k) => { const f = FOLDERS.find(x => x[0] === k); return !(f && f[2]) || (role() && role() !== "field"); };
+const canUploadTo = (p, k) => canEdit(p) || (role() === "field" && ["field", "tests", "safety"].includes(k));
+const BUCKET = "project-files";
+const urlCache = new Map();
+const fmtSize = b => !b ? "" : b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB";
+const isImg = d => /^image\//.test(d.mime_type || "");
+const fileIcon = d => isImg(d) ? "IMG" : /pdf/.test(d.mime_type || "") ? "PDF" : /sheet|excel|csv/.test(d.mime_type || "") ? "XLS" : /word|document/.test(d.mime_type || "") ? "DOC" : /dwg|dxf|vnd\.(ms-visio|autocad)/i.test(d.mime_type + d.name) ? "CAD" : "FILE";
+async function signedUrls(paths) {
+  const now = Date.now(), need = paths.filter(x => !urlCache.has(x) || urlCache.get(x).exp < now + 60000);
+  if (need.length) {
+    const {data} = await sb.storage.from(BUCKET).createSignedUrls(need, 3600);
+    for (const r of data || []) if (r.signedUrl) urlCache.set(r.path, {url:r.signedUrl, exp:now + 3600000});
+  }
+  return paths.map(x => (urlCache.get(x) || {}).url);
+}
+function docsPanel(p) {
+  const folders = FOLDERS.filter(f => canReadFolder(p, f[0]));
+  const docs = O.docs.filter(d => d.project_id === p.id && folders.some(f => f[0] === d.folder)).sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const cur = O.docFolder && folders.some(f => f[0] === O.docFolder) ? O.docFolder : "";
+  const shown = docs.filter(d => !cur || d.folder === cur);
+  const box = h("div");
+  const tabs = h("div", {class:"doc-tabs", role:"tablist"}, h("button", {role:"tab", "aria-selected":String(!cur), onclick:() => { O.docFolder = ""; render(); }}, "All ", h("small", null, String(docs.length))),
+    folders.map(f => { const n = docs.filter(d => d.folder === f[0]).length;
+      return h("button", {role:"tab", "aria-selected":String(cur === f[0]), class: n ? "" : "empty", onclick:() => { O.docFolder = f[0]; render(); }}, f[1], " ", h("small", null, String(n))); }));
+  const imgs = shown.filter(isImg).slice(0, 12), files = shown.filter(d => !isImg(d) || shown.filter(isImg).indexOf(d) >= 12);
+  const link = d => { const a = h("a", {href:"#", target:"_blank", rel:"noopener", "data-path":d.path, class:"doc-name", onclick: async ev => {
+    if (a.getAttribute("href") === "#") { ev.preventDefault(); const [u] = await signedUrls([d.path]); if (u) { a.href = u; window.open(u, "_blank", "noopener"); } else toast("Couldn't open that file."); } }}, d.name); return a; };
+  const thumbs = imgs.length ? h("div", {class:"doc-thumbs"}, imgs.map(d => h("figure", null, h("a", {href:"#", target:"_blank", rel:"noopener", "data-path":d.path, class:"thumb"}, h("img", {alt:d.name, "data-path":d.path, loading:"lazy"})),
+    h("figcaption", null, d.note || d.name, h("small", null, personName(d.uploaded_by) + " · " + fmtDate(d.created_at.slice(0, 10))))))) : null;
+  const list = files.length ? h("ul", {class:"doc-list"}, files.map(d => h("li", null, h("span", {class:"doc-ic " + fileIcon(d).toLowerCase()}, fileIcon(d)),
+    h("div", {class:"doc-main"}, link(d), h("small", null, [!cur ? folderName(d.folder) : null, fmtSize(d.size_bytes), personName(d.uploaded_by), fmtDate(d.created_at.slice(0, 10)), d.note].filter(Boolean).join(" · "))),
+    d.uploaded_by === S.me.id || canEdit(p) ? h("button", {class:"btn small", "aria-label":"Delete " + d.name, onclick: async e => {
+      const b = e.currentTarget; if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Click again to delete"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "Delete"; }, 3000); return; }
+      const {error} = await sb.storage.from(BUCKET).remove([d.path]);
+      if (error && !/not found/i.test(error.message || "")) { toast(friendly(error)); return; }
+      if (await run(sb.from("documents").delete().eq("id", d.id), "Deleted")) { await reload("docs"); render(); }
+    }}, "Delete") : null))) : null;
+  box.append(tabs, thumbs || list ? h("div", null, thumbs, list) : h("div", {class:"empty"}, cur ? "Nothing in " + folderName(cur) + " yet." : "No documents yet."));
+  // fill thumbnail and link addresses once the page is on screen
+  setTimeout(async () => { const els = [...box.querySelectorAll("[data-path]")]; if (!els.length) return;
+    const paths = [...new Set(els.map(e => e.dataset.path))]; const urls = await signedUrls(paths); const m = new Map(paths.map((x, i) => [x, urls[i]]));
+    for (const el of els) { const u = m.get(el.dataset.path); if (!u) continue; if (el.tagName === "IMG") el.src = u; else el.href = u; } }, 0);
+  const canUp = folders.some(f => canUploadTo(p, f[0]));
+  return panel("Documents", plural(docs.length, "file") + (canUp ? " · photos are resized for the phone" : ""), h("div", {class:"o-pad"}, box),
+    canUp ? h("div", {class:"o-actions"}, h("button", {class:"btn primary small", onclick:() => openUpload(p, cur)}, "Upload files")) : null);
+}
+async function shrinkImage(file) {
+  if (!/^image\/(jpeg|png|webp|heic|heif)$/.test(file.type) || file.size < 900000) return file;
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+    const cv = document.createElement("canvas"); cv.width = Math.round(bmp.width * scale); cv.height = Math.round(bmp.height * scale);
+    cv.getContext("2d").drawImage(bmp, 0, 0, cv.width, cv.height);
+    const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", .82));
+    return blob && blob.size < file.size ? new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", {type:"image/jpeg"}) : file;
+  } catch (e) { return file; }
+}
+function openUpload(p, folder) {
+  const allowed = FOLDERS.filter(f => canReadFolder(p, f[0]) && canUploadTo(p, f[0]));
+  const d = {folder: allowed.some(f => f[0] === folder) ? folder : (role() === "field" ? "field" : allowed[0][0]), note:"", closeout_item_id:null};
+  const input = h("input", {type:"file", id:"f-files", multiple:true, class:"inp"});
+  const items = O.closeout.filter(x => x.project_id === p.id && x.status !== "done").map(x => [x.id, x.item]);
+  const coBox = h("div", {style:"display:contents"});
+  const drawCo = () => coBox.replaceChildren(...(["closeout", "tests"].includes(d.folder) && items.length && canEdit(p) ? [fld(d, "closeout_item_id", "Completes a closeout item (optional)", "select", {options:items, blank:"No", full:true})] : []));
+  drawCo();
+  const status = h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Up to 50 MB per file. Photos over 1 MB are resized to 1600 px. For long videos, share a link in the note instead.");
+  const body = h("div", {class:"form"},
+    fld(d, "folder", "Folder", "select", {options:allowed.map(f => [f[0], f[1]]), blank:false, full:true, onchange:drawCo}),
+    h("div", {class:"field full"}, h("label", {for:"f-files"}, "Files"), input),
+    fld(d, "note", "Note (optional, e.g. what the photo shows)", "text", {full:true}), coBox, status);
+  openDrawer({title:"Upload to " + p.number, body, foot:[h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel"),
+    h("button", {class:"btn primary", onclick: async e => {
+      const files = [...input.files]; if (!files.length) { toast("Choose one or more files."); return; }
+      const big = files.find(f => f.size > 52428800 && !/^image\//.test(f.type)); if (big) { toast(big.name + " is over 50 MB."); return; }
+      const btn = e.currentTarget; btn.disabled = true; let done = 0, failed = [];
+      for (const f0 of files) {
+        status.textContent = "Uploading " + (done + 1) + " of " + files.length + "…";
+        const f = await shrinkImage(f0);
+        const safe = f.name.replace(/[^\w.\- ]+/g, "_").replace(/\s+/g, " ").slice(-120);
+        const path = p.id + "/" + d.folder + "/" + Date.now() + "-" + Math.random().toString(36).slice(2, 6) + "-" + safe;
+        const {error} = await sb.storage.from(BUCKET).upload(path, f, {contentType:f.type || "application/octet-stream", upsert:false});
+        if (error) { failed.push(f0.name + " (" + friendly(error) + ")"); continue; }
+        const row = {project_id:p.id, folder:d.folder, name:f.name, path, size_bytes:f.size, mime_type:f.type || null, note:nullify((d.note || "").trim()), closeout_item_id:nullify(d.closeout_item_id), uploaded_by:S.me.id};
+        const {error:e2} = await sb.from("documents").insert(row);
+        if (e2) { failed.push(f0.name + " (" + friendly(e2) + ")"); await sb.storage.from(BUCKET).remove([path]); continue; }
+        done++;
+      }
+      if (done && d.closeout_item_id) await run(sb.from("closeout_items").update({status:"done", note:"File: " + files[0].name}).eq("id", d.closeout_item_id));
+      btn.disabled = false;
+      await Promise.all([reload("docs"), reload("closeout")]); render();
+      if (failed.length) { status.textContent = "Couldn't upload: " + failed.join("; "); toast(done ? "Uploaded " + done + ", " + failed.length + " failed" : "Upload failed"); }
+      else { closeDrawer(); toast("Uploaded " + plural(done, "file")); O.docFolder = d.folder; render(); }
+    }}, "Upload")]});
+}
+
 // ---------------------------------------------------------------- routing
-const VIEW_FN = {"ops-overview":viewOverview, "ops-projects":viewProjects, "ops-project":viewProject, "ops-handoffs":viewHandoffs, "ops-billing":viewBilling, "ops-manpower":viewManpower, handoffs:viewHandoffs};
+const VIEW_FN = {"ops-updates":viewUpdates, "ops-overview":viewOverview, "ops-projects":viewProjects, "ops-project":viewProject, "ops-handoffs":viewHandoffs, "ops-billing":viewBilling, "ops-manpower":viewManpower, handoffs:viewHandoffs};
 return {
   tables: Object.values(TABLES),
   load, changed,
@@ -1104,8 +1323,8 @@ return {
     const r = role();
     const mp = O.techs.length || role() === "admin" ? [["ops-manpower", r === "field" ? "Schedule" : "Manpower"]] : [];
     if (r === "field") return [["ops-projects", "My projects"], ...mp];
-    if (r === "pm") return [["ops-projects", "My projects"], ...mp, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
-    return [["ops-overview", "Overview"], ["ops-projects", "Projects"], ...mp, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
+    if (r === "pm") return [["ops-projects", "My projects"], ["ops-updates", "Weekly updates"], ...mp, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
+    return [["ops-overview", "Overview"], ["ops-projects", "Projects"], ["ops-updates", "Weekly updates"], ...mp, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
   },
   salesViews: () => O.missing ? [] : [["handoffs", "Handoffs"]],
   hiddenViews: () => ["ops-project"],

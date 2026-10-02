@@ -501,3 +501,32 @@ insert into public.crew_plan (project_id, week_start, techs)
 select project_id, date '2026-09-28', techs from public.crew_plan cp
 where week_start = '2026-10-05' and (select number from public.projects where id = cp.project_id) <> '26-127'
 on conflict (project_id, week_start) do nothing;
+
+-- ---------- part 4: weekly PM updates (run after docs_updates_schema.sql) -----
+-- Three weeks of updates. This week's is missing for 26-121 and 26-130 on purpose.
+do $$
+declare drew uuid := (select id from public.profiles where email = 'drains@rfip.com');
+begin
+  perform set_config('request.jwt.claims', json_build_object('sub', drew, 'role', 'authenticated')::text, true);
+  if exists (select 1 from public.weekly_updates) then raise exception 'Weekly updates are already loaded.'; end if;
+  insert into public.weekly_updates (project_id, week_start, author_id, pct_complete, schedule_status, cost_status, safety_status, accomplished, next_week, needs, customer_notes, submitted_at)
+  select p.id, v.wk::date, p.pm_id, v.pct, v.sch, v.cst, v.sfy, v.acc, v.nxt, v.need, v.cust, (v.wk::date + 4 + time '10:30')::timestamptz
+  from (values
+    ('26-118','2026-09-14',47,'on_track','at_risk','on_track','Cable pull 80% complete on upper concourse. IDF 3 fiber relocated (CO-02).','Finish cable pull, start AP mounting in sections 100–120.','SFP+ optics order confirmed?','Arena IT happy with progress.'),
+    ('26-118','2026-09-21',57,'at_risk','at_risk','on_track','Cable pull nearly done; lost two days to concessions deliveries blocking lifts.','Finish cable pull Wednesday, start AP install.','Need lift access windows from venue ops.','Customer asked about adding suite-level drops.'),
+    ('26-118','2026-09-28',62,'at_risk','off_track','on_track','Cable pull complete Sep 30 (5 days late). 22 APs mounted. Suite drops priced as CO-03.','Mount 60 APs, sections 120–150. Start certification on lower bowl.','SFP+ optics backordered to Oct 16 — need alternate source for Nov 3 cutover. Labor running 2,000 hrs over at current rate; want to discuss crew plan with Matt.','Waiting on CO-03 signature. Lift standby (CO-04) not priced yet.'),
+    ('26-112','2026-09-21',33,'on_track','on_track','on_track','Phase 2 laydown yard network live (CO-01).','Connect new site trailers; move COW uplink.',null,'GC reviewing COW change order.'),
+    ('26-112','2026-09-28',36,'on_track','at_risk','on_track','Connected two new trailers, moved COW uplink to new pole.','Trailer 3 and 4 connections; access point survey for laydown yard.','CO-02 ($46K) still with GC for owner approval.','GC asked for weekly network uptime report.'),
+    ('26-124','2026-09-21',64,'on_track','on_track','on_track','Building B rough-in complete. Training room drops added (CO-01).','Terminate building B, start testing building A.',null,null),
+    ('26-124','2026-09-28',71,'on_track','at_risk','on_track','Terminated 120 drops in building B; testing building A underway.','Finish testing, start labeling and as-builts.','Labor a little ahead of progress; crew drops to 12 after Oct 16.','Owner walkthrough set for Oct 9.'),
+    ('26-127','2026-09-28',3,'at_risk','on_track','on_track','Kickoff meeting held; submittals sent for fiber enclosures and ladder rack.','Mobilize Oct 12. Receive trunks Oct 9.','No crew scheduled yet — need 7 techs starting Oct 12. Patch panel layout waiting on owner row plan.','Owner wants daily progress photos.'),
+    ('26-109','2026-09-28',98,'at_risk','on_track','on_track','Punch walk complete; lien waivers in.','Finish as-builts and O&M binders.','As-builts and O&M docs holding the final invoice ($52K).','District signed punch list.'),
+    ('26-115','2026-09-28',100,'on_track','on_track','on_track','Cutover complete; customer signed off.','Send warranty and support contract documents.',null,'Very happy; asked about Wi-Fi refresh next year.'),
+    ('26-133','2026-09-28',0,'on_track','on_track','on_track','Submittals approved; card readers on order.','Mobilize Oct 14.','Camera shipment split — 22 arriving Oct 16.',null),
+    ('26-136','2026-09-28',55,'on_track','on_track','on_track','Lower bowl survey complete, 140 points.','Upper bowl survey; draft report.',null,null),
+    ('26-121','2026-09-14',40,'on_track','on_track','on_track','Floors 1–2 antenna install complete.','Floors 3–4.',null,null),
+    ('26-121','2026-09-21',45,'at_risk','on_track','on_track','Floor 3 complete; floors 4–6 ceiling access delayed by infection-control permits.','Floor 2–3 home runs while waiting on permits.','Need hospital to approve ICRA permits for floors 4–6.',null),
+    ('26-130','2026-09-21',30,'on_track','on_track','on_track','Sites 1 and 2 complete.','Sites 3 and 4.',null,null)
+  ) v(num, wk, pct, sch, cst, sfy, acc, nxt, need, cust)
+  join public.projects p on p.number = v.num;
+end $$;
