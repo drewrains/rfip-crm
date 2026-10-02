@@ -192,6 +192,15 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created after insert on auth.users
   for each row execute function public.handle_new_user();
 
+-- Give a profile to any RFIP login that was created before this script ran.
+insert into public.profiles (id, email, full_name, role)
+select u.id, lower(u.email),
+       coalesce(u.raw_user_meta_data->>'full_name', u.raw_user_meta_data->>'name', split_part(lower(u.email),'@',1)),
+       case when lower(u.email) = any (c.admin_emails) then 'admin' else 'rep' end
+from auth.users u cross join public.app_config c
+where u.email is not null and split_part(lower(u.email), '@', 2) = any (c.allowed_domains)
+on conflict (id) do nothing;
+
 -- Reps may change only their own display name; role/active/email are admin-only.
 create or replace function public.guard_profile_update() returns trigger
 language plpgsql security definer set search_path = public as $$
