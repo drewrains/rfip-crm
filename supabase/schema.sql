@@ -260,7 +260,7 @@ create trigger deals_log after insert or update on public.deals
   for each row execute function public.log_deal_changes();
 
 create or replace function public.touch_updated_at() returns trigger
-language plpgsql as $$ begin new.updated_at := now(); return new; end $$;
+language plpgsql set search_path = public as $$ begin new.updated_at := now(); return new; end $$;
 drop trigger if exists accounts_touch on public.accounts;
 create trigger accounts_touch before update on public.accounts for each row execute function public.touch_updated_at();
 drop trigger if exists contacts_touch on public.contacts;
@@ -353,6 +353,15 @@ grant select, insert, update, delete on
   public.deal_notes, public.tasks to authenticated;
 grant select, update on public.profiles, public.gng_config to authenticated;
 grant select, update on public.app_config to authenticated;
+
+-- ---------- function access: nobody signed out calls anything; trigger
+-- functions can't be called directly; permission helpers only answer for the caller
+revoke execute on function public.is_active_user(), public.is_admin(), public.can_see_deal(uuid), public.can_manage_deal(uuid),
+  public.handle_new_user(), public.guard_profile_update(), public.guard_deal_update(), public.log_deal_changes(), public.touch_updated_at()
+  from public, anon;
+revoke execute on function public.handle_new_user(), public.guard_profile_update(), public.guard_deal_update(),
+  public.log_deal_changes(), public.touch_updated_at() from authenticated;
+grant execute on function public.is_active_user(), public.is_admin(), public.can_see_deal(uuid), public.can_manage_deal(uuid) to authenticated;
 
 -- ---------- live updates in the app ----------------------------------
 do $$ begin
