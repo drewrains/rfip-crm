@@ -83,6 +83,14 @@ const prob = d => d.probability != null ? Number(d.probability) : (STAGE[d.stage
 const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
 const isOpen = d => (STAGE[d.stage] || STAGE.lead).open;
 const isAdmin = () => S.me && S.me.role === "admin";
+function reportsOf(id) {
+  const out = [], seen = new Set([id]); let frontier = [id];
+  while (frontier.length) { const next = S.profiles.filter(p => p.active && frontier.includes(p.manager_id) && !seen.has(p.id));
+    next.forEach(p => { seen.add(p.id); out.push(p); }); frontier = next.map(p => p.id); }
+  return out;
+}
+const isManager = () => !!S.me && reportsOf(S.me.id).length > 0;
+const myTeam = () => isAdmin() ? activePeople() : [S.me, ...reportsOf(S.me.id)].filter(Boolean);
 const canManage = d => isAdmin() || (d && d.owner_id === S.me.id);
 const membersOf = dealId => S.members.filter(m => m.deal_id === dealId).map(m => m.user_id);
 const fmtDateTime = x => new Date(x).toLocaleString("en-US", {month:"short", day:"numeric", year:"numeric", hour:"numeric", minute:"2-digit"});
@@ -244,7 +252,7 @@ function subscribe() {
 
 // ---------------------------------------------------------------- render shell
 const VIEWS = () => [["dashboard","Dashboard"],["pipeline","Pipeline"],["deals","Deals"],["accounts","Accounts"],["contacts","Contacts"],["tasks","Tasks"],["settings","Go/no-go & import"]]
-  .concat(isAdmin() ? [["scorecard","Scorecard"],["team","Team"]] : []);
+  .concat(isAdmin() || isManager() ? [["scorecard","Scorecard"]] : []).concat(isAdmin() ? [["team","Team"]] : []);
 let renderQueued = false;
 function render() { if (renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false; renderNow(); }); }
 function renderNow() {
@@ -276,7 +284,7 @@ function renderStrip() {
   const st = stats(S.deals); const yr = new Date().getFullYear();
   const overdue = S.tasks.filter(t => !t.done && daysUntil(t.due) < 0 && (isAdmin() ? true : t.assignee_id === S.me.id)).length;
   $("#strip").replaceChildren(
-    metric(isAdmin() ? "Open pipeline" : "My open pipeline", money(st.pipe, true), plural(st.open.length, "open deal")),
+    metric(isAdmin() ? "Open pipeline" : isManager() ? "Team open pipeline" : "My open pipeline", money(st.pipe, true), plural(st.open.length, "open deal")),
     metric("Weighted", money(st.wtd, true), "value × stage probability"),
     metric("Bids due ≤14 days", String(st.due.length), "by bid due date"),
     metric("Awaiting go/no-go", String(st.pendingGng.length), "lead & qualifying"),
@@ -327,11 +335,13 @@ function viewDashboard() {
   const yearsSet = new Set([THIS_YEAR]); for (const d of S.deals) if (d.close_date) yearsSet.add(Number(d.close_date.slice(0, 4)));
   const years = [...yearsSet].sort((a, b) => b - a);
   const deals = S.ownerFilter ? S.deals.filter(d => d.owner_id === S.ownerFilter || membersOf(d.id).includes(S.ownerFilter)) : S.deals;
-  wrap.append(h("div", {class:"toolbar"}, h("h2", null, isAdmin() ? "Company dashboard" : "My dashboard"),
+  wrap.append(h("div", {class:"toolbar"}, h("h2", null, isAdmin() ? "Company dashboard" : isManager() ? "Team dashboard" : "My dashboard"),
     h("select", {"aria-label":"Year", id:"dash-year", onchange: e => { S.year = Number(e.target.value); render(); }}, years.map(y => h("option", {value:String(y), selected:S.year === y}, String(y)))),
-    isAdmin() ? h("select", {"aria-label":"Rep", id:"dash-rep", onchange: e => { S.ownerFilter = e.target.value; render(); }},
-      h("option", {value:""}, "Everyone"), activePeople().map(p => h("option", {value:p.id, selected:S.ownerFilter === p.id}, p.full_name || p.email))) : null));
-  if (!isAdmin()) wrap.append(h("p", {class:"muted", style:"margin:-6px 0 12px"}, "Deals you own or that have been shared with you."));
+    isAdmin() || isManager() ? h("select", {"aria-label":"Rep", id:"dash-rep", onchange: e => { S.ownerFilter = e.target.value; render(); }},
+      h("option", {value:""}, isAdmin() ? "Everyone" : "My whole team"), myTeam().map(p => h("option", {value:p.id, selected:S.ownerFilter === p.id}, p.full_name || p.email))) : null));
+  if (!isAdmin()) wrap.append(h("p", {class:"muted", style:"margin:-6px 0 12px"}, isManager()
+    ? "Deals you and the people who report to you own or are shared on."
+    : "Deals you own or that have been shared with you."));
   if (!S.deals.length) { wrap.append(h("div", {class:"panel"}, emptyState("No deals yet", "Create a deal or import a spreadsheet to fill the dashboard.", h("button", {class:"btn primary", onclick:() => openDeal()}, "+ New deal")))); return wrap; }
   const st = stats(deals);
   const Y = S.year, cur = yearResults(deals, Y), prev = yearResults(deals, Y - 1);
@@ -346,7 +356,7 @@ function viewDashboard() {
     const actual = tScope ? yearResults(S.deals.filter(d => d.owner_id === tScope), Y).wonV : cur.wonV;
     tRows.push(progressRow(tScope ? personName(tScope) + " target" : "Company target", actual, Number(tMain.won_value)));
   }
-  if (isAdmin() && !S.ownerFilter) for (const p of activePeople()) { const t = targetFor(p.id, Y);
+  if ((isAdmin() || isManager()) && !S.ownerFilter) for (const p of (isAdmin() ? activePeople() : reportsOf(S.me.id))) { const t = targetFor(p.id, Y);
     if (t && Number(t.won_value)) tRows.push(progressRow(p.full_name || p.email, yearResults(S.deals.filter(d => d.owner_id === p.id), Y).wonV, Number(t.won_value))); }
   grid.append(h("div", {class:"panel wide"}, h("h3", null, Y + " results"),
     h("p", {class:"hint"}, "Deals with a close or award date in " + Y + (hasPrev ? ", compared with " + py : "") + ". Win rate counts won against lost; no-bids are left out."),
@@ -389,8 +399,8 @@ function viewDashboard() {
         return h("tr", null, h("td", null, label), h("td", {class:"num"}, String(w)), h("td", {class:"num"}, String(ds.length - w)), h("td", {class:"num"}, ds.length ? Math.round(w / ds.length * 100) + "%" : "—")); }))))));
 
   // current open pipeline
-  if (isAdmin() && !S.ownerFilter) {
-    const reps = activePeople().map(p => { const own = S.deals.filter(d => d.owner_id === p.id); const s = stats(own);
+  if ((isAdmin() || isManager()) && !S.ownerFilter) {
+    const reps = myTeam().map(p => { const own = S.deals.filter(d => d.owner_id === p.id); const s = stats(own);
       const od = S.tasks.filter(t => !t.done && t.assignee_id === p.id && daysUntil(t.due) < 0).length; return {p, own, s, od}; })
       .filter(r => r.own.length || r.od).sort((a, b) => b.s.pipe - a.s.pipe);
     grid.append(h("div", {class:"panel wide"}, h("h3", null, "Open pipeline by rep"), h("p", {class:"hint"}, "Deals each person owns today. Pick a name to see their deals, including ones shared with them."),
@@ -440,12 +450,12 @@ function viewScorecard() {
   if (!ACT.loading && ACT.loadedFor !== ACT.days) loadActivity(ACT.days);
   const Y = S.year;
   const yearsSet = new Set([THIS_YEAR]); for (const d of S.deals) if (d.close_date) yearsSet.add(Number(d.close_date.slice(0, 4)));
-  wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Team scorecard"),
+  wrap.append(h("div", {class:"toolbar"}, h("h2", null, isAdmin() ? "Team scorecard" : "My team scorecard"),
     h("select", {"aria-label":"Year", id:"sc-year", onchange: e => { S.year = Number(e.target.value); render(); }}, [...yearsSet].sort((a, b) => b - a).map(y => h("option", {value:String(y), selected:Y === y}, String(y)))),
     h("select", {"aria-label":"Activity window", id:"sc-days", onchange: e => { ACT.days = Number(e.target.value); render(); }},
       [7, 30, 90].map(n => h("option", {value:String(n), selected:ACT.days === n}, "Activity: last " + n + " days")))));
   wrap.append(h("p", {class:"muted", style:"margin:-6px 0 12px"}, "Results count deals each person owns, closed in " + Y + ". Pipeline and bids are as of today. Activity is notes they logged. Pick a name to open their dashboard."));
-  const people = activePeople();
+  const people = myTeam();
   const rows = people.map(p => {
     const own = S.deals.filter(d => d.owner_id === p.id);
     const yr = yearResults(own, Y), st = stats(own);
@@ -462,7 +472,7 @@ function viewScorecard() {
   }).sort((a, b) => b.yr.wonV - a.yr.wonV || b.st.pipe - a.st.pipe);
   const tot = rows.reduce((a, r) => ({won:a.won + r.yr.wonV, w:a.w + r.yr.won.length, l:a.l + r.yr.lost.length, open:a.open + r.st.open.length, pipe:a.pipe + r.st.pipe, wtd:a.wtd + r.st.wtd,
     due:a.due + r.bidsDue, gng:a.gng + r.st.pendingGng.length, act:a.act + r.acts.length, od:a.od + r.overdue}), {won:0, w:0, l:0, open:0, pipe:0, wtd:0, due:0, gng:0, act:0, od:0});
-  const ct = targetFor(null, Y);
+  const teamTarget = isAdmin() ? Number((targetFor(null, Y) || {}).won_value || 0) : rows.reduce((a, r) => a + r.target, 0);
   const cell = (v, attrs) => h("td", Object.assign({class:"num"}, attrs || {}), v);
   const actCell = r => ACT.rows == null ? cell("…") : h("td", {class:"num", title: NOTE_KINDS.map(([v, l]) => l + ": " + r.k(v)).join(" · ")},
     String(r.acts.length), h("div", {class:"muted", style:"font-size:11px;white-space:nowrap"}, plural(r.k("call"), "call") + " · " + plural(r.k("meeting"), "meeting") + " · " + plural(r.k("site_visit"), "visit")));
@@ -473,7 +483,7 @@ function viewScorecard() {
     h("tbody", null, rows.map(r => {
       const pct = r.target ? Math.round(r.yr.wonV / r.target * 100) : null;
       return h("tr", {class:"click", tabindex:"0", onclick:() => { S.ownerFilter = r.p.id; S.view = "dashboard"; renderNow(); }, onkeydown: e => { if (e.key === "Enter") { S.ownerFilter = r.p.id; S.view = "dashboard"; renderNow(); } }},
-        h("td", null, h("div", {style:"font-weight:600;white-space:nowrap"}, r.p.full_name || r.p.email), h("div", {class:"muted", style:"font-size:12px"}, r.p.role === "admin" ? "Admin" : "Rep", r.shared ? " · on " + plural(r.shared, "shared deal") : "")),
+        h("td", null, h("div", {style:"font-weight:600;white-space:nowrap"}, r.p.full_name || r.p.email), h("div", {class:"muted", style:"font-size:12px"}, r.p.role === "admin" ? "Admin" : reportsOf(r.p.id).length ? "Manager" : "Rep", r.shared ? " · on " + plural(r.shared, "shared deal") : "")),
         cell(r.target ? money(r.target, true) : "—"),
         h("td", {class:"num"}, money(r.yr.wonV, true), pct != null ? h("div", null, miniBar(pct), h("div", {class:"muted", style:"font-size:11px"}, pct + "% of target")) : null),
         cell(r.yr.won.length + " / " + r.yr.lost.length),
@@ -486,8 +496,8 @@ function viewScorecard() {
         cell(r.last ? fmtDate(r.last.slice(0, 10)) : "—", r.last && daysUntil(r.last.slice(0, 10)) < -14 ? {style:"color:var(--warn)", title:"No activity in over two weeks"} : null));
     })),
     h("tfoot", null, h("tr", {style:"font-weight:600"}, h("td", null, "Team"),
-      cell(ct && Number(ct.won_value) ? money(Number(ct.won_value), true) : "—"),
-      h("td", {class:"num"}, money(tot.won, true), ct && Number(ct.won_value) ? h("div", {class:"muted", style:"font-size:11px"}, Math.round(tot.won / Number(ct.won_value) * 100) + "% of company target") : null),
+      cell(teamTarget ? money(teamTarget, true) : "—"),
+      h("td", {class:"num"}, money(tot.won, true), teamTarget ? h("div", {class:"muted", style:"font-size:11px"}, Math.round(tot.won / teamTarget * 100) + "% of " + (isAdmin() ? "company" : "team") + " target") : null),
       cell(tot.w + " / " + tot.l), cell(tot.w + tot.l ? Math.round(tot.w / (tot.w + tot.l) * 100) + "%" : "—"),
       cell(String(tot.open)), cell(money(tot.pipe, true)), cell(money(tot.wtd, true)), cell(String(tot.due)), cell(String(tot.gng)),
       cell(ACT.rows == null ? "…" : String(tot.act)), cell(String(tot.od)), cell(""))))));
@@ -966,17 +976,19 @@ $("#newDeal").addEventListener("click", () => openDeal());
 function viewTeam() {
   const wrap = h("div");
   wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Team")),
-    h("p", {class:"muted", style:"margin:-6px 0 12px"}, "Everyone with a CRM login. Admins see every deal. Turning someone off blocks their access right away; their deals stay put so you can reassign them."));
+    h("p", {class:"muted", style:"margin:-6px 0 12px"}, "Everyone with a CRM login. Admins see every deal. A manager (anyone with people reporting to them) sees their team's deals, tasks and targets, plus a team dashboard and scorecard. Turning someone off blocks their access right away; their deals stay put so you can reassign them."));
   const list = S.profiles.slice().sort((a, b) => (b.active - a.active) || (a.full_name || a.email).localeCompare(b.full_name || b.email));
   wrap.append(h("div", {class:"tbl-wrap"}, h("table", null,
-    h("thead", null, h("tr", null, h("th", null, "Name"), h("th", null, "Email"), h("th", null, "Role"), h("th", null, "Access"), h("th", {class:"num"}, "Deals owned"), h("th"))),
+    h("thead", null, h("tr", null, h("th", null, "Name"), h("th", null, "Email"), h("th", null, "Role"), h("th", null, "Reports to"), h("th", null, "Access"), h("th", {class:"num"}, "Deals owned"), h("th"))),
     h("tbody", null, list.map(p => {
-      const d = {full_name:p.full_name, role:p.role, active:p.active};
+      const d = {full_name:p.full_name, role:p.role, active:p.active, manager_id:p.manager_id || null};
       const owned = S.deals.filter(x => x.owner_id === p.id).length;
       return h("tr", null,
         h("td", null, h("input", {class:"inp", id:"tn-" + p.id, value:p.full_name || "", "aria-label":"Name", oninput: e => { d.full_name = e.target.value; }})),
         h("td", {class:"mono", style:"font-size:12.5px"}, p.email),
         h("td", null, h("select", {class:"inp", "aria-label":"Role", onchange: e => { d.role = e.target.value; }}, h("option", {value:"rep", selected:p.role === "rep"}, "Rep"), h("option", {value:"admin", selected:p.role === "admin"}, "Admin"))),
+        h("td", null, h("select", {class:"inp", "aria-label":"Reports to", onchange: e => { d.manager_id = e.target.value || null; }},
+          h("option", {value:""}, "No one (sees own deals)"), activePeople().filter(x => x.id !== p.id).map(x => h("option", {value:x.id, selected:p.manager_id === x.id}, x.full_name || x.email)))),
         h("td", null, h("select", {class:"inp", "aria-label":"Access", onchange: e => { d.active = e.target.value === "on"; }}, h("option", {value:"on", selected:p.active}, "Active"), h("option", {value:"off", selected:!p.active}, "Turned off"))),
         h("td", {class:"num"}, owned ? h("button", {class:"linkish", onclick:() => { S.view = "deals"; S.stageFilter = "all"; S.ownerFilter = p.id; renderNow(); }}, String(owned)) : "0"),
         h("td", null, h("button", {class:"btn small", onclick: async () => {

@@ -166,6 +166,10 @@ create table if not exists public.targets (
 create unique index if not exists targets_year_user_uq
   on public.targets (year, coalesce(user_id, '00000000-0000-0000-0000-000000000000'::uuid));
 
+-- Who reports to whom (a manager sees their reports' deals, tasks and targets).
+alter table public.profiles add column if not exists manager_id uuid references public.profiles(id) on delete set null;
+create index if not exists profiles_manager_idx on public.profiles(manager_id);
+
 -- ---------- helper functions (run with owner rights so policies don't loop)
 create or replace function public.is_active_user() returns boolean
 language sql stable security definer set search_path = public as $$
@@ -177,18 +181,29 @@ language sql stable security definer set search_path = public as $$
   select exists (select 1 from profiles where id = auth.uid() and active and role = 'admin');
 $$;
 
+-- True when person u reports to the signed-in user, directly or further down the chain.
+create or replace function public.reports_to_me(u uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  with recursive chain(id, manager_id, depth) as (
+    select id, manager_id, 1 from profiles where id = u
+    union all
+    select p.id, p.manager_id, c.depth + 1 from profiles p join chain c on p.id = c.manager_id where c.depth < 10)
+  select u is not null and u <> auth.uid() and public.is_active_user()
+     and exists (select 1 from chain where manager_id = auth.uid());
+$$;
+
 create or replace function public.can_see_deal(d uuid) returns boolean
 language sql stable security definer set search_path = public as $$
   select public.is_admin()
       or (public.is_active_user() and (
-            exists (select 1 from deals where id = d and owner_id = auth.uid())
-         or exists (select 1 from deal_members where deal_id = d and user_id = auth.uid())));
+            exists (select 1 from deals where id = d and (owner_id = auth.uid() or public.reports_to_me(owner_id)))
+         or exists (select 1 from deal_members where deal_id = d and (user_id = auth.uid() or public.reports_to_me(user_id)))));
 $$;
 
 create or replace function public.can_manage_deal(d uuid) returns boolean
 language sql stable security definer set search_path = public as $$
   select public.is_admin()
-      or (public.is_active_user() and exists (select 1 from deals where id = d and owner_id = auth.uid()));
+      or (public.is_active_user() and exists (select 1 from deals where id = d and (owner_id = auth.uid() or public.reports_to_me(owner_id))));
 $$;
 
 -- ---------- new sign-ins become profiles; only allowed domains get in ---
@@ -231,9 +246,18 @@ language plpgsql security definer set search_path = public as $$
 begin
   if not public.is_admin() then
     if new.role is distinct from old.role or new.active is distinct from old.active
-       or new.email is distinct from old.email or new.id is distinct from old.id then
+       or new.email is distinct from old.email or new.id is distinct from old.id
+       or new.manager_id is distinct from old.manager_id then
       raise exception 'Only an admin can change roles or access.';
     end if;
+  end if;
+  -- nobody can report to themselves, directly or around a loop
+  if new.manager_id is not null and (new.manager_id = new.id or exists (
+       with recursive up(id, manager_id, depth) as (
+         select id, manager_id, 1 from profiles where id = new.manager_id
+         union all select p.id, p.manager_id, u.depth + 1 from profiles p join up u on p.id = u.manager_id where u.depth < 20)
+       select 1 from up where manager_id = new.id)) then
+    raise exception 'That reporting line would loop back to this person.';
   end if;
   -- never leave the CRM without an active admin
   if old.role = 'admin' and (new.role <> 'admin' or not new.active)
@@ -371,11 +395,12 @@ create policy contacts_delete on public.contacts for delete to authenticated usi
 -- deals: owner, shared-with people, and admins
 create policy deals_read   on public.deals for select to authenticated using (public.can_see_deal(id));
 create policy deals_insert on public.deals for insert to authenticated
-  with check (public.is_admin() or (public.is_active_user() and owner_id = auth.uid()));
+  with check (public.is_admin() or (public.is_active_user() and (owner_id = auth.uid() or public.reports_to_me(owner_id))));
 create policy deals_update on public.deals for update to authenticated
   using (public.can_see_deal(id))
   with check (public.is_admin() or (public.is_active_user() and (
-      owner_id = auth.uid() or exists (select 1 from public.deal_members m where m.deal_id = deals.id and m.user_id = auth.uid()))));
+      owner_id = auth.uid() or public.reports_to_me(owner_id)
+      or exists (select 1 from public.deal_members m where m.deal_id = deals.id and (m.user_id = auth.uid() or public.reports_to_me(m.user_id))))));
 create policy deals_delete on public.deals for delete to authenticated using (public.can_manage_deal(id));
 
 -- sharing list: visible to anyone on the deal; changed by the owner or an admin
@@ -394,12 +419,12 @@ create policy notes_delete on public.deal_notes for delete to authenticated
 -- tasks: on a deal → whoever can see the deal; standalone → assignee, creator, admins
 create policy tasks_read on public.tasks for select to authenticated using (
   public.is_admin() or (public.is_active_user() and (
-    assignee_id = auth.uid() or created_by = auth.uid() or (deal_id is not null and public.can_see_deal(deal_id)))));
+    assignee_id = auth.uid() or created_by = auth.uid() or public.reports_to_me(assignee_id) or (deal_id is not null and public.can_see_deal(deal_id)))));
 create policy tasks_insert on public.tasks for insert to authenticated with check (
   public.is_active_user() and (deal_id is null or public.can_see_deal(deal_id)));
 create policy tasks_update on public.tasks for update to authenticated using (
   public.is_admin() or (public.is_active_user() and (
-    assignee_id = auth.uid() or created_by = auth.uid() or (deal_id is not null and public.can_see_deal(deal_id)))))
+    assignee_id = auth.uid() or created_by = auth.uid() or public.reports_to_me(assignee_id) or (deal_id is not null and public.can_see_deal(deal_id)))))
   with check (public.is_active_user() and (deal_id is null or public.can_see_deal(deal_id)));
 create policy tasks_delete on public.tasks for delete to authenticated using (
   public.is_admin() or (public.is_active_user() and (created_by = auth.uid() or assignee_id = auth.uid())));
@@ -410,7 +435,7 @@ create policy gng_write on public.gng_config for update to authenticated using (
 
 -- targets: everyone sees the company target and their own; admins see and set all
 create policy targets_read on public.targets for select to authenticated using (
-  public.is_admin() or (public.is_active_user() and (user_id is null or user_id = auth.uid())));
+  public.is_admin() or (public.is_active_user() and (user_id is null or user_id = auth.uid() or public.reports_to_me(user_id))));
 create policy targets_write on public.targets for all to authenticated
   using (public.is_admin()) with check (public.is_admin());
 
@@ -425,13 +450,13 @@ grant select, insert, update, delete on public.targets to authenticated;
 
 -- ---------- function access: nobody signed out calls anything; trigger
 -- functions can't be called directly; permission helpers only answer for the caller
-revoke execute on function public.is_active_user(), public.is_admin(), public.can_see_deal(uuid), public.can_manage_deal(uuid),
+revoke execute on function public.is_active_user(), public.is_admin(), public.can_see_deal(uuid), public.can_manage_deal(uuid), public.reports_to_me(uuid),
   public.handle_new_user(), public.guard_profile_update(), public.guard_deal_update(), public.log_deal_changes(), public.touch_updated_at(),
   public.require_outcome(), public.account_track_record(uuid)
   from public, anon;
 revoke execute on function public.handle_new_user(), public.guard_profile_update(), public.guard_deal_update(),
   public.log_deal_changes(), public.touch_updated_at(), public.require_outcome() from authenticated;
-grant execute on function public.is_active_user(), public.is_admin(), public.can_see_deal(uuid), public.can_manage_deal(uuid),
+grant execute on function public.is_active_user(), public.is_admin(), public.can_see_deal(uuid), public.can_manage_deal(uuid), public.reports_to_me(uuid),
   public.account_track_record(uuid) to authenticated;
 
 -- ---------- live updates in the app ----------------------------------
