@@ -244,7 +244,7 @@ function subscribe() {
 
 // ---------------------------------------------------------------- render shell
 const VIEWS = () => [["dashboard","Dashboard"],["pipeline","Pipeline"],["deals","Deals"],["accounts","Accounts"],["contacts","Contacts"],["tasks","Tasks"],["settings","Go/no-go & import"]]
-  .concat(isAdmin() ? [["team","Team"]] : []);
+  .concat(isAdmin() ? [["scorecard","Scorecard"],["team","Team"]] : []);
 let renderQueued = false;
 function render() { if (renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false; renderNow(); }); }
 function renderNow() {
@@ -254,7 +254,7 @@ function renderNow() {
     onclick: () => { S.view = id; S.q = ""; try { localStorage.setItem("rfipcrm.view", id); } catch (e) {} renderNow(); }}, name)));
   renderStrip();
   const keep = document.activeElement && document.activeElement.id;
-  const fn = {dashboard:viewDashboard, pipeline:viewPipeline, deals:viewDeals, accounts:viewAccounts, contacts:viewContacts, tasks:viewTasks, settings:viewSettings, team:viewTeam}[S.view];
+  const fn = {dashboard:viewDashboard, pipeline:viewPipeline, deals:viewDeals, accounts:viewAccounts, contacts:viewContacts, tasks:viewTasks, settings:viewSettings, team:viewTeam, scorecard:viewScorecard}[S.view];
   $("#view").replaceChildren(fn());
   if (keep) { const k = document.getElementById(keep); if (k && k.tagName === "INPUT" && k.type === "search") { k.focus(); try { k.setSelectionRange(k.value.length, k.value.length); } catch (e) {} } }
 }
@@ -416,6 +416,82 @@ function viewDashboard() {
     st.pendingGng.length ? st.pendingGng.map(d => h("div", {class:"list-row"}, h("button", {class:"linkish", onclick:() => openDeal(d.id, "g")}, d.name), h("span", {class:"chips"}, h("span", {class:"muted", style:"font-size:12px"}, personName(d.owner_id)), gngChip(d) || h("span", {class:"chip"}, "not scored"))))
       : h("div", {class:"muted"}, "Every early-stage deal has a decision.")));
   wrap.append(grid);
+  return wrap;
+}
+
+// ---------------------------------------------------------------- scorecard (admins)
+const ACT = {days:30, rows:null, loading:false, loadedFor:0};
+async function loadActivity(days) {
+  ACT.loading = true;
+  const since = new Date(Date.now() - days * 864e5).toISOString();
+  const out = [];
+  for (let from = 0; ; from += 1000) {
+    const {data, error} = await sb.from("deal_notes").select("author_id,kind,created_at").eq("system", false).gte("created_at", since).range(from, from + 999);
+    if (error) { status("Couldn't load activity: " + friendly(error)); break; }
+    out.push(...data); if (data.length < 1000) break;
+  }
+  ACT.rows = out; ACT.loadedFor = days; ACT.loading = false; render();
+}
+function miniBar(pct) {
+  return h("div", {class:"minibar", title: pct + "% of target"}, h("i", {style:"width:" + Math.min(100, pct) + "%" + (pct >= 100 ? ";background:var(--go)" : "")}));
+}
+function viewScorecard() {
+  const wrap = h("div");
+  if (!ACT.loading && ACT.loadedFor !== ACT.days) loadActivity(ACT.days);
+  const Y = S.year;
+  const yearsSet = new Set([THIS_YEAR]); for (const d of S.deals) if (d.close_date) yearsSet.add(Number(d.close_date.slice(0, 4)));
+  wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Team scorecard"),
+    h("select", {"aria-label":"Year", id:"sc-year", onchange: e => { S.year = Number(e.target.value); render(); }}, [...yearsSet].sort((a, b) => b - a).map(y => h("option", {value:String(y), selected:Y === y}, String(y)))),
+    h("select", {"aria-label":"Activity window", id:"sc-days", onchange: e => { ACT.days = Number(e.target.value); render(); }},
+      [7, 30, 90].map(n => h("option", {value:String(n), selected:ACT.days === n}, "Activity: last " + n + " days")))));
+  wrap.append(h("p", {class:"muted", style:"margin:-6px 0 12px"}, "Results count deals each person owns, closed in " + Y + ". Pipeline and bids are as of today. Activity is notes they logged. Pick a name to open their dashboard."));
+  const people = activePeople();
+  const rows = people.map(p => {
+    const own = S.deals.filter(d => d.owner_id === p.id);
+    const yr = yearResults(own, Y), st = stats(own);
+    const t = targetFor(p.id, Y), target = t ? Number(t.won_value) : 0;
+    const bidsDue = st.open.filter(d => { const n = daysUntil(d.bid_due); return n != null && n >= 0 && n <= 30; }).length;
+    const shared = S.members.filter(m => m.user_id === p.id).length;
+    const acts = (ACT.rows || []).filter(n => n.author_id === p.id);
+    const k = kind => acts.filter(n => n.kind === kind).length;
+    const lastNote = acts.reduce((m, n) => n.created_at > m ? n.created_at : m, "");
+    const lastDeal = own.reduce((m, d) => (d.updated_at || "") > m ? d.updated_at : m, "");
+    const last = [lastNote, lastDeal].sort().pop();
+    const overdue = S.tasks.filter(x => !x.done && x.assignee_id === p.id && daysUntil(x.due) < 0).length;
+    return {p, yr, st, target, bidsDue, shared, acts, k, last, overdue};
+  }).sort((a, b) => b.yr.wonV - a.yr.wonV || b.st.pipe - a.st.pipe);
+  const tot = rows.reduce((a, r) => ({won:a.won + r.yr.wonV, w:a.w + r.yr.won.length, l:a.l + r.yr.lost.length, open:a.open + r.st.open.length, pipe:a.pipe + r.st.pipe, wtd:a.wtd + r.st.wtd,
+    due:a.due + r.bidsDue, gng:a.gng + r.st.pendingGng.length, act:a.act + r.acts.length, od:a.od + r.overdue}), {won:0, w:0, l:0, open:0, pipe:0, wtd:0, due:0, gng:0, act:0, od:0});
+  const ct = targetFor(null, Y);
+  const cell = (v, attrs) => h("td", Object.assign({class:"num"}, attrs || {}), v);
+  const actCell = r => ACT.rows == null ? cell("…") : h("td", {class:"num", title: NOTE_KINDS.map(([v, l]) => l + ": " + r.k(v)).join(" · ")},
+    String(r.acts.length), h("div", {class:"muted", style:"font-size:11px;white-space:nowrap"}, plural(r.k("call"), "call") + " · " + plural(r.k("meeting"), "meeting") + " · " + plural(r.k("site_visit"), "visit")));
+  wrap.append(h("div", {class:"tbl-wrap"}, h("table", {class:"scorecard"},
+    h("thead", null,
+      h("tr", null, h("th", null, ""), h("th", {colspan:"4", class:"grp"}, Y + " results"), h("th", {colspan:"5", class:"grp"}, "Pipeline today"), h("th", {colspan:"3", class:"grp"}, "Activity")),
+      h("tr", null, h("th", null, "Person"), ...["Target","Won","Won / lost","Win rate","Open deals","Pipeline","Weighted","Bids due 30d","Need go/no-go","Notes logged","Overdue tasks","Last active"].map(t => h("th", {class:"num"}, t)))),
+    h("tbody", null, rows.map(r => {
+      const pct = r.target ? Math.round(r.yr.wonV / r.target * 100) : null;
+      return h("tr", {class:"click", tabindex:"0", onclick:() => { S.ownerFilter = r.p.id; S.view = "dashboard"; renderNow(); }, onkeydown: e => { if (e.key === "Enter") { S.ownerFilter = r.p.id; S.view = "dashboard"; renderNow(); } }},
+        h("td", null, h("div", {style:"font-weight:600;white-space:nowrap"}, r.p.full_name || r.p.email), h("div", {class:"muted", style:"font-size:12px"}, r.p.role === "admin" ? "Admin" : "Rep", r.shared ? " · on " + plural(r.shared, "shared deal") : "")),
+        cell(r.target ? money(r.target, true) : "—"),
+        h("td", {class:"num"}, money(r.yr.wonV, true), pct != null ? h("div", null, miniBar(pct), h("div", {class:"muted", style:"font-size:11px"}, pct + "% of target")) : null),
+        cell(r.yr.won.length + " / " + r.yr.lost.length),
+        cell(r.yr.rate == null ? "—" : r.yr.rate + "%"),
+        cell(String(r.st.open.length)), cell(money(r.st.pipe, true)), cell(money(r.st.wtd, true)),
+        cell(String(r.bidsDue)),
+        cell(String(r.st.pendingGng.length), r.st.pendingGng.length ? {style:"color:var(--warn)"} : null),
+        actCell(r),
+        cell(String(r.overdue), r.overdue ? {style:"color:var(--bad)"} : null),
+        cell(r.last ? fmtDate(r.last.slice(0, 10)) : "—", r.last && daysUntil(r.last.slice(0, 10)) < -14 ? {style:"color:var(--warn)", title:"No activity in over two weeks"} : null));
+    })),
+    h("tfoot", null, h("tr", {style:"font-weight:600"}, h("td", null, "Team"),
+      cell(ct && Number(ct.won_value) ? money(Number(ct.won_value), true) : "—"),
+      h("td", {class:"num"}, money(tot.won, true), ct && Number(ct.won_value) ? h("div", {class:"muted", style:"font-size:11px"}, Math.round(tot.won / Number(ct.won_value) * 100) + "% of company target") : null),
+      cell(tot.w + " / " + tot.l), cell(tot.w + tot.l ? Math.round(tot.w / (tot.w + tot.l) * 100) + "%" : "—"),
+      cell(String(tot.open)), cell(money(tot.pipe, true)), cell(money(tot.wtd, true)), cell(String(tot.due)), cell(String(tot.gng)),
+      cell(ACT.rows == null ? "…" : String(tot.act)), cell(String(tot.od)), cell(""))))));
+  if (!rows.length) wrap.append(h("div", {class:"panel"}, emptyState("No one on the team yet", "Create logins in Supabase; people appear here after their first sign-in.")));
   return wrap;
 }
 
