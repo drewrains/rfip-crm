@@ -147,10 +147,10 @@ $("#pwForm").addEventListener("submit", async ev => {
   ev.preventDefault();
   if (!sb) return;
   const btn = $("#pwSubmit"); btn.disabled = true; btn.textContent = "Signing in…";
-  const {error} = await sb.auth.signInWithPassword({email: $("#pwEmail").value.trim().toLowerCase(), password: $("#pwPass").value});
+  const {data, error} = await sb.auth.signInWithPassword({email: $("#pwEmail").value.trim().toLowerCase(), password: $("#pwPass").value});
   btn.disabled = false; btn.textContent = "Sign in";
   if (error) showSignin(/invalid login/i.test(error.message) ? "That email and password don't match. Ask an admin if you need a reset." : friendly(error));
-  else $("#pwPass").value = "";
+  else { $("#pwPass").value = ""; if (data && data.session && !S.started) start(data.session); }
 });
 $("#changePw").addEventListener("click", () => {
   const p1 = h("input", {class:"inp", id:"np1", type:"password", autocomplete:"new-password"});
@@ -186,14 +186,24 @@ async function boot() {
   if (!session) { showSignin(urlErr); }
   else start(session);
   sb.auth.onAuthStateChange((ev, sess) => {
-    if (ev === "SIGNED_IN" && sess && !S.started) start(sess);
+    // run outside the auth callback: calling the database from inside it can go out before the login is stored
+    if (ev === "SIGNED_IN" && sess) setTimeout(() => { if (!S.started) start(sess); }, 0);
     if (ev === "SIGNED_OUT") showSignin();
   });
 }
 
 async function start(session) {
   S.started = true;
-  const {data:me, error} = await sb.from("profiles").select("*").eq("id", session.user.id).maybeSingle();
+  // send this login's token explicitly, and retry briefly if the browser hasn't finished storing the session
+  let me = null, error = null;
+  for (let i = 0; i < 4; i++) {
+    ({data:me, error} = await sb.from("profiles").select("*").eq("id", session.user.id)
+      .setHeader("Authorization", "Bearer " + session.access_token).maybeSingle());
+    if (me || (error && !/401|42501|JWT|permission/i.test((error.code || "") + " " + (error.message || "")))) break;
+    if (!error && i > 0) break;
+    await new Promise(r => setTimeout(r, 400 * (i + 1)));
+  }
+  if (error) console.warn("profile load failed", error);
   if (error || !me) { S.started = false; showSignin("Your account isn't set up in the CRM. Ask an admin for access."); await sb.auth.signOut(); return; }
   if (!me.active) { S.started = false; showSignin("Your CRM access is turned off. Ask an admin to turn it back on."); await sb.auth.signOut(); return; }
   S.me = me;
@@ -201,6 +211,12 @@ async function start(session) {
   $("#meName").textContent = me.full_name || me.email;
   $("#changePw").hidden = !(session.user.app_metadata && (session.user.app_metadata.providers || [session.user.app_metadata.provider]).includes("email"));
   $("#signin").hidden = true; $("#app").hidden = false;
+  // make sure the stored session is in place before the rest of the data loads
+  for (let i = 0; i < 10; i++) {
+    const {data:{session:s}} = await sb.auth.getSession();
+    if (s && s.access_token) break;
+    await new Promise(r => setTimeout(r, 300));
+  }
   await loadAll();
   subscribe();
   render();
