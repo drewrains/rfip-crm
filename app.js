@@ -809,10 +809,27 @@ function openCloseOut(d, stage) {
 }
 
 // ---------------------------------------------------------------- deal drawer
-function openDeal(id, startTab) {
+// Repeat work (moves, adds and changes for the same customer): start a new deal from an old one.
+// Keeps the customer, contact, scope, service lines, vertical, value and go/no-go scores;
+// starts fresh on stage, dates, bid number and outcome. The deal team comes along too.
+function copyDeal(src) {
+  const now = new Date();
+  const mon = now.toLocaleString("en-US", {month:"short"}) + " " + now.getFullYear();
+  const base = (src.name || "").replace(/\s*[–-]\s*(copy|[A-Z][a-z]{2} \d{4})$/i, "");
+  const prefill = {
+    name: base + " – " + mon,
+    account_id: src.account_id, contact_id: src.contact_id, owner_id: S.me.id,
+    stage: "lead", value: src.value, source: "Repeat client", vertical: src.vertical,
+    services: [...(src.services || [])], description: src.description,
+    gng: {scores: {...((src.gng || {}).scores || {})}},
+  };
+  openDeal(null, "d", prefill, src.id);
+}
+
+function openDeal(id, startTab, prefill, copiedFrom) {
   const src = id ? byId(S.deals, id) : null;
   if (id && !src) { toast("That deal isn't available to you."); return; }
-  const draft = JSON.parse(JSON.stringify(src || {stage:"lead", services:[], owner_id:S.me.id, gng:{scores:{}}}));
+  const draft = JSON.parse(JSON.stringify(src || prefill || {stage:"lead", services:[], owner_id:S.me.id, gng:{scores:{}}}));
   draft.gng = draft.gng || {scores:{}}; draft.gng.scores = draft.gng.scores || {};
   const manage = !src || canManage(src);
 
@@ -954,12 +971,24 @@ function openDeal(id, startTab) {
     btn.disabled = false;
     if (!res) return;
     const i = S.deals.findIndex(d => d.id === res.id); if (i >= 0) S.deals[i] = res; else S.deals.push(res);
+    if (!src && copiedFrom) {
+      // bring the deal team over, and leave a note on both deals so the history links up
+      const team = S.members.filter(m => m.deal_id === copiedFrom && m.user_id !== res.owner_id)
+        .map(m => ({deal_id:res.id, user_id:m.user_id, added_by:S.me.id, role:m.role || "support"}));
+      if (team.length) { const {error} = await sb.from("deal_members").insert(team); if (!error) S.members.push(...team); }
+      const from = byId(S.deals, copiedFrom);
+      await sb.from("deal_notes").insert([
+        {deal_id:res.id, author_id:S.me.id, body:"Copied from " + (from ? from.name : "an earlier deal") + "."},
+        {deal_id:copiedFrom, author_id:S.me.id, body:"Copied to " + res.name + "."}]);
+    }
     render(); closeDrawer();
     if (!src) setTimeout(() => openDeal(res.id, "p"), 200);
-  }}, src ? "Save" : "Create deal"));
+  }}, src ? "Save" : copiedFrom ? "Create copy" : "Create deal"));
+  if (src) foot.splice(foot.length - 2, 0, h("button", {class:"btn", title:"Start a new deal for repeat work with this customer", onclick:() => copyDeal(src)}, "Copy"));
 
-  openDrawer({title: src ? src.name : "New deal", start:startTab,
+  openDrawer({title: src ? src.name : copiedFrom ? "Copy of " + ((byId(S.deals, copiedFrom) || {}).name || "deal") : "New deal", start:startTab,
     tabs:[["d","Details",details],["g","Go/no-go",gng],["p","Deal team",people],["n","Notes",notes],["t","Tasks",tasks]], foot});
+  if (copiedFrom) setTimeout(() => { const n = document.getElementById("f-name"); if (n) { n.focus(); n.select(); } }, 60);
 }
 
 // ---------------------------------------------------------------- account / contact / task drawers
@@ -996,7 +1025,13 @@ function openAccount(id) {
     fld(d, "notes", "Notes", "textarea", {full:true})],
   src => { if (!src) return null;
     const cs = S.contacts.filter(x => x.account_id === src.id);
-    return h("div", null, h("div", {class:"section-h", style:"margin-top:20px"}, "Contacts"),
+    const last = S.deals.filter(d => d.account_id === src.id).sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""))[0];
+    return h("div", null,
+      h("div", {class:"section-h", style:"margin-top:20px"}, "New work for " + (src.name || "this account")),
+      h("div", {style:"display:flex;gap:8px;flex-wrap:wrap"},
+        last ? h("button", {class:"btn small primary", title:"Copies the customer, contact, scope, service lines and deal team from " + last.name, onclick:() => copyDeal(last)}, "Copy last deal: " + last.name) : null,
+        h("button", {class:"btn small", onclick:() => openDeal(null, "d", {stage:"lead", services:[], owner_id:S.me.id, gng:{scores:{}}, account_id:src.id, vertical:src.vertical, source:"Repeat client"})}, "+ Blank deal")),
+      h("div", {class:"section-h", style:"margin-top:20px"}, "Contacts"),
       cs.length ? cs.map(c => h("div", {class:"list-row"}, h("button", {class:"linkish", onclick:() => openContact(c.id)}, c.name), h("span", {class:"muted"}, c.title || ""))) : h("div", {class:"muted"}, "None."),
       h("div", {style:"margin-top:10px"}, h("button", {class:"btn small", onclick:() => openContact(null, {account_id:src.id})}, "+ Contact at this account"))); },
   src => [["h", "History", () => accountHistory(src)]]);
