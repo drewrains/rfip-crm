@@ -37,9 +37,33 @@ const DEFAULT_GNG = {threshold:{go:70, review:55}, criteria:[]};
 // ---------------------------------------------------------------- setup
 const cfg = window.RFIP_CONFIG || {};
 const configured = cfg.supabaseUrl && !/YOUR-/.test(cfg.supabaseUrl) && cfg.supabaseAnonKey && !/YOUR-/.test(cfg.supabaseAnonKey);
+// Some browsers don't hand the stored login back reliably (blocked storage, a stuck cross-tab lock,
+// several old tabs open). Keep the current login in memory too, and attach it to every data request
+// ourselves so a signed-in person never gets treated as an anonymous visitor.
+let CUR_TOKEN = null;
+const MEM = {};
+const safeStore = {
+  getItem: k => { try { const v = localStorage.getItem(k); return v != null ? v : (k in MEM ? MEM[k] : null); } catch { return k in MEM ? MEM[k] : null; } },
+  setItem: (k, v) => { MEM[k] = v; try { localStorage.setItem(k, v); } catch {} },
+  removeItem: k => { delete MEM[k]; try { localStorage.removeItem(k); } catch {} },
+};
+const authFetch = (input, init = {}) => {
+  if (CUR_TOKEN && cfg.supabaseAnonKey) {
+    const url = typeof input === "string" ? input : input.url;
+    if (!/\/auth\/v1\//.test(url)) {
+      const hd = new Headers(init.headers || (typeof input === "string" ? undefined : input.headers));
+      const a = hd.get("Authorization");
+      if (!a || a === "Bearer " + cfg.supabaseAnonKey) { hd.set("Authorization", "Bearer " + CUR_TOKEN); init = {...init, headers:hd}; }
+    }
+  }
+  return fetch(input, init);
+};
 const sb = configured ? window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, {
-  auth: {persistSession:true, autoRefreshToken:true, detectSessionInUrl:true, flowType:"pkce"},
+  auth: {persistSession:true, autoRefreshToken:true, detectSessionInUrl:true, flowType:"pkce", storage:safeStore,
+         lock: async (name, timeout, fn) => fn()},
+  global: {fetch: authFetch},
 }) : null;
+if (sb) sb.auth.onAuthStateChange((ev, sess) => { CUR_TOKEN = sess && sess.access_token ? sess.access_token : (ev === "SIGNED_OUT" ? null : CUR_TOKEN); });
 
 const S = {
   me:null, profiles:[], accounts:[], contacts:[], deals:[], members:[], tasks:[], targets:[], gng:DEFAULT_GNG, year:THIS_YEAR, dim:"owner",
@@ -194,6 +218,7 @@ async function boot() {
 
 async function start(session) {
   S.started = true;
+  if (session && session.access_token) CUR_TOKEN = session.access_token;
   // send this login's token explicitly, and retry briefly if the browser hasn't finished storing the session
   let me = null, error = null;
   for (let i = 0; i < 4; i++) {
@@ -213,6 +238,7 @@ async function start(session) {
   $("#signin").hidden = true; $("#app").hidden = false;
   // make sure the stored session is in place before the rest of the data loads
   for (let i = 0; i < 10; i++) {
+    if (CUR_TOKEN) break;
     const {data:{session:s}} = await sb.auth.getSession();
     if (s && s.access_token) break;
     await new Promise(r => setTimeout(r, 300));
