@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>RFIP Pipeline</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231d5fc4'/%3E%3Cpath d='M8 22V10h7a4 4 0 010 8h-7M15 18l5 4' stroke='white' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="signin" class="signin" hidden>
+  <div class="signin-card">
+    <div class="brand big">RFIP <span>Pipeline</span></div>
+    <p class="muted">Sign in with your RFIP Microsoft 365 account.</p>
+    <button class="btn primary wide" id="msLogin">Sign in with Microsoft</button>
+    <p class="error" id="signinError" hidden></p>
+  </div>
+</div>
+
+<div id="app" hidden>
+  <header class="bar"><div class="wrap">
+    <div class="brand">RFIP <span>Pipeline</span></div>
+    <nav class="tabs" id="tabs" aria-label="Views"></nav>
+    <div class="me">
+      <button class="btn primary" id="newDeal">+ New deal</button>
+      <button class="btn small" id="signOut" title="Sign out"><span id="meName"></span><span>Sign out</span></button>
+    </div>
+  </div></header>
+  <main class="wrap">
+    <div id="status" class="notice" hidden></div>
+    <section class="strip" id="strip" aria-label="Summary"></section>
+    <section id="view"></section>
+  </main>
+</div>
+<div id="layer"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
