@@ -389,3 +389,115 @@ update public.handoffs h set submitted_by = d.owner_id from public.deals d where
 update public.handoffs h set submitted_at = '2026-09-26 15:00-05' from public.deals d where d.id = h.deal_id and d.name = 'Hospital annex DAS';
 update public.handoffs h set submitted_at = '2026-09-14 10:00-05', reviewed_by = (select id from public.profiles where email = 'demo-dayers@rfip.com')
 from public.deals d where d.id = h.deal_id and d.name = 'Warehouse cabling, 3 buildings';
+
+-- ---------- part 3: manpower schedule (run after manpower_schema.sql) --------
+-- 50 field techs and their day-by-day assignments from Sep 28 to Nov 27, built
+-- from each project's weekly crew plan. Data hall fiber (26-127) is left
+-- unstaffed on purpose so the board shows a real shortage.
+do $$
+declare
+  drew uuid := (select id from public.profiles where email = 'drains@rfip.com');
+  w date; d date; r record; t record; need int; i int;
+  holidays date[] := array['2026-11-26','2026-11-27']::date[];
+begin
+  perform set_config('request.jwt.claims', json_build_object('sub', drew, 'role', 'authenticated')::text, true);
+  if exists (select 1 from public.techs) then raise exception 'Techs are already loaded.'; end if;
+
+  create temp table seed_home (tech_id uuid, home text) on commit drop;
+  with v(name, dept, trade, home, s) as (values
+    ('W. Teague','Tower','Climber / foreman','26-130',1),('G. Byrd','Tower','Climber','26-130',2),('R. Fields','Tower','Climber','26-130',3),
+    ('C. Dunn','Tower','Climber','26-130',4),('T. Avery','Tower','Tech','26-130',5),('B. Lowe','Tower','Tech','26-130',6),
+    ('S. Patel','DAS','Foreman','26-121',1),('M. Ochoa','DAS','Lead tech','26-121',2),('D. King','DAS','Tech','26-121',3),('A. Flores','DAS','Tech','26-121',4),
+    ('J. Hale','DAS','Tech','26-121',5),('R. Price','DAS','Tech','26-121',6),('K. Young','DAS','Tech','26-121',7),('L. Vance','DAS','Apprentice','26-121',8),
+    ('Ray Delgado','Network','Foreman','26-118',1),('T. Nguyen','Network','Lead tech','26-118',2),('K. Brooks','Network','Tech','26-118',3),
+    ('L. Ramirez','Network','Tech','26-118',4),('J. Whitaker','Network','Tech','26-118',5),('M. Osei','Network','Apprentice','26-118',6),
+    ('H. Ross','Network','Lead tech','26-112',7),('J. Moss','Network','Tech','26-112',8),('N. Parks','Network','RF engineer','26-136',9),
+    ('B. Howard','DataComm','Foreman','26-124',1),('C. Lin','DataComm','Lead tech','26-124',2),('E. Grant','DataComm','Tech','26-124',3),
+    ('A. Diaz','DataComm','Tech','26-124',4),('J. Ellis','DataComm','Tech','26-124',5),('M. Ford','DataComm','Tech','26-124',6),
+    ('S. Bell','DataComm','Tech','26-124',7),('T. Cruz','DataComm','Tech','26-124',8),('R. Webb','DataComm','Tech','26-124',9),
+    ('D. Lane','DataComm','Tech','26-124',10),('K. Hayes','DataComm','Tech','26-124',11),('P. Wade','DataComm','Tech','26-124',12),
+    ('G. Ortiz','DataComm','Apprentice','26-124',13),('N. Reed','DataComm','Apprentice','26-124',14),('C. Moss','DataComm','Tech','26-124',15),
+    ('F. Nunez','DataComm','Foreman','26-109',16),('P. Shaw','DataComm','Tech','26-109',17),
+    ('V. Long','DataComm','Lead tech',null,18),('H. Kerr','DataComm','Tech',null,19),('J. Pruitt','DataComm','Tech',null,20),
+    ('E. Sloan','DataComm','Apprentice',null,21),('M. Tate','DataComm','Apprentice',null,22),
+    ('P. Nash','Security','Lead tech','26-133',1),('O. Reyes','Security','Tech','26-133',2),('D. Carter','Security','Tech','26-133',3),
+    ('S. Kim','Security','Tech','26-133',4),('V. Ruiz','Security','Apprentice','26-133',5)
+  ), ins as (
+    insert into public.techs (name, department, trade, sort, profile_id)
+    select v.name, v.dept, v.trade, v.s, case when v.name = 'Ray Delgado' then (select id from public.profiles where email = 'demo-rdelgado@rfip.com') end from v
+    returning id, name
+  )
+  insert into seed_home select ins.id, v.home from ins join v on v.name = ins.name;
+
+  -- time off first, so jobs fill around it
+  insert into public.assignments (tech_id, work_date, kind, note, created_by)
+  select te.id, v.d::date, v.k, v.note, drew from (values
+    ('L. Ramirez','2026-10-09','pto','Family'),('K. Young','2026-10-19','pto',null),('K. Young','2026-10-20','pto',null),
+    ('J. Ellis','2026-10-15','training','Fiber splicing certification'),('J. Ellis','2026-10-16','training','Fiber splicing certification'),
+    ('G. Byrd','2026-10-23','pto',null),('S. Patel','2026-11-02','training','OSHA 30')
+  ) v(name, d, k, note) join public.techs te on te.name = v.name;
+
+  -- weekly crew plan → daily assignments, home crews first
+  for i in 0..8 loop
+    w := date '2026-09-28' + i * 7;
+    for r in select p.id, p.number, p.department, cp.techs from public.projects p
+             join public.crew_plan cp on cp.project_id = p.id and cp.week_start = greatest(w, date '2026-10-05')
+             where p.number <> '26-127' and cp.techs > 0 order by p.number loop
+      for t in select te.id from public.techs te join seed_home sh on sh.tech_id = te.id
+               where te.department = r.department
+                 and not exists (select 1 from public.assignments a where a.tech_id = te.id and a.kind = 'job' and a.work_date between w and w + 4)
+               order by (sh.home = r.number) desc, te.sort limit r.techs loop
+        for d in select generate_series(w, w + 4, interval '1 day')::date loop
+          if not d = any(holidays) then
+            insert into public.assignments (tech_id, work_date, kind, project_id, created_by)
+            values (t.id, d, 'job', r.id, drew) on conflict (tech_id, work_date) do nothing;
+          end if;
+        end loop;
+      end loop;
+    end loop;
+  end loop;
+end $$;
+
+-- ---------- part 3b: keep home crews on their own jobs ------------------------
+-- Same people working each week; reassigns which job each is on, home crews first.
+do $$
+declare
+  drew uuid := (select id from public.profiles where email = 'drains@rfip.com');
+  i int; w date; dp text; t record; pick uuid;
+begin
+  perform set_config('request.jwt.claims', json_build_object('sub', drew, 'role', 'authenticated')::text, true);
+  create temp table home on commit drop as
+    select te.id tech_id, te.department,
+      case te.department when 'Tower' then '26-130' when 'DAS' then '26-121' when 'Security' then '26-133'
+        when 'Network' then case when te.sort <= 6 then '26-118' when te.sort <= 8 then '26-112' else '26-136' end
+        when 'DataComm' then case when te.sort <= 15 then '26-124' when te.sort <= 17 then '26-109' end end as home, te.sort
+    from public.techs te;
+  create temp table need on commit drop as
+    select g::date as wk, p.id, p.number, p.department, cp.techs as left_n
+    from generate_series(date '2026-09-28', date '2026-11-23', interval '7 days') g
+    join public.crew_plan cp on cp.week_start = greatest(g::date, date '2026-10-05')
+    join public.projects p on p.id = cp.project_id
+    where p.number <> '26-127' and cp.techs > 0;
+  for i in 0..8 loop
+    w := date '2026-09-28' + i * 7;
+    for dp in select key from public.departments loop
+      for t in select h.tech_id, h.home, h.sort from home h
+               where h.department = dp and exists (select 1 from public.assignments a where a.tech_id = h.tech_id and a.kind = 'job' and a.work_date between w and w + 4)
+               order by (exists (select 1 from need n where n.wk = w and n.number = h.home and n.left_n > 0)) desc, h.sort loop
+        pick := null;
+        select n.id into pick from need n where n.wk = w and n.number = t.home and n.left_n > 0;
+        if pick is null then select n.id into pick from need n where n.wk = w and n.department = dp and n.left_n > 0 order by n.number limit 1; end if;
+        if pick is not null then
+          update need n set left_n = n.left_n - 1 where n.wk = w and n.id = pick;
+          update public.assignments set project_id = pick where tech_id = t.tech_id and kind = 'job' and work_date between w and w + 4;
+        end if;
+      end loop;
+    end loop;
+  end loop;
+end $$;
+
+-- ---------- part 3c: this week's crew needs match next week's -----------------
+insert into public.crew_plan (project_id, week_start, techs)
+select project_id, date '2026-09-28', techs from public.crew_plan cp
+where week_start = '2026-10-05' and (select number from public.projects where id = cp.project_id) <> '26-127'
+on conflict (project_id, week_start) do nothing;

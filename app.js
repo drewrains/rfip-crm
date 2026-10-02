@@ -932,10 +932,10 @@ function openDeal(id, startTab) {
     for (const k of DEAL_FIELDS) payload[k] = k === "services" ? (draft.services || []) : k === "gng" ? draft.gng : nullify(draft[k]);
     payload.name = payload.name.trim();
     if (src && !canManage(src)) delete payload.owner_id;
-    e.currentTarget.disabled = true;
+    const btn = e.currentTarget; btn.disabled = true;
     const res = src ? await run(sb.from("deals").update(payload).eq("id", src.id).select().single(), "Deal saved")
                     : await run(sb.from("deals").insert(payload).select().single(), "Deal created");
-    e.currentTarget.disabled = false;
+    btn.disabled = false;
     if (!res) return;
     const i = S.deals.findIndex(d => d.id === res.id); if (i >= 0) S.deals[i] = res; else S.deals.push(res);
     render(); closeDrawer();
@@ -958,10 +958,10 @@ function simpleDrawer(table, key, id, defaults, title, fields, extra, moreTabs) 
     const req = table === "tasks" ? "title" : "name";
     if (!(draft[req] || "").trim()) { toast("Add a " + req + " first."); return; }
     const payload = {}; for (const [k, v] of Object.entries(draft)) if (!["id","created_at","updated_at","created_by"].includes(k)) payload[k] = nullify(typeof v === "string" ? v.trim() : v);
-    e.currentTarget.disabled = true;
+    const btn = e.currentTarget; btn.disabled = true;
     const res = src ? await run(sb.from(table).update(payload).eq("id", src.id).select().single(), "Saved")
                     : await run(sb.from(table).insert(payload).select().single(), "Added");
-    e.currentTarget.disabled = false;
+    btn.disabled = false;
     if (!res) return;
     const i = S[key].findIndex(x => x.id === res.id); if (i >= 0) S[key][i] = res; else S[key].push(res);
     render(); closeDrawer();
@@ -1097,13 +1097,13 @@ function targetsPanel() {
       h("p", {class:"hint"}, "Set each January. Progress shows on the dashboard. Reps see their own target and the company target; only admins see everyone's."),
       h("div", {class:"form"}, row("company", "Company"), activePeople().map(p => row(p.id, p.full_name || p.email))),
       h("div", {style:"margin-top:12px;display:flex;justify-content:flex-end"}, h("button", {class:"btn primary", onclick: async e => {
-        e.currentTarget.disabled = true; let ok = true;
+        const btn = e.currentTarget; btn.disabled = true; let ok = true;
         for (const [key, v] of Object.entries(vals)) {
           const uid = key === "company" ? null : key; const t = targetFor(uid, year);
           if (t && Number(t.won_value) !== v) ok = !!(await run(sb.from("targets").update({won_value:v, updated_at:new Date().toISOString()}).eq("id", t.id))) && ok;
           else if (!t && v > 0) ok = !!(await run(sb.from("targets").insert({year, user_id:uid, won_value:v}))) && ok;
         }
-        await loadTable("targets"); e.currentTarget.disabled = false;
+        await loadTable("targets"); btn.disabled = false;
         if (ok) toast(year + " targets saved"); render();
       }}, "Save targets")));
   };

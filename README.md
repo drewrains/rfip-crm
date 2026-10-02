@@ -139,9 +139,17 @@ The same app has an **Operations** section for delivery: a company overview, pro
 
 "Sales side: No" hides the CRM from ops-only people.
 
+**Manpower schedule** (Operations → Manpower): the field tech roster and who is on which job each day, as a Day board (job cards, who's free, who's out), a Week board (person by day) and a Month board (person by workday, with how booked each person is). "Needs vs scheduled" compares each job's weekly crew plan with who's actually on the board.
+
+- PMs schedule people onto their own jobs and take them off. If someone is already on another job that day, that job's PM has to release them first; the app says who to ask.
+- Department leads can do the same for their department, record time off and training, and add techs. Admins can change anything.
+- Everyone on the operations side sees the whole board. Field logins with a tech record see their own schedule.
+- The project page's "Crew this week" comes from the schedule.
+
 **Database scripts**
 
 - `supabase/ops_schema.sql` adds the operations tables and rules. Run it after `schema.sql`.
+- `supabase/manpower_schema.sql` adds the tech roster and daily schedule. Run it after `ops_schema.sql`.
 - `supabase/test_seed.sql` loads demo logins and sample projects. **Test database only.**
 
 ## Test environment
@@ -163,4 +171,4 @@ Demo logins on the test database all use the password `RfipDemo-2026`:
 
 Other leads and PMs: demo-mcapps, demo-hseabolt, demo-ddell, demo-mhale, demo-treese, demo-acole, demo-rbanks, demo-swhitfield (all `@rfip.com`).
 
-Going live later: run `ops_schema.sql` on the live database first, then merge the `ops-test` branch. Don't run `test_seed.sql` on live.
+Going live later: run `ops_schema.sql` and `manpower_schema.sql` on the live database first, then merge the `ops-test` branch. Don't run `test_seed.sql` on live.

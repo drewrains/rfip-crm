@@ -11,10 +11,12 @@ const {h, sb, S, money, fmtDate, daysUntil, todayStr, run, toast, friendly, open
 // ---------------------------------------------------------------- data
 const TABLES = {projects:"projects", handoffs:"handoffs", depts:"departments", costs:"cost_lines", labor:"labor_weeks", ms:"milestones",
   cos:"change_orders", mats:"materials", logs:"daily_logs", plan:"crew_plan", roster:"crew_roster", closeout:"closeout_items",
-  bills:"billings", safety:"safety_events"};
+  bills:"billings", safety:"safety_events", techs:"techs", asg:"assignments"};
 const KEY_OF = Object.fromEntries(Object.entries(TABLES).map(([k, t]) => [t, k]));
-const O = {missing:false, detail:null, q:"", dept:"", pm:"", phase:"active", hand:true};
+const O = {missing:false, detail:null, q:"", dept:"", pm:"", phase:"active", hand:true, mpMode:"week", mpDate:null, mpDept:""};
+try { const m = localStorage.getItem("rfipops.mpMode"); if (m) O.mpMode = m; } catch (e) {}
 for (const k of Object.keys(TABLES)) O[k] = [];
+O.dir = [];
 try { const d = localStorage.getItem("rfipops.detail"); if (d) O.detail = d; } catch (e) {}
 
 async function fetchTable(key) {
@@ -31,13 +33,17 @@ async function reload(key) { O[key] = await fetchTable(key); CALC.clear(); }
 async function load() {
   await reload("depts");
   if (O.missing) return;
-  await Promise.all(Object.keys(TABLES).filter(k => k !== "depts").map(reload));
+  await Promise.all(Object.keys(TABLES).filter(k => k !== "depts").map(reload).concat([loadDir()]));
+}
+async function loadDir() {
+  const {data, error} = await sb.rpc("ops_project_directory");
+  O.dir = error ? [] : (data || []).sort((a, b) => a.number.localeCompare(b.number));
 }
 const waiting = new Set(); let timer = null;
 function changed(table) {
   const key = KEY_OF[table]; if (!key) return;
   waiting.add(key); clearTimeout(timer);
-  timer = setTimeout(async () => { const keys = [...waiting]; waiting.clear(); await Promise.all(keys.map(reload)); render(); }, 300);
+  timer = setTimeout(async () => { const keys = [...waiting]; waiting.clear(); await Promise.all(keys.map(reload).concat(keys.includes("projects") ? [loadDir()] : [])); render(); }, 300);
 }
 
 // ---------------------------------------------------------------- who can do what
@@ -107,7 +113,8 @@ function calc(p) {
   const late = ms.filter(m => !m.actual && m.planned && daysUntil(m.planned) < -5);
   const mats = O.mats.filter(m => m.project_id === p.id);
   const closeout = O.closeout.filter(c => c.project_id === p.id).sort((a, b) => a.sort - b.sort);
-  const roster = O.roster.filter(r => r.project_id === p.id).sort((a, b) => a.sort - b.sort);
+  const roster = scheduleRoster(p.id);
+  const staffed = new Set(O.asg.filter(a => a.project_id === p.id && a.work_date >= TODAY && a.work_date <= addDays(TODAY, 14)).map(a => a.tech_id)).size;
   const r = {
     cos, coAppr, coPend, unpriced, total, done, lw, hu, hb, rate, projH, cl, nlBud, nlFc, nlAct, budCost, fcCost,
     estM: total ? (total - budCost) / total : 0, fcM: total ? (total - fcCost) / total : 0, fade: fcCost - budCost,
@@ -116,7 +123,7 @@ function calc(p) {
     earnH: done * hb, burn: hb ? hu / hb : 0, prod: hu > 0 && done > .05 ? (done * hb) / hu : null,
     ms, late, lateDays: late.length ? Math.max(...late.map(m => -daysUntil(m.planned))) : 0,
     mats, matOpen: mats.filter(m => m.status !== "received"), backordered: mats.filter(m => m.status === "backordered"),
-    closeout, docsOpen: closeout.filter(c => c.status !== "done"), roster,
+    closeout, docsOpen: closeout.filter(c => c.status !== "done"), roster, staffed: O.techs.length ? staffed : roster.length,
     elapsed: p.start_date && p.end_date ? Math.min(1, Math.max(0, -daysUntil(p.start_date) / Math.max(1, daysUntil(p.end_date) - daysUntil(p.start_date)))) : null,
   };
   CALC.set(p.id, r);
@@ -138,9 +145,9 @@ function alertsFor(list) {
     if (c.lateDays) out.push({sev: c.lateDays > 7 ? "crit" : "warn", tag:"Schedule", what:`${c.late[0].name} is ${c.lateDays} days late`, where, p});
     if (p.phase === "mobilizing" && p.start_date && daysUntil(p.start_date) <= 14) {
       const gaps = [];
-      if (!c.roster.length) gaps.push("no crew assigned");
+      if (!c.staffed) gaps.push("no crew scheduled");
       if (c.matOpen.length) gaps.push(plural(c.matOpen.length, "material line") + " not received");
-      if (gaps.length) out.push({sev: c.roster.length ? "warn" : "crit", tag:"Mobilize", what:`Starts ${fmtDate(p.start_date)} with ${gaps.join(" and ")}`, where, p});
+      if (gaps.length) out.push({sev: c.staffed ? "warn" : "crit", tag:"Mobilize", what:`Starts ${fmtDate(p.start_date)} with ${gaps.join(" and ")}`, where, p});
     }
     for (const m of c.backordered) out.push({sev:"warn", tag:"Material", what:`${m.item} backordered${m.eta ? " to " + fmtDate(m.eta) : ""}`, where, p});
     if (c.coPend) out.push({sev:"warn", tag:"Change order", what:`${compact(c.coPend)} in change orders waiting on the customer`, where, p});
@@ -179,7 +186,7 @@ function daysSafe(deptKey) {
 
 // ---------------------------------------------------------------- strip
 function strip(el) {
-  el.hidden = S.view === "ops-overview";
+  el.hidden = S.view === "ops-overview" || S.view === "ops-manpower";
   if (el.hidden) return;
   if (!role() || (S.view === "handoffs" && S.section !== "ops")) {
     const mine = O.handoffs.filter(x => x.status !== "cancelled");
@@ -215,7 +222,7 @@ function viewOverview() {
   const stage = (label, n, amt, note, flag, onclick) => h("button", {class:"o-stage", onclick}, h("span", {class:"k"}, label),
     h("span", {class:"row"}, h("b", null, n), h("small", null, amt)), h("span", {class:"s"}, note), flag ? h("span", {class:"flag"}, flag) : null);
   const mob = byPh("mobilizing"), inp = byPh("in_progress"), clo = byPh("closeout");
-  const mobNoCrew = mob.filter(p => !calc(p).roster.length).length;
+  const mobNoCrew = mob.filter(p => !calc(p).staffed).length;
   wrap.append(h("div", {class:"o-flow"},
     stage("Waiting on handoff", String(ho.length), compact(sum(ho, handoffValue)), "Won, not yet accepted",
       ho.filter(x => x.status === "kicked_back").length ? h("span", {class:"bad-t"}, plural(ho.filter(x => x.status === "kicked_back").length, "kicked back")) : null, () => go("ops-handoffs")),
@@ -285,9 +292,9 @@ function viewOverview() {
   // starts and closeouts
   const starts = [
     ...O.projects.filter(p => p.phase === "mobilizing").map(p => ({name:p.name, sub:p.number + " · " + p.department, date:p.start_date, p,
-      crew: calc(p).roster.length ? ["go-t", calc(p).roster.length + " assigned"] : ["bad-t", "None assigned"],
+      crew: calc(p).staffed ? ["go-t", calc(p).staffed + " scheduled"] : ["bad-t", "None scheduled"],
       mat: calc(p).matOpen.length ? [calc(p).matOpen.length > 2 ? "bad-t" : "warn-t", plural(calc(p).matOpen.length, "line") + " open"] : ["go-t", "All received"],
-      ready: !calc(p).roster.length ? ["bad", "Not ready"] : calc(p).matOpen.length ? ["warn", "At risk"] : ["go", "Ready"]})),
+      ready: !calc(p).staffed ? ["bad", "Not ready"] : calc(p).matOpen.length ? ["warn", "At risk"] : ["go", "Ready"]})),
     ...ho.filter(x => (x.packet || {}).start_date && daysUntil(x.packet.start_date) <= 45).map(x => ({name:handoffName(x), sub:"Handoff · " + (x.department || "No department"), date:x.packet.start_date, ho:x,
       crew:["muted", x.pm_id ? "PM: " + personName(x.pm_id) : "No PM yet"], mat:["muted", "—"],
       ready: x.status === "kicked_back" ? ["bad", "Kicked back"] : x.status === "review" ? ["acc", "In ops review"] : ["warn", "Packet open"]}))]
@@ -363,7 +370,7 @@ function viewProjects() {
         money ? h("td", {class:"num"}, pct(c.estM), " → ", h("span", {class: c.fcM < c.estM - .02 ? "bad-t" : ""}, pct(c.fcM))) : null,
         money ? h("td", {class:"num"}, c.ready > 1000 ? compact(c.ready) : "—") : null,
         h("td", null, h("span", {class:"chips"}, c.lateDays ? chip("warn", c.lateDays + "d late") : null, c.backordered.length ? chip("warn", "Backorder") : null,
-          c.coPend ? chip("acc", "CO pending") : null, p.phase === "mobilizing" && !c.roster.length ? chip("bad", "No crew") : null)));
+          c.coPend ? chip("acc", "CO pending") : null, p.phase === "mobilizing" && !c.staffed ? chip("bad", "No crew") : null)));
     }) : h("tr", null, h("td", {colspan:"10", class:"empty"}, "No projects match these filters."))))));
   return wrap;
 }
@@ -516,7 +523,7 @@ function logPanel(p) {
     fld(draft, "issues", "Issues or delays (optional)", "textarea", {full:true, placeholder:"Access, material, customer requests, safety"})),
     h("div", {class:"o-actions"}, h("button", {class:"btn primary", onclick: async e => {
       if (!(draft.work || "").trim()) { toast("Describe the work completed."); return; }
-      e.currentTarget.disabled = true;
+      const btn = e.currentTarget; btn.disabled = true;
       await saveRow("daily_logs", {project_id:p.id, log_date:draft.log_date || TODAY, crew_count:nullify(draft.crew_count), hours:nullify(draft.hours), work:draft.work.trim(), issues:nullify((draft.issues || "").trim()), author_id:S.me.id});
     }}, "Add to log")));
   return panel("Daily field log", "From the foreman in the field",
@@ -527,11 +534,14 @@ function logPanel(p) {
 }
 function rosterPanel(p, c, edit) {
   const D = ["M", "T", "W", "R", "F"];
-  return panel("Crew this week", people(c.roster.length),
+  const fromSchedule = O.techs.length > 0;
+  const open = r => fromSchedule ? openAssign({techId:r.tech_id, projectId:p.id, date:weekDates(mondayOf(TODAY))[Math.max(0, "MTWRF".indexOf(r.days[0] || "M"))]}) : openRoster(p, r);
+  return panel("Crew this week", people(c.roster.length) + (fromSchedule ? " · from the manpower schedule" : ""),
     c.roster.length ? h("div", {class:"o-crew"}, h("span"), D.map(d => h("span", {class:"hd"}, d === "R" ? "T" : d)),
-      c.roster.flatMap(r => [h("button", {class: edit ? "linkish who" : "who", onclick: edit ? () => openRoster(p, r) : null, disabled: !edit}, r.name, h("small", null, r.role || "")),
+      c.roster.flatMap(r => [h("button", {class: edit ? "linkish who" : "who", onclick: edit ? () => open(r) : null, disabled: !edit}, r.name, h("small", null, r.role || "")),
         ...D.map(d => h("span", {class: (r.days || "").includes(d) ? "on" : "off", title:(r.days || "").includes(d) ? "On this job" : "Off this job"}))])) : h("div", {class:"empty"}, p.phase === "mobilizing" ? "No crew assigned yet." : "No crew listed."),
-    edit ? h("div", {class:"o-actions"}, h("button", {class:"btn small", onclick:() => openRoster(p)}, "+ Crew member")) : null);
+    edit || fromSchedule ? h("div", {class:"o-actions"}, fromSchedule ? h("button", {class:"btn small", onclick:() => { O.mpMode = "week"; O.mpDate = mondayOf(TODAY); O.mpDept = p.department; go("ops-manpower"); }}, "Open manpower board") : null,
+      edit ? h("button", {class:"btn small", onclick:() => fromSchedule ? openAssign({projectId:p.id, date:TODAY}) : openRoster(p)}, "+ Crew member") : null) : null);
 }
 const CL_ST = [["todo", "Not started", ""], ["in_progress", "In progress", "acc"], ["done", "Done", "go"]];
 function closeoutPanel(p, c, edit) {
@@ -561,7 +571,7 @@ function drawerForm(title, draft, fields, onSave, onDelete) {
   const foot = [];
   if (onDelete) foot.push(deleteButton(async () => { if (await onDelete()) closeDrawer(); }));
   foot.push(h("button", {class:"btn" + (onDelete ? "" : " spacer"), onclick:() => closeDrawer()}, "Cancel"));
-  foot.push(h("button", {class:"btn primary", onclick: async e => { e.currentTarget.disabled = true; const ok = await onSave(); e.currentTarget.disabled = false; if (ok) closeDrawer(); }}, "Save"));
+  foot.push(h("button", {class:"btn primary", onclick: async e => { const btn = e.currentTarget; btn.disabled = true; const ok = await onSave(); btn.disabled = false; if (ok) closeDrawer(); }}, "Save"));
   openDrawer({title, body:h("div", {class:"form"}, fields), foot});
 }
 const del = (table, id) => async () => { const ok = await run(sb.from(table).delete().eq("id", id), "Deleted"); if (ok) { await reload(KEY_OF[table]); render(); } return ok; };
@@ -756,10 +766,10 @@ function openHandoff(id) {
       foot.push(h("button", {class:"btn primary", onclick: async e => {
         if (!draft.department) { toast("Choose the delivering department."); return; }
         if (!draft.pm_id) { toast("Assign a project manager."); return; }
-        e.currentTarget.disabled = true;
-        if (!(await saveDraft())) { e.currentTarget.disabled = false; return; }
+        const btn = e.currentTarget; btn.disabled = true;
+        if (!(await saveDraft())) { btn.disabled = false; return; }
         const pid = await run(sb.rpc("accept_handoff", {hid:ho.id}), "Accepted. Project created.");
-        e.currentTarget.disabled = false;
+        btn.disabled = false;
         if (pid) { await load(); render(); closeDrawer(); if (typeof pid === "string") openProject(pid); }
       }}, "Accept and create project"));
     }
@@ -850,8 +860,241 @@ function billChart(months, tA, tH, nowIdx) {
   return svg("svg", {viewBox:`0 0 ${W} ${H}`, class:"o-chart", role:"img", "aria-label":"Billing totals by month"}, g);
 }
 
+// ---------------------------------------------------------------- manpower schedule
+const DOW = d => { const [y, m, dd] = d.split("-").map(Number); return new Date(Date.UTC(y, m - 1, dd)).getUTCDay(); };
+const mondayOf = d => addDays(d, -((DOW(d) + 6) % 7));
+const weekDates = mon => [0, 1, 2, 3, 4].map(i => addDays(mon, i));
+const isWeekend = d => DOW(d) === 0 || DOW(d) === 6;
+const dayName = d => new Date(d + "T12:00:00").toLocaleDateString("en-US", {weekday:"short"});
+const dayLabel = d => new Date(d + "T12:00:00").toLocaleDateString("en-US", {weekday:"short", month:"short", day:"numeric"});
+const tech = id => byId(O.techs, id) || {};
+const proj = id => byId(O.projects, id) || byId(O.dir, id) || {};
+const jobs = () => O.dir.length ? O.dir : O.projects;
+const short = p => (p.number || "").split("-")[1] || p.number || "?";
+const pjClass = id => { const i = jobs().findIndex(p => p.id === id); return "pj" + ((i < 0 ? 0 : i) % 10); };
+const asgOn = (techId, d) => O.asg.find(a => a.tech_id === techId && a.work_date === d);
+const needFor = (projectId, d) => { const x = O.plan.find(r => r.project_id === projectId && r.week_start === mondayOf(d)); return x ? x.techs : 0; };
+const canSchedule = (projectId, techId, kind) => { const r = role(); if (r === "admin") return true;
+  if (kind === "job") { const p = proj(projectId); return !!p.id && canEdit(p); }
+  return r === "lead" && tech(techId).department === S.me.department; };
+// who's on a project this week, for the project page
+function scheduleRoster(projectId) {
+  if (!O.techs.length) return O.roster.filter(r => r.project_id === projectId).sort((a, b) => a.sort - b.sort);
+  const days = weekDates(mondayOf(TODAY)), L = "MTWRF", by = new Map();
+  for (const a of O.asg) {
+    if (a.project_id !== projectId) continue;
+    const i = days.indexOf(a.work_date); if (i < 0) continue;
+    const t = tech(a.tech_id); if (!by.has(a.tech_id)) by.set(a.tech_id, {tech_id:a.tech_id, name:t.name || "—", role:t.trade || "", days:"", sort:t.sort || 0});
+    by.get(a.tech_id).days += L[i];
+  }
+  return [...by.values()].map(r => ({...r, days:L.split("").filter(x => r.days.includes(x)).join("")})).sort((a, b) => (b.role === "Foreman") - (a.role === "Foreman") || a.sort - b.sort);
+}
+function techsShown() {
+  const dep = O.mpDept;
+  return O.techs.filter(t => t.active && (!dep || t.department === dep))
+    .sort((a, b) => deptKeys().indexOf(a.department) - deptKeys().indexOf(b.department) || a.sort - b.sort || a.name.localeCompare(b.name));
+}
+function projectsShown(dates) {
+  return jobs().filter(p => (!O.mpDept || p.department === O.mpDept) && p.phase !== "closed" &&
+    dates.some(d => needFor(p.id, d) > 0 || O.asg.some(a => a.project_id === p.id && a.work_date === d)))
+    .sort((a, b) => a.department.localeCompare(b.department) || a.number.localeCompare(b.number));
+}
+function asgCell(t, d, size) {
+  const a = asgOn(t.id, d), weekend = isWeekend(d);
+  const p = a && a.project_id ? proj(a.project_id) : null;
+  const editable = role() === "admin" || role() === "lead" || role() === "pm";
+  const click = editable ? () => openAssign({techId:t.id, date:d, projectId:a ? a.project_id : null}) : null;
+  let inner = null, cls = "mp-cell" + (weekend ? " wkend" : "") + (d === TODAY ? " today" : "") + (editable ? " edit" : "");
+  if (a && a.kind === "job") { inner = h("span", {class:"mp-chip " + pjClass(a.project_id), title:(p ? p.number + " · " + p.name : "Job") + (a.note ? " · " + a.note : "")}, size === "s" ? short(p || {}) : (p ? p.number : "Job")); }
+  else if (a) { inner = h("span", {class:"mp-chip off", title:(a.kind === "pto" ? "Time off" : "Training") + (a.note ? " · " + a.note : "")}, a.kind === "pto" ? "PTO" : size === "s" ? "TRN" : "Training"); }
+  return h("td", {class:cls, onclick:click, title: !a && editable ? "Assign " + t.name + " on " + dayLabel(d) : null}, inner);
+}
+function mpToolbar(label, dates) {
+  const step = dir => {
+    const d = O.mpDate || TODAY;
+    if (O.mpMode === "day") { let n = addDays(d, dir); while (isWeekend(n)) n = addDays(n, dir); O.mpDate = n; }
+    else if (O.mpMode === "week") O.mpDate = addDays(mondayOf(d), dir * 7);
+    else O.mpDate = addMonths(monthStart(d), dir);
+    render();
+  };
+  return h("div", {class:"toolbar"}, h("h2", null, "Manpower"),
+    h("div", {class:"sections mp-modes", role:"group", "aria-label":"Board"}, [["day", "Day"], ["week", "Week"], ["month", "Month"]].map(([m, t]) =>
+      h("button", {"aria-pressed":String(O.mpMode === m), onclick:() => { O.mpMode = m; try { localStorage.setItem("rfipops.mpMode", m); } catch (e) {} render(); }}, t))),
+    h("div", {class:"mp-nav"}, h("button", {class:"btn small", "aria-label":"Previous", onclick:() => step(-1)}, "‹"),
+      h("button", {class:"btn small", onclick:() => { O.mpDate = null; render(); }}, "Today"),
+      h("button", {class:"btn small", "aria-label":"Next", onclick:() => step(1)}, "›"), h("b", {class:"mp-label"}, label)),
+    h("select", {"aria-label":"Department", id:"mp-dept", onchange: e => { O.mpDept = e.target.value; render(); }},
+      h("option", {value:""}, "All departments"), deptKeys().map(k => h("option", {value:k, selected:O.mpDept === k}, k))),
+    role() === "admin" || role() === "lead" ? h("button", {class:"btn small", onclick:() => openTech()}, "+ Tech") : null,
+    role() === "admin" || role() === "lead" || role() === "pm" ? h("button", {class:"btn primary small", onclick:() => openAssign({date:dates.find(d => d >= TODAY) || dates[0]})}, "Assign") : null);
+}
+function mpSummary(dates) {
+  const ts = techsShown(), ids = new Set(ts.map(t => t.id));
+  const work = dates.filter(d => !isWeekend(d));
+  const sched = work.map(d => O.asg.filter(a => ids.has(a.tech_id) && a.work_date === d && a.kind === "job").length);
+  const off = work.map(d => O.asg.filter(a => ids.has(a.tech_id) && a.work_date === d && a.kind !== "job").length);
+  const ps = projectsShown(dates);
+  const shortDays = ps.map(p => work.reduce((n, d) => n + Math.max(0, needFor(p.id, d) - O.asg.filter(a => a.project_id === p.id && a.work_date === d).length), 0));
+  const capDays = ts.length * work.length, schedDays = sum(sched, x => x), offDays = sum(off, x => x);
+  const one = work.length === 1;
+  return h("div", {class:"o-tiles"},
+    tile(one ? "Scheduled" : "Person-days scheduled", String(schedDays), capDays ? pct(schedDays / Math.max(1, capDays - offDays)) + " of available" + (one ? "" : " · " + ts.length + " techs") : ""),
+    tile(one ? "Not assigned" : "Unassigned person-days", String(Math.max(0, capDays - schedDays - offDays)), one ? "Free to send to a job" : "Free days across the crew", capDays - schedDays - offDays > ts.length ? "warn" : ""),
+    tile(one ? "Open slots" : "Unfilled person-days", String(sum(shortDays, x => x)), "Needed on jobs, nobody scheduled", sum(shortDays, x => x) ? "bad" : ""),
+    tile("Time off and training", String(offDays), one ? "people out today" : "person-days"));
+}
+function needsTable(dates) {
+  const work = dates.filter(d => !isWeekend(d));
+  const ps = projectsShown(dates); if (!ps.length) return null;
+  return panel("Needs vs scheduled", "Crew each job needs (from its crew plan) against who's on the board",
+    h("div", {class:"tbl-wrap flat"}, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Job"), h("th", null, "PM"), work.map(d => h("th", {class:"num" + (d === TODAY ? " now" : "")}, work.length > 5 ? dayName(d) : dayLabel(d))), h("th", null, ""))),
+      h("tbody", null, ps.map(p => { const gaps = work.map(d => needFor(p.id, d) - O.asg.filter(a => a.project_id === p.id && a.work_date === d).length);
+        return h("tr", null, h("td", null, h("span", {class:"mp-chip " + pjClass(p.id)}, p.number), " ", byId(O.projects, p.id) ? h("button", {class:"linkish", onclick:() => openProject(p.id)}, p.name) : p.name),
+          h("td", null, personName(p.pm_id)),
+          work.map((d, i) => { const n = needFor(p.id, d), s = n - gaps[i];
+            return h("td", {class:"num" + (gaps[i] > 0 ? " bad-t" : "") + (d === TODAY ? " now" : ""), title:s + " scheduled of " + n + " needed"}, n || s ? s + "/" + n : "—"); }),
+          h("td", null, !byId(O.projects, p.id) ? "" : gaps.some(g => g > 0) ? (canEdit(p) ? h("button", {class:"btn small", onclick:() => openAssign({projectId:p.id, date:work[Math.max(0, gaps.findIndex(g => g > 0))]})}, "Fill") : chip("bad", "Short")) : chip("go", "Covered"))); })))));
+}
+function viewManpower() {
+  const wrap = h("div", {class:"o-stack"});
+  const base = O.mpDate || TODAY;
+  if (!O.techs.length) {
+    wrap.append(mpToolbar("", [TODAY]), h("div", {class:"panel"}, emptyState("No field techs yet", role() === "admin" || role() === "lead" ? "Add your techs with + Tech, then assign them to jobs." : "An admin or department lead adds the tech roster first.")));
+    return wrap;
+  }
+  if (O.mpMode === "day") {
+    let d = base; while (isWeekend(d)) d = addDays(d, 1);
+    wrap.append(mpToolbar(dayLabel(d) + (d === TODAY ? " · today" : ""), [d]), mpSummary([d]), dayBoard(d));
+  } else if (O.mpMode === "month") {
+    const m0 = monthStart(base), days = []; for (let d = m0; d < addMonths(m0, 1); d = addDays(d, 1)) if (!isWeekend(d)) days.push(d);
+    wrap.append(mpToolbar(new Date(m0 + "T12:00:00").toLocaleDateString("en-US", {month:"long", year:"numeric"}), days), mpSummary(days), monthBoard(days));
+  } else {
+    const days = weekDates(mondayOf(base));
+    wrap.append(...[mpToolbar("Week of " + fmtDate(days[0]), days), mpSummary(days), weekBoard(days), needsTable(days)].filter(Boolean));
+  }
+  wrap.append(h("p", {class:"muted small"}, role() === "pm" ? "You can schedule people onto your own jobs and take them off. Someone already on another job that day has to be released by that job's PM first."
+    : role() === "field" ? "Your crew schedule. Your PM makes changes." : "PMs schedule people onto their own jobs. Department leads can also record time off and training for their techs."));
+  return wrap;
+}
+function groupedRows(ts, cells) {
+  const rows = []; let last = null;
+  for (const t of ts) {
+    if (t.department !== last) { last = t.department; rows.push(h("tr", {class:"mp-group"}, h("td", {class:"stick", colspan:"1"}, h("b", null, t.department || "No department")), h("td", {colspan:"60"}))); }
+    rows.push(h("tr", {class: t.profile_id === S.me.id ? "me" : null}, h("td", {class:"stick"},
+      h("button", {class:"linkish who", disabled: !(role() === "admin" || (role() === "lead" && t.department === S.me.department)), onclick:() => openTech(t)}, t.name), h("small", null, t.trade || "")), cells(t)));
+  }
+  return rows;
+}
+function weekBoard(days) {
+  const ts = techsShown();
+  const foot = days.map(d => O.asg.filter(a => ts.some(t => t.id === a.tech_id) && a.work_date === d && a.kind === "job").length);
+  return panel("Week board", "Click a day to assign or change it", h("div", {class:"tbl-wrap flat mp-board"}, h("table", null,
+    h("thead", null, h("tr", null, h("th", {class:"stick"}, "Tech"), days.map(d => h("th", {class:"mp-h" + (d === TODAY ? " today" : "")}, dayLabel(d))))),
+    h("tbody", null, groupedRows(ts, t => days.map(d => asgCell(t, d)))),
+    h("tfoot", null, h("tr", null, h("td", {class:"stick"}, "Scheduled"), foot.map((n, i) => h("td", {class:"num" + (days[i] === TODAY ? " today" : "")}, n + " / " + ts.length)))))));
+}
+function monthBoard(days) {
+  const ts = techsShown();
+  const util = t => { const w = days.filter(d => d <= addMonths(monthStart(days[0]), 1)); const n = w.filter(d => { const a = asgOn(t.id, d); return a && a.kind === "job"; }).length; return w.length ? n / w.length : 0; };
+  const used = [...new Set(O.asg.filter(a => a.project_id && days.includes(a.work_date) && ts.some(t => t.id === a.tech_id)).map(a => a.project_id))];
+  return panel("Month board", "Each square is a workday; the number is the job", h("div", {class:"tbl-wrap flat mp-board month"}, h("table", null,
+    h("thead", null, h("tr", null, h("th", {class:"stick"}, "Tech"), days.map(d => h("th", {class:"mp-h" + (d === TODAY ? " today" : "") + (DOW(d) === 1 ? " mon" : "")}, h("span", null, dayName(d)[0]), h("b", null, d.slice(8).replace(/^0/, "")))), h("th", {class:"num"}, "Booked"))),
+    h("tbody", null, groupedRows(ts, t => [...days.map(d => asgCell(t, d, "s")), h("td", {class:"num" + (util(t) < .5 ? " warn-t" : "")}, pct(util(t)))])),
+    h("tfoot", null, h("tr", null, h("td", {class:"stick"}, "Scheduled"), days.map(d => h("td", {class:"num" + (d === TODAY ? " today" : "")}, String(O.asg.filter(a => ts.some(t => t.id === a.tech_id) && a.work_date === d && a.kind === "job").length))), h("td"))))),
+    used.length ? h("div", {class:"o-keys pad"}, used.map(id => h("span", null, h("span", {class:"mp-chip " + pjClass(id)}, short(proj(id))), " " + proj(id).name))) : null);
+}
+function dayBoard(d) {
+  const ts = techsShown(), ids = new Set(ts.map(t => t.id));
+  const ps = projectsShown([d]);
+  const todays = O.asg.filter(a => a.work_date === d && ids.has(a.tech_id));
+  const free = ts.filter(t => !todays.some(a => a.tech_id === t.id));
+  const out = todays.filter(a => a.kind !== "job");
+  const card = p => { const crew = todays.filter(a => a.project_id === p.id).map(a => tech(a.tech_id)).sort((a, b) => a.sort - b.sort), n = byId(O.projects, p.id) ? needFor(p.id, d) : crew.length, edit = canEdit(p);
+    return h("div", {class:"mp-card"},
+      h("div", {class:"mp-card-h"}, h("span", {class:"mp-chip " + pjClass(p.id)}, p.number), byId(O.projects, p.id) ? h("button", {class:"linkish", onclick:() => openProject(p.id)}, p.name) : h("b", {class:"grow"}, p.name),
+        h("span", {class:"chip " + (crew.length < n ? "bad" : "go")}, crew.length + " of " + n)),
+      h("div", {class:"muted small"}, p.department + " · PM " + personName(p.pm_id)),
+      h("ul", null, crew.map(t => h("li", null, h("span", null, t.name, h("small", null, t.trade || "")),
+        edit ? h("button", {class:"btn small", "aria-label":"Take " + t.name + " off this job", onclick:() => openAssign({techId:t.id, date:d, projectId:p.id})}, "Change") : null)),
+        crew.length < n ? h("li", {class:"open"}, (n - crew.length) + " open " + (n - crew.length === 1 ? "slot" : "slots")) : null),
+      edit ? h("button", {class:"btn small", onclick:() => openAssign({projectId:p.id, date:d})}, "+ Add someone") : null); };
+  return h("div", {class:"o-stack"},
+    h("div", {class:"mp-cards"}, ps.map(card)),
+    h("div", {class:"o-two even"},
+      panel("Not assigned", people(free.length), free.length ? h("ul", {class:"mp-free"}, free.map(t => h("li", null, h("span", null, t.name, h("small", null, t.department + " · " + (t.trade || ""))),
+        role() === "pm" || role() === "admin" || role() === "lead" ? h("button", {class:"btn small", onclick:() => openAssign({techId:t.id, date:d})}, "Assign") : null))) : h("div", {class:"empty"}, "Everyone is on a job.")),
+      panel("Out", people(out.length), out.length ? h("ul", {class:"mp-free"}, out.map(a => h("li", null, h("span", null, tech(a.tech_id).name, h("small", null, (a.kind === "pto" ? "Time off" : "Training") + (a.note ? " · " + a.note : "")))))) : h("div", {class:"empty"}, "Nobody out."))));
+}
+function openAssign(opts) {
+  const r = role();
+  const jobs = O.projects.filter(p => p.phase !== "closed" && canEdit(p)).sort((a, b) => a.number.localeCompare(b.number));
+  const d = {tech_id:opts.techId || null, target:opts.projectId ? opts.projectId : (jobs[0] && r === "pm" ? jobs[0].id : ""), from:opts.date || TODAY, to:opts.date || TODAY, note:""};
+  const kinds = [...jobs.map(p => [p.id, p.number + " · " + p.name])];
+  if (r === "admin" || r === "lead") kinds.push(["pto", "Time off"], ["training", "Training"]);
+  const techOpts = O.techs.filter(t => t.active).sort((a, b) => a.department.localeCompare(b.department) || a.sort - b.sort).map(t => {
+    const a = asgOn(t.id, d.from); return [t.id, t.name + " · " + t.department + (a ? " (" + (a.kind === "job" ? proj(a.project_id).number : a.kind === "pto" ? "PTO" : "training") + ")" : " (free)")]; });
+  const rangeBox = h("div", {class:"o-actions", style:"grid-column:1/-1;justify-content:flex-start;border:0;padding:0"},
+    h("button", {class:"btn small", type:"button", onclick:() => { d.to = addDays(mondayOf(d.from), 4); document.getElementById("f-to").value = d.to; }}, "Rest of the week"),
+    h("button", {class:"btn small", type:"button", onclick:() => { d.to = addDays(mondayOf(d.from), 11); document.getElementById("f-to").value = d.to; }}, "Through next week"),
+    d.target && proj(d.target).end_date ? h("button", {class:"btn small", type:"button", onclick:() => { d.to = proj(d.target).end_date; document.getElementById("f-to").value = d.to; }}, "Through end of job") : null);
+  const cur = opts.techId && opts.date ? asgOn(opts.techId, opts.date) : null;
+  const body = h("div", {class:"form"},
+    fld(d, "tech_id", "Person", "select", {options:techOpts, blank:"Choose a tech", full:true}),
+    fld(d, "target", "Job", "select", {options:kinds, blank: kinds.length ? "Choose a job" : "You don't manage any active jobs", full:true}),
+    fld(d, "from", "From", "date"), fld(d, "to", "Through", "date"), rangeBox,
+    fld(d, "note", "Note (optional)", "text", {full:true}),
+    h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Weekdays only. If the person is already on another job, that job's PM has to release them first."));
+  const datesIn = () => { const out = []; for (let x = d.from; x <= d.to && out.length < 120; x = addDays(x, 1)) if (!isWeekend(x)) out.push(x); return out; };
+  const foot = [];
+  if (cur && canSchedule(cur.project_id, cur.tech_id, cur.kind)) foot.push(h("button", {class:"btn danger spacer", onclick: async () => {
+    const dates = datesIn().filter(x => { const a = asgOn(d.tech_id || cur.tech_id, x); return a && (a.project_id || a.kind) === (cur.project_id || cur.kind); });
+    const ok = await run(sb.from("assignments").delete().eq("tech_id", cur.tech_id).in("work_date", dates.length ? dates : [cur.work_date]),
+      "Removed " + tech(cur.tech_id).name + (dates.length > 1 ? " for " + dates.length + " days" : ""));
+    if (ok) { await reload("asg"); render(); closeDrawer(); }
+  }}, cur.kind === "job" ? "Take off this job" : "Remove time off"));
+  foot.push(h("button", {class:"btn" + (foot.length ? "" : " spacer"), onclick:() => closeDrawer()}, "Cancel"));
+  foot.push(h("button", {class:"btn primary", onclick: async e => {
+    if (!d.tech_id) { toast("Choose a person."); return; }
+    if (!d.target) { toast("Choose a job."); return; }
+    if (d.to < d.from) { toast("The end date is before the start date."); return; }
+    const kind = d.target === "pto" || d.target === "training" ? d.target : "job";
+    const projectId = kind === "job" ? d.target : null;
+    const rows = [], blocked = [];
+    for (const x of datesIn()) {
+      const a = asgOn(d.tech_id, x);
+      if (a && a.kind === kind && a.project_id === projectId) continue;
+      if (a && !canSchedule(a.project_id, a.tech_id, a.kind)) { blocked.push([x, a]); continue; }
+      rows.push({tech_id:d.tech_id, work_date:x, kind, project_id:projectId, note:nullify(d.note), created_by:S.me.id});
+    }
+    const btn = e.currentTarget; btn.disabled = true;
+    let ok = true;
+    if (rows.length) ok = !!(await run(sb.from("assignments").upsert(rows, {onConflict:"tech_id,work_date"})));
+    btn.disabled = false;
+    await reload("asg"); render();
+    if (blocked.length) {
+      const b = blocked[0][1], p = proj(b.project_id);
+      toast((rows.length ? "Scheduled " + rows.length + " days. " : "") + tech(d.tech_id).name + " is on " + (b.kind === "job" ? p.number + " (" + personName(p.pm_id) + ")" : "time off") + " " + plural(blocked.length, "day") + ". Ask " + (b.kind === "job" ? personName(p.pm_id) : "their lead") + " to release them.");
+    } else if (ok) toast(rows.length ? tech(d.tech_id).name + " scheduled for " + plural(rows.length, "day") : "Already scheduled");
+    if (ok) closeDrawer();
+  }}, "Save"));
+  openDrawer({title: cur ? tech(cur.tech_id).name + " · " + dayLabel(cur.work_date) : "Assign crew", body, foot});
+}
+function openTech(t) {
+  const lead = role() === "lead";
+  const d = t ? {...t} : {name:"", department: lead ? S.me.department : (O.mpDept || deptKeys()[0]), trade:"Tech", active:true, sort:99, profile_id:null};
+  const logins = activePeople().filter(x => x.ops_role === "field").map(x => [x.id, x.full_name || x.email]);
+  const body = [fld(d, "name", "Name", "text", {full:true}), fld(d, "department", "Department", "select", {options:deptKeys(), blank:false, readonly:lead}),
+    fld(d, "trade", "Trade", "select", {options:["Foreman", "Lead tech", "Tech", "Apprentice", "Climber", "Climber / foreman", "RF engineer", "Project coordinator"], blank:false}),
+    fld(d, "profile_id", "App login (lets them see their schedule and add field logs)", "select", {options:logins, blank:"No login", full:true}),
+    t ? h("label", {class:"field check"}, h("input", {type:"checkbox", checked:d.active !== false, onchange: e => { d.active = e.target.checked; }}), h("span", null, "Active (uncheck when someone leaves; their history stays)")) : null];
+  drawerForm(t ? t.name : "Add a field tech", d, body.filter(Boolean),
+    () => { if (!(d.name || "").trim()) { toast("Add a name."); return false; }
+      return saveRow("techs", {name:d.name.trim(), department:d.department, trade:d.trade, profile_id:nullify(d.profile_id), active:d.active !== false, sort:d.sort || 99}, t && t.id); });
+}
+
 // ---------------------------------------------------------------- routing
-const VIEW_FN = {"ops-overview":viewOverview, "ops-projects":viewProjects, "ops-project":viewProject, "ops-handoffs":viewHandoffs, "ops-billing":viewBilling, handoffs:viewHandoffs};
+const VIEW_FN = {"ops-overview":viewOverview, "ops-projects":viewProjects, "ops-project":viewProject, "ops-handoffs":viewHandoffs, "ops-billing":viewBilling, "ops-manpower":viewManpower, handoffs:viewHandoffs};
 return {
   tables: Object.values(TABLES),
   load, changed,
@@ -859,9 +1102,10 @@ return {
   departments: () => deptKeys().length ? deptKeys() : ["Tower", "DAS", "Network", "DataComm", "Security"],
   views: () => {
     const r = role();
-    if (r === "field") return [["ops-projects", "My projects"]];
-    if (r === "pm") return [["ops-projects", "My projects"], ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
-    return [["ops-overview", "Overview"], ["ops-projects", "Projects"], ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
+    const mp = O.techs.length || role() === "admin" ? [["ops-manpower", r === "field" ? "Schedule" : "Manpower"]] : [];
+    if (r === "field") return [["ops-projects", "My projects"], ...mp];
+    if (r === "pm") return [["ops-projects", "My projects"], ...mp, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
+    return [["ops-overview", "Overview"], ["ops-projects", "Projects"], ...mp, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
   },
   salesViews: () => O.missing ? [] : [["handoffs", "Handoffs"]],
   hiddenViews: () => ["ops-project"],

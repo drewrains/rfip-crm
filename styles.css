@@ -329,3 +329,50 @@ td.wrap{white-space:normal;min-width:160px}
 .o-billgrid td.miss{background:var(--bad-soft);color:var(--bad);font-family:var(--f-body);font-weight:600;font-size:11.5px}
 .o-billgrid tr.pending td{background:var(--bg)} .o-billgrid tr.pending td.now{background:var(--warn-soft)}
 .o-billgrid tfoot td{font-weight:600;background:var(--sunk)}
+
+/* ---------------------------------------------------------------- manpower schedule */
+.mp-nav{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.mp-label{font-family:var(--f-display);font-size:18px;font-weight:600;letter-spacing:.02em;margin-left:6px}
+.mp-board table{border-collapse:separate;border-spacing:0;min-width:760px}
+.mp-board th,.mp-board td{background:var(--panel);white-space:nowrap}
+.mp-board th{background:var(--sunk)}
+.mp-board .stick{position:sticky;left:0;z-index:2;min-width:180px;border-right:1px solid var(--line)}
+.mp-board th.stick{z-index:3;background:var(--sunk)}
+.mp-board .stick small{color:var(--muted);margin-left:6px;font-size:12px}
+.mp-board .who{font-weight:500;background:none;border:0;padding:0;color:inherit;text-align:left}
+.mp-board .who.linkish:not(:disabled){color:var(--accent);cursor:pointer}
+.mp-board tr.mp-group td{background:var(--bg);padding-top:12px;font-family:var(--f-display);font-size:16px;letter-spacing:.03em;text-transform:uppercase;border-bottom:1px solid var(--line)}
+.mp-board tr.me td{background:var(--accent-soft)}
+.mp-board th.mp-h{text-align:center}
+.mp-board th.today,.mp-board td.today{background:var(--warn-soft)}
+.mp-cell{text-align:center;padding:5px 6px;min-width:96px}
+.mp-cell.edit{cursor:pointer}
+.mp-cell.edit:hover{outline:2px solid var(--accent);outline-offset:-2px}
+.mp-cell.wkend{background:var(--bg)}
+.mp-chip{display:inline-block;padding:2px 8px;border-radius:4px;font-family:var(--f-mono);font-size:12px;font-weight:500;white-space:nowrap}
+.mp-chip.off{background:var(--sunk);color:var(--muted);border:1px dashed var(--line)}
+.month .mp-cell{min-width:30px;padding:3px 2px}
+.month .mp-chip{padding:1px 3px;font-size:11px;display:block}
+.month th.mp-h{padding:6px 2px;min-width:30px;line-height:1.1}
+.month th.mp-h span{display:block;font-size:10px}
+.month th.mp-h b{font-family:var(--f-mono);font-weight:500;color:var(--fg)}
+.month th.mon,.month td.mon{border-left:1px solid var(--line)}
+.mp-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.mp-card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;display:grid;gap:6px;align-content:start}
+.mp-card-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mp-card-h .linkish{font-weight:600;flex:1;min-width:0}
+.mp-card ul,.mp-free{list-style:none;margin:0;padding:0}
+.mp-card li,.mp-free li{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line)}
+.mp-free li{padding:7px 14px}
+.mp-card li:last-child,.mp-free li:last-child{border-bottom:0}
+.mp-card li small,.mp-free li small{color:var(--muted);margin-left:6px;font-size:12px}
+.mp-card li.open{color:var(--bad);font-weight:500;border:1px dashed var(--bad);border-radius:6px;padding:5px 8px;background:var(--bad-soft)}
+/* job colors, readable in both themes */
+.pj0{background:#dbe7fb;color:#173f86} .pj1{background:#dcf1e5;color:#145a35} .pj2{background:#fbecd5;color:#7a4400} .pj3{background:#f1def7;color:#5e2479}
+.pj4{background:#d7f0f2;color:#0d5660} .pj5{background:#f8dfe0;color:#8a1f25} .pj6{background:#e6e8c8;color:#4c5212} .pj7{background:#e3e0fa;color:#352c87}
+.pj8{background:#f6e2d2;color:#7a3a0e} .pj9{background:#dfe6ec;color:#2c3e50}
+@media (prefers-color-scheme: dark){
+  .pj0{background:#1c2c47;color:#9fc0ff} .pj1{background:#163527;color:#7fd8a4} .pj2{background:#3a2a12;color:#f0b05a} .pj3{background:#33203d;color:#d7a6ee}
+  .pj4{background:#123538;color:#7fd3dc} .pj5{background:#3d1a1d;color:#ff9a9e} .pj6{background:#2d2f17;color:#cdd47a} .pj7{background:#25224a;color:#b3abff}
+  .pj8{background:#3a2414;color:#f2a874} .pj9{background:#222d37;color:#a9bccb}}
+.mp-card-h .grow{flex:1;min-width:0}
