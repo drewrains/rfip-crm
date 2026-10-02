@@ -1120,6 +1120,7 @@ $("#newDeal").addEventListener("click", () => openDeal());
 
 // ---------------------------------------------------------------- team (admins)
 const OPS_COLS = () => !!(OPS && S.profiles.length && "ops_role" in S.profiles[0]);
+const FIN_COL = () => !!(S.profiles.length && "finance_approver" in S.profiles[0]);
 function viewTeam() {
   const wrap = h("div");
   wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Team")),
@@ -1127,11 +1128,11 @@ function viewTeam() {
   const list = S.profiles.slice().sort((a, b) => (b.active - a.active) || (a.full_name || a.email).localeCompare(b.full_name || b.email));
   wrap.append(h("div", {class:"tbl-wrap"}, h("table", null,
     h("thead", null, h("tr", null, h("th", null, "Name"), h("th", null, "Email"), h("th", null, "Access level"), h("th", null, "Job role"), h("th", null, "Reports to"),
-      OPS_COLS() ? [h("th", null, "Operations role"), h("th", null, "Department"), h("th", null, "Sales side")] : null,
+      OPS_COLS() ? [h("th", null, "Operations role"), h("th", null, "Department"), h("th", null, "Sales side"), FIN_COL() ? h("th", {title:"Gives final approval on project expenses after the PM"}, "Expense final approval") : null] : null,
       h("th", null, "Access"), h("th", {class:"num"}, "Deals owned"), h("th"))),
     h("tbody", null, list.map(p => {
       const d = {full_name:p.full_name, role:p.role, active:p.active, manager_id:p.manager_id || null, job_role:p.job_role || null};
-      if (OPS_COLS()) Object.assign(d, {ops_role:p.ops_role || null, department:p.department || null, sales_access:p.sales_access !== false});
+      if (OPS_COLS()) Object.assign(d, {ops_role:p.ops_role || null, department:p.department || null, sales_access:p.sales_access !== false}, FIN_COL() ? {finance_approver:!!p.finance_approver} : {});
       const owned = S.deals.filter(x => x.owner_id === p.id).length;
       return h("tr", null,
         h("td", null, h("input", {class:"inp", id:"tn-" + p.id, value:p.full_name || "", "aria-label":"Name", oninput: e => { d.full_name = e.target.value; }})),
@@ -1147,7 +1148,9 @@ function viewTeam() {
           h("td", null, h("select", {class:"inp", "aria-label":"Department", onchange: e => { d.department = e.target.value || null; }},
             h("option", {value:""}, "—"), OPS.departments().map(k => h("option", {value:k, selected:p.department === k}, k)))),
           h("td", null, h("select", {class:"inp", "aria-label":"Sales side", onchange: e => { d.sales_access = e.target.value === "on"; }},
-            h("option", {value:"on", selected:p.sales_access !== false}, "Yes"), h("option", {value:"off", selected:p.sales_access === false}, "No")))] : null,
+            h("option", {value:"on", selected:p.sales_access !== false}, "Yes"), h("option", {value:"off", selected:p.sales_access === false}, "No"))),
+          FIN_COL() ? h("td", null, h("select", {class:"inp", "aria-label":"Expense final approval", onchange: e => { d.finance_approver = e.target.value === "on"; }},
+            h("option", {value:"off", selected:!p.finance_approver}, "No"), h("option", {value:"on", selected:!!p.finance_approver}, "Yes (CFO)"))) : null] : null,
         h("td", null, h("select", {class:"inp", "aria-label":"Access", onchange: e => { d.active = e.target.value === "on"; }}, h("option", {value:"on", selected:p.active}, "Active"), h("option", {value:"off", selected:!p.active}, "Turned off"))),
         h("td", {class:"num"}, owned ? h("button", {class:"linkish", onclick:() => { S.view = "deals"; S.stageFilter = "all"; S.ownerFilter = p.id; renderNow(); }}, String(owned)) : "0"),
         h("td", null, h("button", {class:"btn small", onclick: async () => {

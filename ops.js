@@ -11,19 +11,22 @@ const {h, sb, S, money, fmtDate, daysUntil, todayStr, run, toast, friendly, open
 // ---------------------------------------------------------------- data
 const TABLES = {projects:"projects", handoffs:"handoffs", depts:"departments", costs:"cost_lines", labor:"labor_weeks", ms:"milestones",
   cos:"change_orders", mats:"materials", logs:"daily_logs", plan:"crew_plan", roster:"crew_roster", closeout:"closeout_items",
-  bills:"billings", safety:"safety_events", techs:"techs", asg:"assignments", docs:"documents", wu:"weekly_updates", rcpts:"material_receipts"};
+  bills:"billings", safety:"safety_events", techs:"techs", asg:"assignments", docs:"documents", wu:"weekly_updates", rcpts:"material_receipts",
+  items:"plan_items", exps:"expenses", clinks:"customer_links"};
+// added later than the rest; if a database hasn't been given these yet, the rest of operations still works
+const OPTIONAL = new Set(["items", "exps", "clinks"]);
 const KEY_OF = Object.fromEntries(Object.entries(TABLES).map(([k, t]) => [t, k]));
 const O = {missing:false, detail:null, q:"", dept:"", pm:"", phase:"active", hand:true, mpMode:"week", mpDate:null, mpDept:""};
 try { const m = localStorage.getItem("rfipops.mpMode"); if (m) O.mpMode = m; } catch (e) {}
 for (const k of Object.keys(TABLES)) O[k] = [];
-O.dir = []; O.docFolder = ""; O.wuWeek = null;
+O.dir = []; O.docFolder = ""; O.wuWeek = null; O.off = new Set(); O.taskWho = "me";
 try { const d = localStorage.getItem("rfipops.detail"); if (d) O.detail = d; } catch (e) {}
 
 async function fetchTable(key) {
   const out = [];
   for (let from = 0; ; from += 1000) {
     const {data, error} = await sb.from(TABLES[key]).select("*").range(from, from + 999);
-    if (error) { if (error.code === "42P01" || /does not exist|schema cache/i.test(error.message || "")) O.missing = true; return out; }
+    if (error) { if (OPTIONAL.has(key)) O.off.add(key); else if (error.code === "42P01" || /does not exist|schema cache/i.test(error.message || "")) O.missing = true; return out; }
     out.push(...data);
     if (data.length < 1000) break;
   }
@@ -105,7 +108,9 @@ function calc(p) {
   const projH = done > .05 ? hu / done : Math.max(hb, hu);
   const cl = O.costs.filter(c => c.project_id === p.id).sort((a, b) => a.sort - b.sort);
   const nlBud = sum(cl, c => c.budget), nlFc = sum(cl, c => c.forecast ?? c.budget), nlAct = sum(cl, c => c.actual);
-  const budCost = hb * rate + nlBud, fcCost = projH * rate + nlFc;
+  const ex = O.exps.filter(e => e.project_id === p.id);
+  const expAppr = sum(ex.filter(e => e.status === "approved"), e => e.amount), expPend = sum(ex.filter(e => ["submitted", "pm_approved"].includes(e.status)), e => e.amount);
+  const budCost = hb * rate + nlBud, fcCost = projH * rate + nlFc + expAppr;
   const bills = O.bills.filter(b => b.project_id === p.id);
   const billed = sum(bills.filter(b => b.kind === "billed"), b => b.amount);
   const earned = total * done;
@@ -116,7 +121,7 @@ function calc(p) {
   const roster = scheduleRoster(p.id);
   const staffed = new Set(O.asg.filter(a => a.project_id === p.id && a.work_date >= TODAY && a.work_date <= addDays(TODAY, 14)).map(a => a.tech_id)).size;
   const r = {
-    cos, coAppr, coPend, unpriced, total, done, lw, hu, hb, rate, projH, cl, nlBud, nlFc, nlAct, budCost, fcCost,
+    cos, coAppr, coPend, unpriced, total, done, ex, expAppr, expPend, lw, hu, hb, rate, projH, cl, nlBud, nlFc, nlAct, budCost, fcCost,
     estM: total ? (total - budCost) / total : 0, fcM: total ? (total - fcCost) / total : 0, fade: fcCost - budCost,
     bills, billed, earned, ready: Math.max(0, earned - billed), backlog: Math.max(0, total - earned), left: Math.max(0, total - billed),
     retH: billed * (Number(p.retainage_pct) || 0) / 100,
@@ -152,6 +157,8 @@ function alertsFor(list) {
     for (const m of c.backordered) out.push({sev:"warn", tag:"Material", what:`${m.item} backordered${m.eta ? " to " + fmtDate(m.eta) : ""}`, where, p});
     if (c.coPend) out.push({sev:"warn", tag:"Change order", what:`${compact(c.coPend)} in change orders waiting on the customer`, where, p});
     if (c.unpriced) out.push({sev:"warn", tag:"Change order", what:`${plural(c.unpriced, "change order")} logged but not priced`, where, p});
+    const lateItems = O.items.filter(i => i.project_id === p.id && isLate(i));
+    if (lateItems.length) out.push({sev: lateItems.length > 3 ? "crit" : "warn", tag:"Plan", what:`${plural(lateItems.length, "plan task")} overdue` + (lateItems.length === 1 ? `: ${lateItems[0].title}` : ""), where, p});
     if (O.wu.length && updateState(p).missing) out.push({sev:"warn", tag:"Update", what:"Weekly update missing for the week of " + fmtDate(reportWeek()), where, p});
     if (p.phase === "closeout" && (c.docsOpen.length || c.ready > 1000)) {
       const bits = []; if (c.docsOpen.length) bits.push(plural(c.docsOpen.length, "closeout item") + " open"); if (c.ready > 1000) bits.push(compact(c.ready) + " not billed");
@@ -412,6 +419,7 @@ function viewProject() {
     money ? tile("Ready to bill", compact(c.ready), "Billed " + compact(c.billed) + " · " + compact(c.retH) + " retainage held") : null));
 
   if (opsView && role() !== "field" || O.wu.some(u => u.project_id === p.id)) wrap.append(updatePanel(p, c, edit));
+  if (opsView && featureOn("items")) wrap.append(planPanel(p, edit));
   if (role() === "field") wrap.append(logPanel(p));
   if (opsView) {
     const over = Math.round(c.projH - c.hb);
@@ -428,7 +436,9 @@ function viewProject() {
   if (money) wrap.append(costPanel(p, c, edit));
   if (opsView) wrap.append(matPanel(p, c, edit));
   wrap.append(h("div", {class:"o-two even"}, opsView && role() !== "field" ? logPanel(p) : null, h("div", {class:"o-stack"}, opsView ? coPanel(p, c, edit, money) : null, rosterPanel(p, c, edit), closeoutPanel(p, c, edit))));
+  if (opsView && featureOn("exps")) wrap.append(expensePanel(p));
   if (opsView) wrap.append(docsPanel(p));
+  if (featureOn("clinks") && (edit || role() === "viewer")) wrap.append(customerPanel(p, edit));
   if (money) wrap.append(projectBilling(p, c, edit));
   return wrap;
 }
@@ -488,8 +498,9 @@ function costPanel(p, c, edit) {
   return panel("Cost to complete", "Budget is the estimate accepted at handoff plus approved change orders", h("div", {class:"tbl-wrap flat"}, h("table", null,
     h("thead", null, h("tr", null, h("th", null, "Cost code"), ["Budget", "Committed", "Actual to date", "Forecast at completion", "Variance"].map(t => h("th", {class:"num"}, t)))),
     h("tbody", null, row("Labor (" + num(c.hb) + " hrs at $" + c.rate + ")", laborBud, null, laborAct, laborFc),
-      c.cl.map(l => row(l.label, Number(l.budget), l.committed == null ? null : Number(l.committed), Number(l.actual), Number(l.forecast ?? l.budget), edit ? () => openCost(p, l) : null))),
-    h("tfoot", null, h("tr", null, h("td", null, h("b", null, "Total cost")), h("td", {class:"num"}, money(c.budCost)), h("td"), h("td", {class:"num"}, money(laborAct + c.nlAct)), h("td", {class:"num"}, money(c.fcCost)),
+      c.cl.map(l => row(l.label, Number(l.budget), l.committed == null ? null : Number(l.committed), Number(l.actual), Number(l.forecast ?? l.budget), edit ? () => openCost(p, l) : null)),
+      c.ex.length ? row("Field expenses (approved" + (c.expPend ? "; " + compact(c.expPend) + " waiting on approval" : "") + ")", 0, null, c.expAppr, c.expAppr) : null),
+    h("tfoot", null, h("tr", null, h("td", null, h("b", null, "Total cost")), h("td", {class:"num"}, money(c.budCost)), h("td"), h("td", {class:"num"}, money(laborAct + c.nlAct + c.expAppr)), h("td", {class:"num"}, money(c.fcCost)),
       h("td", {class:"num " + (c.budCost - c.fcCost < -1000 ? "bad-t" : "")}, (c.budCost - c.fcCost < 0 ? "−" : "") + money(Math.abs(c.budCost - c.fcCost)))),
       h("tr", null, h("td", null, h("b", null, "Margin")), h("td", {class:"num"}, pct(c.estM)), h("td"), h("td"), h("td", {class:"num " + (c.fcM < c.estM - .02 ? "bad-t" : "")}, pct(c.fcM)), h("td"))))),
     edit ? h("div", {class:"o-actions"}, h("button", {class:"btn small", onclick:() => openCost(p)}, "+ Cost line")) : null);
@@ -1323,6 +1334,10 @@ function openUpdate(p, wk) {
   const d = cur ? {...cur, pct_complete:Number(cur.pct_complete)} : {pct_complete:Number(p.pct_complete), schedule_status: c.lateDays ? "at_risk" : "on_track",
     cost_status: c.fcM < c.estM - .05 ? "off_track" : c.fcM < c.estM - .02 ? "at_risk" : "on_track", safety_status:"on_track",
     accomplished: logs.map(l => fmtDate(l.log_date) + ": " + l.work).join("\n"), next_week:"", needs:"", customer_notes:""};
+  if (d.share_with_customer == null) d.share_with_customer = true;
+  const shareOn = featureOn("clinks");
+  const shareBox = shareOn ? h("label", {class:"field full check-row"}, h("input", {type:"checkbox", checked:d.share_with_customer !== false, onchange: e => { d.share_with_customer = e.target.checked; }}),
+    " Show \"Done this week\" and \"Plan for next week\" on the customer's status page", h("small", {class:"muted"}, " (needs, decisions and customer notes are never shown)")) : null;
   const facts = h("div", {class:"wu-facts"},
     h("div", null, h("span", {class:"k"}, "Last week's plan"), h("p", null, prev && prev.next_week || "—")),
     h("div", null, h("span", {class:"k"}, "This week"), h("p", null, [hrs ? num(hrs) + " labor hours" : "Hours not entered yet", plural(logs.length, "daily log"),
@@ -1335,7 +1350,7 @@ function openUpdate(p, wk) {
     fld(d, "accomplished", "Done this week", "textarea", {full:true}),
     fld(d, "next_week", "Plan for next week", "textarea", {full:true}),
     fld(d, "needs", "Needs and decisions (crew, material, customer, from leadership)", "textarea", {full:true}),
-    fld(d, "customer_notes", "Customer (relationship, requests, possible new work)", "textarea", {full:true})),
+    fld(d, "customer_notes", "Customer (relationship, requests, possible new work)", "textarea", {full:true}), shareBox),
     h("p", {class:"muted small"}, "Submitting also updates the project's percent complete, which drives earned revenue and the margin forecast."));
   openDrawer({title:"Weekly update · " + p.number + " · week of " + fmtDate(wk), body, foot:[
     h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel"),
@@ -1347,6 +1362,7 @@ function openUpdate(p, wk) {
       const row = {project_id:p.id, week_start:wk, author_id:S.me.id, pct_complete:v, schedule_status:d.schedule_status, cost_status:d.cost_status, safety_status:d.safety_status,
         accomplished:d.accomplished.trim(), next_week:nullify((d.next_week || "").trim()), needs:nullify((d.needs || "").trim()), customer_notes:nullify((d.customer_notes || "").trim()),
         submitted_at:new Date().toISOString(), updated_at:new Date().toISOString()};
+      if (shareOn) row.share_with_customer = d.share_with_customer !== false;
       let ok = !!(await run(sb.from("weekly_updates").upsert(row, {onConflict:"project_id,week_start"})));
       if (ok && v !== Number(p.pct_complete)) ok = !!(await run(sb.from("projects").update({pct_complete:v}).eq("id", p.id)));
       btn.disabled = false;
@@ -1499,8 +1515,294 @@ function openUpload(p, folder) {
     }}, "Upload")]});
 }
 
+// ---------------------------------------------------------------- project plan and tasks
+const PLAN_ST = [["not_started", "Not started", ""], ["in_progress", "In progress", "acc"], ["blocked", "Blocked", "bad"], ["done", "Done", "go"]];
+const planChip = s => { const x = PLAN_ST.find(y => y[0] === s) || PLAN_ST[0]; return chip(x[2], x[1]); };
+const opsPeople = () => activePeople().filter(x => x.role === "admin" || x.ops_role).sort((a, b) => (a.full_name || a.email).localeCompare(b.full_name || b.email));
+const itemsOf = pid => O.items.filter(i => i.project_id === pid);
+const dayDiff = (a, b) => Math.round((Date.parse(b + "T12:00:00Z") - Date.parse(a + "T12:00:00Z")) / 864e5);
+const isLate = i => i.status !== "done" && !!i.due_date && i.due_date < TODAY;
+const featureOn = k => !O.off.has(k);
+function planTree(pid) {
+  const all = itemsOf(pid), ids = new Set(all.map(i => i.id)), kids = new Map();
+  for (const i of all) { const k = i.parent_id && ids.has(i.parent_id) ? i.parent_id : ""; if (!kids.has(k)) kids.set(k, []); kids.get(k).push(i); }
+  for (const a of kids.values()) a.sort((x, y) => x.sort - y.sort || (x.start_date || "9").localeCompare(y.start_date || "9") || (x.created_at || "").localeCompare(y.created_at || ""));
+  const rows = [];
+  const walk = (k, depth) => { for (const i of kids.get(k) || []) { rows.push({i, depth}); walk(i.id, depth + 1); } };
+  walk("", 0);
+  return {rows, kids};
+}
+const descendants = (id, kids) => { const out = [], st = [...(kids.get(id) || [])]; while (st.length) { const x = st.pop(); out.push(x); st.push(...(kids.get(x.id) || [])); } return out; };
+const parentPath = i => { const out = []; let cur = i.parent_id ? byId(O.items, i.parent_id) : null, n = 0; while (cur && n++ < 12) { out.unshift(cur.title); cur = cur.parent_id ? byId(O.items, cur.parent_id) : null; } return out.join(" › "); };
+const canTick = (i, p) => (p && canEdit(p)) || i.assignee_id === S.me.id;
+async function setItemStatus(i, status) {
+  if (await run(sb.from("plan_items").update({status}).eq("id", i.id), status === "done" ? "Marked done" : "Reopened")) { await reload("items"); render(); }
+  else render();
+}
+function planPanel(p, edit) {
+  const {rows, kids} = planTree(p.id);
+  const items = itemsOf(p.id), done = items.filter(i => i.status === "done").length, late = items.filter(isLate).length;
+  const dates = items.flatMap(i => [i.start_date, i.due_date]).concat([p.start_date, p.end_date]).filter(Boolean).sort();
+  const t0 = dates[0], t1 = dates[dates.length - 1], span = t0 && t1 ? Math.max(1, dayDiff(t0, t1)) : 0;
+  const pos = d => span ? Math.max(0, Math.min(100, dayDiff(t0, d) / span * 100)) : 0;
+  const todayPos = span && TODAY >= t0 && TODAY <= t1 ? pos(TODAY) : null;
+  const body = rows.length ? h("div", {class:"tbl-wrap flat"}, h("table", {class:"plan-tbl"},
+    h("thead", null, h("tr", null, h("th", {class:"plan-ck"}, h("span", {class:"sr"}, "Done")), h("th", null, "Phase / task"), h("th", null, "Assigned to"), h("th", null, "Start"), h("th", null, "Due"),
+      h("th", null, "Status"), h("th", {class:"plan-tl"}, t0 ? fmtDate(t0) + " – " + fmtDate(t1) : "Timeline"), edit ? h("th", null, h("span", {class:"sr"}, "Add")) : null)),
+    h("tbody", null, rows.map(({i, depth}) => {
+      const sub = descendants(i.id, kids), nd = sub.filter(x => x.status === "done").length;
+      const s = i.start_date || i.due_date, e = i.due_date || i.start_date;
+      return h("tr", {class:"plan-r d" + Math.min(depth, 3) + (i.status === "done" ? " is-done" : "") + (isLate(i) ? " is-late" : "")},
+        h("td", {class:"plan-ck"}, canTick(i, p) ? h("input", {type:"checkbox", "aria-label":"Done: " + i.title, checked:i.status === "done", onchange: ev => setItemStatus(i, ev.target.checked ? "done" : "in_progress")}) : null),
+        h("td", {class:"plan-t", style:"padding-left:" + (8 + depth * 22) + "px"}, h("button", {class:"linkish", onclick:() => openPlanItem(p, i)}, i.title),
+          sub.length ? h("small", {class:"muted"}, " · " + nd + " of " + sub.length + " done") : null),
+        h("td", null, i.assignee_id ? personName(i.assignee_id) : h("span", {class:"muted"}, "—")),
+        h("td", {class:"mono nowrap"}, i.start_date ? fmtDate(i.start_date) : ""),
+        h("td", {class:"mono nowrap" + (isLate(i) ? " bad-t" : "")}, i.due_date ? fmtDate(i.due_date) : ""),
+        h("td", null, planChip(i.status)),
+        h("td", {class:"plan-tl"}, h("div", {class:"plan-track"}, todayPos != null ? h("i", {class:"plan-today", style:"left:" + todayPos + "%"}) : null,
+          s && span ? h("b", {class:"plan-bar st-" + i.status + (depth ? "" : " ph") + (isLate(i) ? " late" : ""), style:"left:" + pos(s) + "%;width:" + Math.max(1.5, pos(e) - pos(s)) + "%"}) : null)),
+        edit ? h("td", null, h("button", {class:"btn small", title:"Add a sub-task under " + i.title, onclick:() => openPlanItem(p, null, i.id)}, "+ Sub-task")) : null);
+    })))) : h("div", {class:"empty"}, edit ? "No plan yet. Start with the standard phases, or add your own, then put tasks and sub-tasks under each and assign them." : "No plan yet.");
+  return panel("Project plan", items.length ? plural(items.length, "item") + " · " + done + " done" + (late ? " · " + late + " overdue" : "") : "Phases, tasks and sub-tasks", body,
+    edit ? h("div", {class:"o-actions"}, !items.length ? h("button", {class:"btn small", onclick:() => addStarterPlan(p)}, "Start from the standard phases") : null,
+      h("button", {class:"btn primary small", onclick:() => openPlanItem(p, null, null)}, "+ Phase or task")) : null);
+}
+const STARTER = {
+  Tower: ["Mobilize and site walk", "Site prep and staging", "Install", "Test and commission", "Closeout"],
+  DAS: ["Mobilize and site walk", "Cable and pathway", "Install headend and antennas", "Test, optimize and commission", "Closeout"],
+  Network: ["Mobilize and staging", "Configure and stage equipment", "Install and cut over", "Test and acceptance", "Closeout"],
+  DataComm: ["Mobilize and site walk", "Rough-in and pathway", "Pull cable", "Terminate and dress", "Test and certify", "Closeout"],
+  Security: ["Mobilize and site walk", "Rough-in and pathway", "Install devices", "Program and test", "Train customer and closeout"],
+};
+async function addStarterPlan(p) {
+  const names = STARTER[p.department] || STARTER.DataComm;
+  const s = p.start_date || TODAY, e = p.end_date && p.end_date > s ? p.end_date : addDays(s, 30), span = Math.max(names.length, dayDiff(s, e));
+  const rows = names.map((title, k) => ({project_id:p.id, title, sort:k + 1, status:"not_started",
+    start_date:addDays(s, Math.round(span * k / names.length)), due_date:addDays(s, Math.max(0, Math.round(span * (k + 1) / names.length) - 1))}));
+  if (await run(sb.from("plan_items").insert(rows), "Added " + names.length + " phases")) { await reload("items"); render(); }
+}
+function openPlanItem(p, it, parentId) {
+  const edit = canEdit(p), ro = !edit;
+  const d = it ? {...it} : {title:"", parent_id:parentId || null, assignee_id:null, start_date:null, due_date:null, status:"not_started", notes:""};
+  const tree = planTree(p.id);
+  const bad = it ? new Set([it.id, ...descendants(it.id, tree.kids).map(x => x.id)]) : new Set();
+  const parents = tree.rows.filter(r => !bad.has(r.i.id)).map(r => [r.i.id, " ".repeat(r.depth) + r.i.title]);
+  const crumbs = it && it.parent_id ? parentPath(it) : parentId ? parentPath({parent_id:parentId}) : "";
+  const fields = [
+    crumbs ? h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Under: " + crumbs) : null,
+    fld(d, "title", "What needs doing", "text", {full:true, readonly:ro, placeholder:"e.g. Pull cable to IDF 2"}),
+    fld(d, "parent_id", "Sits under", "select", {options:parents, blank:"Top level (a phase)", full:true, readonly:ro}),
+    fld(d, "assignee_id", "Assigned to", "select", {options:opsPeople().map(x => [x.id, x.full_name || x.email]), blank:"Nobody yet", readonly:ro}),
+    fld(d, "status", "Status", "select", {options:PLAN_ST.map(x => [x[0], x[1]]), blank:false}),
+    fld(d, "start_date", "Start", "date", {readonly:ro}), fld(d, "due_date", "Due", "date", {readonly:ro}),
+    fld(d, "notes", "Notes", "textarea", {full:true}),
+    ro ? h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "You can update the status and notes. " + personName(p.pm_id) + " (the PM) changes the rest of the plan.") : null].filter(Boolean);
+  drawerForm((it ? "" : "New ") + (d.parent_id ? "task" : "phase or task").replace(/^./, m => m.toUpperCase()) + " · " + p.number, d, fields, async () => {
+    if (!(d.title || "").trim()) { toast("Give it a name."); return false; }
+    if (d.start_date && d.due_date && d.due_date < d.start_date) { toast("The due date is before the start."); return false; }
+    const row = ro ? {status:d.status, notes:nullify((d.notes || "").trim())}
+      : {project_id:p.id, title:d.title.trim(), parent_id:nullify(d.parent_id), assignee_id:nullify(d.assignee_id), start_date:nullify(d.start_date), due_date:nullify(d.due_date), status:d.status, notes:nullify((d.notes || "").trim())};
+    if (!it && !ro) row.sort = Math.max(0, ...itemsOf(p.id).filter(x => (x.parent_id || null) === row.parent_id).map(x => x.sort)) + 1;
+    return saveRow("plan_items", row, it && it.id);
+  }, it && edit ? del("plan_items", it.id) : null);
+}
+function viewTasks() {
+  const wrap = h("div", {class:"o-stack"});
+  const lead = ["admin", "lead", "pm", "viewer"].includes(role());
+  const who = O.taskWho || "me";
+  const mine = i => i.assignee_id === S.me.id;
+  const pick = i => who === "me" ? mine(i) : who === "all" ? true : who === "none" ? !i.assignee_id : i.assignee_id === who;
+  const all = O.items.filter(pick);
+  const open = all.filter(i => i.status !== "done").sort((a, b) => (a.due_date || "9999").localeCompare(b.due_date || "9999"));
+  const recent = all.filter(i => i.status === "done" && i.completed_at && i.completed_at.slice(0, 10) >= addDays(TODAY, -14)).sort((a, b) => b.completed_at.localeCompare(a.completed_at));
+  const groups = [["Overdue", open.filter(isLate), "bad"], ["Due in the next 7 days", open.filter(i => !isLate(i) && i.due_date && i.due_date <= addDays(TODAY, 7)), "warn"],
+    ["Later", open.filter(i => i.due_date && i.due_date > addDays(TODAY, 7)), ""], ["No due date", open.filter(i => !i.due_date), ""]].filter(g => g[1].length);
+  const peopleWith = [...new Set(O.items.filter(i => i.status !== "done" && i.assignee_id).map(i => i.assignee_id))].map(id => [id, personName(id)]).sort((a, b) => a[1].localeCompare(b[1]));
+  wrap.append(h("div", {class:"toolbar"}, h("h2", null, who === "me" ? "My tasks" : "Tasks"),
+    lead ? h("select", {"aria-label":"Whose tasks", class:"inp", style:"max-width:240px", onchange: e => { O.taskWho = e.target.value; render(); }},
+      [["me", "My tasks"], ["all", "Everyone on my projects"], ["none", "Not assigned yet"], ...peopleWith.filter(x => x[0] !== S.me.id)].map(([v, t]) => h("option", {value:v, selected:who === v}, t))) : null));
+  wrap.append(h("div", {class:"o-tiles"}, tile("Open", String(open.length), who === "me" ? "assigned to you" : ""), tile("Overdue", String(open.filter(isLate).length), "", open.some(isLate) ? "bad" : ""),
+    tile("Due this week", String(open.filter(i => !isLate(i) && i.due_date && i.due_date <= addDays(TODAY, 7)).length)), tile("Done, last 2 weeks", String(recent.length))));
+  const row = i => {
+    const p = byId(O.projects, i.project_id) || proj(i.project_id), path = parentPath(i);
+    return h("li", {class:"task-r" + (i.status === "done" ? " is-done" : "")},
+      canTick(i, p.id ? p : null) ? h("input", {type:"checkbox", "aria-label":"Done: " + i.title, checked:i.status === "done", onchange: ev => setItemStatus(i, ev.target.checked ? "done" : "in_progress")}) : h("span"),
+      h("div", {class:"task-main"}, h("button", {class:"linkish", onclick:() => p.id && openPlanItem(p, i)}, i.title),
+        h("small", null, [p.number ? p.number + " · " + p.name : "", path].filter(Boolean).join(" · "))),
+      who !== "me" ? h("span", {class:"muted small"}, i.assignee_id ? personName(i.assignee_id) : "Unassigned") : null,
+      planChip(i.status),
+      h("span", {class:"mono small nowrap" + (isLate(i) ? " bad-t" : "")}, i.due_date ? (isLate(i) ? dayDiff(i.due_date, TODAY) + "d late · " : "") + fmtDate(i.due_date) : "—"),
+      byId(O.projects, i.project_id) ? h("button", {class:"btn small", onclick:() => openProject(i.project_id)}, "Project") : null);
+  };
+  if (!open.length && !recent.length) wrap.append(h("div", {class:"panel"}, emptyState(who === "me" ? "Nothing assigned to you" : "No tasks here",
+    "Tasks come from each project's plan. The PM adds phases and tasks on the project page and assigns them.")));
+  for (const [title, list, cls] of groups) wrap.append(panel(title, plural(list.length, "task"), h("ul", {class:"task-list " + cls}, list.map(row))));
+  if (recent.length) wrap.append(h("details", {class:"o-hist panel-ish"}, h("summary", null, "Done in the last 2 weeks (" + recent.length + ")"), h("ul", {class:"task-list"}, recent.map(row))));
+  return wrap;
+}
+
+// ---------------------------------------------------------------- expenses
+const EXP_CAT = [["materials", "Materials"], ["equipment", "Equipment rental"], ["tools", "Tools"], ["fuel", "Fuel"], ["lodging", "Lodging"], ["meals", "Meals / per diem"],
+  ["travel", "Travel"], ["permits", "Permits and fees"], ["shipping", "Shipping"], ["other", "Other"]];
+const EXP_PAID = [["company_card", "Company card"], ["reimburse", "Paid myself (reimburse me)"], ["invoice", "Invoice / on account"]];
+const EXP_ST = {submitted:["Waiting on PM", "warn"], pm_approved:["Waiting on CFO", "acc"], approved:["Approved", "go"], rejected:["Sent back", "bad"]};
+const catName = k => (EXP_CAT.find(x => x[0] === k) || [k, k])[1];
+const paidName = k => (EXP_PAID.find(x => x[0] === k) || [k, k])[1];
+const isFin = () => !!(S.me && S.me.finance_approver);
+const canPmApprove = e => { const p = byId(O.projects, e.project_id); return e.status === "submitted" && !!p && canEdit(p); };
+const canCfoApprove = e => e.status === "pm_approved" && isFin();
+const canSendBack = e => (e.status === "submitted" && (canPmApprove(e) || isFin())) || (e.status === "pm_approved" && isFin());
+const waitingOnMe = () => O.exps.filter(e => canPmApprove(e) || canCfoApprove(e));
+const fullMoney = v => core.money(Number(v) || 0);
+function expTable(list, showProject) {
+  if (!list.length) return h("div", {class:"empty"}, "No expenses here.");
+  const trail = e => [e.pm_by ? "PM approved: " + personName(e.pm_by) + " " + fmtDate((e.pm_at || "").slice(0, 10)) : null,
+    e.cfo_by ? "Final approval: " + personName(e.cfo_by) + " " + fmtDate((e.cfo_at || "").slice(0, 10)) : null].filter(Boolean).join(" · ");
+  return h("div", {class:"tbl-wrap flat"}, h("table", {class:"exp-tbl"},
+    h("thead", null, h("tr", null, h("th", null, "Date"), showProject ? h("th", null, "Project") : null, h("th", null, "Category"), h("th", null, "Vendor and purpose"), h("th", null, "Logged by"),
+      h("th", {class:"num"}, "Amount"), h("th", null, "Status"), h("th", null, "Receipt"), h("th", null, h("span", {class:"sr"}, "Actions")))),
+    h("tbody", null, list.map(e => {
+      const p = byId(O.projects, e.project_id) || proj(e.project_id);
+      return h("tr", null, h("td", {class:"mono nowrap"}, fmtDate(e.spent_on)),
+        showProject ? h("td", null, p.number ? h("button", {class:"linkish", onclick:() => byId(O.projects, e.project_id) && openProject(e.project_id)}, p.number) : "—", h("div", {class:"muted small"}, p.name || "")) : null,
+        h("td", null, catName(e.category)),
+        h("td", null, h("div", null, e.vendor || "—"), e.description ? h("div", {class:"muted small"}, e.description) : null),
+        h("td", null, personName(e.submitted_by), h("div", {class:"muted small"}, paidName(e.paid_with))),
+        h("td", {class:"num mono"}, fullMoney(e.amount)),
+        h("td", {title:trail(e) || null}, chip((EXP_ST[e.status] || EXP_ST.submitted)[1], (EXP_ST[e.status] || EXP_ST.submitted)[0]), e.status === "rejected" && e.reject_reason ? h("div", {class:"small bad-t"}, e.reject_reason) : null,
+          trail(e) ? h("div", {class:"muted small"}, trail(e)) : null),
+        h("td", null, e.receipt_path ? h("button", {class:"linkish", onclick: async () => { const [u] = await signedUrls([e.receipt_path]); if (u) window.open(u, "_blank", "noopener"); else toast("Couldn't open the receipt."); }}, "View") : h("span", {class:"muted"}, "None")),
+        h("td", {class:"nowrap"},
+          canPmApprove(e) || canCfoApprove(e) ? h("button", {class:"btn small primary", onclick: ev => decideExpense(e, ev.currentTarget)}, canCfoApprove(e) ? "Final approve" : "Approve") : null,
+          canSendBack(e) ? h("button", {class:"btn small", onclick:() => openSendBack(e)}, "Send back") : null,
+          e.submitted_by === S.me.id && ["submitted", "rejected"].includes(e.status) && p.id ? h("button", {class:"btn small", onclick:() => openExpense(p, e)}, e.status === "rejected" ? "Fix and resubmit" : "Edit") : null));
+    }))));
+}
+async function decideExpense(e, btn) {
+  if (btn) btn.disabled = true;
+  const wasPm = e.status === "pm_approved";
+  const {error} = await sb.rpc("expense_decide", {eid:e.id, decision:"approve", reason:null});
+  if (btn) btn.disabled = false;
+  if (error) { toast(friendly(error)); return; }
+  toast(wasPm ? "Approved. It now counts toward the job cost." : "Approved. It's now with the CFO for final approval.");
+  await reload("exps"); render();
+}
+function openSendBack(e) {
+  const d = {reason:""};
+  openDrawer({title:"Send back " + fullMoney(e.amount) + " · " + (e.vendor || catName(e.category)), body:h("div", {class:"form"},
+    fld(d, "reason", "What needs fixing? " + personName(e.submitted_by) + " sees this.", "textarea", {full:true, placeholder:"e.g. Receipt is unreadable, retake the photo"})),
+    foot:[h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel"), h("button", {class:"btn primary", onclick: async () => {
+      if (!d.reason.trim()) { toast("Say what needs fixing."); return; }
+      const {error} = await sb.rpc("expense_decide", {eid:e.id, decision:"reject", reason:d.reason.trim()});
+      if (error) { toast(friendly(error)); return; }
+      closeDrawer(); toast("Sent back to " + personName(e.submitted_by)); await reload("exps"); render();
+    }}, "Send back")]});
+}
+function openExpense(p, e) {
+  const d = e ? {...e, amount:Number(e.amount)} : {spent_on:TODAY, category:"materials", amount:null, paid_with:"company_card", vendor:"", description:""};
+  const file = h("input", {type:"file", id:"f-receipt", class:"inp", accept:"image/*,application/pdf"});
+  const note = h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Goes to " + (p.pm_id ? personName(p.pm_id) + " (PM)" : "the PM") + " to approve, then to the CFO for final approval. Approved expenses count toward the job's cost.");
+  const body = h("div", null,
+    e && e.status === "rejected" ? h("div", {class:"o-due bad"}, h("b", null, "Sent back by " + personName(e.rejected_by)), h("span", null, e.reject_reason || "")) : null,
+    h("div", {class:"form"},
+      fld(d, "spent_on", "Date", "date"), fld(d, "amount", "Amount ($)", "number"),
+      fld(d, "category", "Category", "select", {options:EXP_CAT, blank:false}), fld(d, "paid_with", "Paid with", "select", {options:EXP_PAID, blank:false}),
+      fld(d, "vendor", "Vendor or store", "text", {full:true, placeholder:"e.g. Home Depot, Sunbelt Rentals, Hampton Inn"}),
+      fld(d, "description", "What it was for", "textarea", {full:true}),
+      h("div", {class:"field full"}, h("label", {for:"f-receipt"}, e && e.receipt_path ? "Replace the receipt (photo or PDF)" : "Receipt (take a photo or attach a PDF)"), file),
+      note));
+  const foot = [];
+  if (e && e.submitted_by === S.me.id && ["submitted", "rejected"].includes(e.status)) foot.push(deleteButton(async () => {
+    if (await run(sb.from("expenses").delete().eq("id", e.id), "Deleted")) { if (e.receipt_path) await sb.storage.from(BUCKET).remove([e.receipt_path]); await reload("exps"); render(); closeDrawer(); } }));
+  foot.push(h("button", {class:"btn" + (foot.length ? "" : " spacer"), onclick:() => closeDrawer()}, "Cancel"));
+  foot.push(h("button", {class:"btn primary", onclick: async ev => {
+    const amt = Number(d.amount);
+    if (!(amt > 0)) { toast("Enter the amount."); return; }
+    if (!d.spent_on) { toast("Enter the date."); return; }
+    if (!file.files.length && !(e && e.receipt_path)) { toast("Add a photo of the receipt."); return; }
+    const btn = ev.currentTarget; btn.disabled = true; btn.textContent = "Saving…";
+    let path = e ? e.receipt_path : null, uploaded = null;
+    if (file.files.length) {
+      const f = await shrinkImage(file.files[0]);
+      const safe = f.name.replace(/[^\w.\- ]+/g, "_").replace(/\s+/g, " ").slice(-100);
+      uploaded = p.id + "/expenses/" + Date.now() + "-" + Math.random().toString(36).slice(2, 6) + "-" + safe;
+      const {error} = await sb.storage.from(BUCKET).upload(uploaded, f, {contentType:f.type || "application/octet-stream", upsert:false});
+      if (error) { btn.disabled = false; btn.textContent = e ? "Resubmit" : "Submit"; toast("The receipt didn't upload: " + friendly(error)); return; }
+      path = uploaded;
+    }
+    const row = {project_id:p.id, spent_on:d.spent_on, category:d.category, amount:amt, paid_with:d.paid_with, vendor:nullify((d.vendor || "").trim()), description:nullify((d.description || "").trim()), receipt_path:path};
+    const res = e ? await run(sb.from("expenses").update(row).eq("id", e.id).select().single(), "Resubmitted to the PM")
+                  : await run(sb.from("expenses").insert(row).select().single(), "Submitted to the PM");
+    btn.disabled = false; btn.textContent = e ? "Resubmit" : "Submit";
+    if (!res) { if (uploaded) await sb.storage.from(BUCKET).remove([uploaded]); return; }
+    if (uploaded && e && e.receipt_path && e.receipt_path !== uploaded) await sb.storage.from(BUCKET).remove([e.receipt_path]);
+    closeDrawer(); await reload("exps"); render();
+  }}, e ? "Resubmit" : "Submit"));
+  openDrawer({title:(e ? "Expense · " : "Log an expense · ") + p.number, body, foot});
+}
+function expensePanel(p) {
+  const list = O.exps.filter(e => e.project_id === p.id).sort((a, b) => b.spent_on.localeCompare(a.spent_on) || (b.created_at || "").localeCompare(a.created_at || ""));
+  const appr = sum(list.filter(e => e.status === "approved"), e => e.amount), pend = sum(list.filter(e => ["submitted", "pm_approved"].includes(e.status)), e => e.amount);
+  const sub = role() === "field" ? "The expenses you've logged on this job" : list.length ? fullMoney(appr) + " approved" + (pend ? " · " + fullMoney(pend) + " waiting on approval" : "") : "Receipts from the field, approved by the PM and then the CFO";
+  return panel("Expenses", sub, expTable(list, false),
+    h("div", {class:"o-actions"}, h("button", {class:"btn primary small", onclick:() => openExpense(p)}, "+ Log an expense")));
+}
+function viewExpenses() {
+  const wrap = h("div", {class:"o-stack"});
+  const me = waitingOnMe().sort((a, b) => a.spent_on.localeCompare(b.spent_on));
+  const mine = O.exps.filter(e => e.submitted_by === S.me.id).sort((a, b) => b.spent_on.localeCompare(a.spent_on));
+  const others = O.exps.filter(e => e.submitted_by !== S.me.id && !me.includes(e));
+  const month = TODAY.slice(0, 7);
+  const tot = f => sum(O.exps.filter(f), e => e.amount);
+  wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Expenses"),
+    O.projects.length ? h("select", {class:"inp", style:"max-width:280px", "aria-label":"Log an expense on", onchange: e => { const p = byId(O.projects, e.target.value); e.target.value = ""; if (p) openExpense(p); }},
+      h("option", {value:""}, "+ Log an expense on…"), O.projects.filter(p => p.phase !== "closed").map(p => h("option", {value:p.id}, p.number + " · " + p.name))) : null));
+  wrap.append(h("div", {class:"o-tiles"},
+    tile("Waiting on you", String(me.length), me.length ? fullMoney(sum(me, e => e.amount)) : isFin() ? "final approvals" : "approvals", me.length ? "warn" : ""),
+    role() !== "field" ? tile("Waiting on PMs", fullMoney(tot(e => e.status === "submitted")), plural(O.exps.filter(e => e.status === "submitted").length, "expense")) : null,
+    role() !== "field" ? tile("Waiting on the CFO", fullMoney(tot(e => e.status === "pm_approved")), plural(O.exps.filter(e => e.status === "pm_approved").length, "expense")) : null,
+    tile("Approved this month", fullMoney(tot(e => e.status === "approved" && (e.cfo_at || "").slice(0, 7) === month)), role() === "field" ? "yours" : "")));
+  wrap.append(panel(isFin() ? "Waiting on you" : "Waiting on your approval", isFin() ? "PM-approved expenses need your final approval; submitted ones on your projects need your PM approval" : "Expenses logged on your projects",
+    me.length ? expTable(me, true) : h("div", {class:"empty"}, "Nothing waiting on you.")));
+  wrap.append(panel("Expenses you logged", plural(mine.length, "expense"), expTable(mine, true)));
+  if (role() !== "field" && others.length) wrap.append(h("details", {class:"o-hist panel-ish"}, h("summary", null, "All other expenses on your projects (" + others.length + ")"),
+    expTable(others.sort((a, b) => b.spent_on.localeCompare(a.spent_on)), true)));
+  return wrap;
+}
+
+// ---------------------------------------------------------------- customer view link
+const customerUrl = l => location.origin + location.pathname.replace(/[^/]*$/, "") + "customer.html?k=" + l.token;
+async function customerLink(p, action) {
+  const {data, error} = await sb.rpc("customer_link", {p:p.id, action});
+  if (error) { toast(friendly(error)); return; }
+  await reload("clinks"); render();
+  if (action !== "off" && data && data.token) { try { await navigator.clipboard.writeText(customerUrl(data)); toast(action === "new" ? "New link copied. The old one no longer works." : "Link copied. Paste it into an email to the customer."); } catch (e) { toast("Link is on. Use Copy to grab it."); } }
+  else if (action === "off") toast("Customer link turned off");
+}
+function customerPanel(p, edit) {
+  const l = O.clinks.find(x => x.project_id === p.id);
+  const what = "A live status page for the customer: progress, schedule, plan phases and your weekly update's \"done\" and \"next week\". No money, internal notes or documents.";
+  let body;
+  if (!l) body = h("div", null, h("p", {class:"muted", style:"margin-top:0"}, what),
+    edit ? h("button", {class:"btn primary small", onclick:() => customerLink(p, "on")}, "Turn on and copy the link") : h("p", {class:"muted"}, "The PM hasn't shared this project yet."));
+  else if (!l.active) body = h("div", null, h("p", {style:"margin-top:0"}, h("b", null, "The customer link is off."), " Anyone who had it now sees a message to contact their PM."),
+    edit ? h("div", {class:"cl-btns"}, h("button", {class:"btn small", onclick:() => customerLink(p, "on")}, "Turn the same link back on"), h("button", {class:"btn small", onclick:() => customerLink(p, "new")}, "Make a new link")) : null);
+  else {
+    const url = customerUrl(l);
+    const inp = h("input", {class:"inp mono", readonly:true, value:url, "aria-label":"Customer link", onclick: e => e.target.select()});
+    body = h("div", null, h("p", {class:"muted", style:"margin-top:0"}, what),
+      h("div", {class:"cl-row"}, inp, h("button", {class:"btn small primary", onclick: async () => { try { await navigator.clipboard.writeText(url); toast("Link copied"); } catch (e) { inp.select(); toast("Press Ctrl+C to copy"); } }}, "Copy"),
+        h("a", {class:"btn small", href:url, target:"_blank", rel:"noopener"}, "Preview")),
+      h("p", {class:"muted small"}, l.views ? "Opened " + plural(l.views, "time") + ", last " + new Date(l.last_viewed_at).toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}) : "Not opened yet"),
+      edit ? h("div", {class:"cl-btns"}, h("button", {class:"btn small", onclick:() => customerLink(p, "off")}, "Turn off"),
+        h("button", {class:"btn small", title:"Use this if the link went to the wrong person", onclick:() => customerLink(p, "new")}, "Replace the link")) : null);
+  }
+  return panel("Customer view", l && l.active ? "On · anyone with the link can see it" : "Off", h("div", {class:"o-pad"}, body));
+}
+
 // ---------------------------------------------------------------- routing
-const VIEW_FN = {"ops-updates":viewUpdates, "ops-overview":viewOverview, "ops-projects":viewProjects, "ops-project":viewProject, "ops-handoffs":viewHandoffs, "ops-billing":viewBilling, "ops-manpower":viewManpower, handoffs:viewHandoffs};
+const VIEW_FN = {"ops-updates":viewUpdates, "ops-overview":viewOverview, "ops-projects":viewProjects, "ops-project":viewProject, "ops-handoffs":viewHandoffs, "ops-billing":viewBilling, "ops-manpower":viewManpower, "ops-tasks":viewTasks, "ops-expenses":viewExpenses, handoffs:viewHandoffs};
 return {
   tables: Object.values(TABLES),
   load, changed,
@@ -1509,9 +1811,12 @@ return {
   views: () => {
     const r = role();
     const mp = O.techs.length || role() === "admin" ? [["ops-manpower", r === "field" ? "Schedule" : "Manpower"]] : [];
-    if (r === "field") return [["ops-projects", "My projects"], ...mp];
-    if (r === "pm") return [["ops-projects", "My projects"], ["ops-updates", "Weekly updates"], ...mp, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
-    return [["ops-overview", "Overview"], ["ops-projects", "Projects"], ["ops-updates", "Weekly updates"], ...mp, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
+    const myOpen = O.items.filter(i => i.assignee_id === S.me.id && i.status !== "done").length, waiting = waitingOnMe().length;
+    const tk = featureOn("items") ? [["ops-tasks", "My tasks" + (myOpen ? " (" + myOpen + ")" : "")]] : [];
+    const ex = featureOn("exps") ? [["ops-expenses", "Expenses" + (waiting ? " (" + waiting + ")" : "")]] : [];
+    if (r === "field") return [["ops-projects", "My projects"], ...tk, ...mp, ...ex];
+    if (r === "pm") return [["ops-projects", "My projects"], ...tk, ["ops-updates", "Weekly updates"], ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
+    return [["ops-overview", "Overview"], ["ops-projects", "Projects"], ...tk, ["ops-updates", "Weekly updates"], ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
   },
   salesViews: () => O.missing ? [] : [["handoffs", "Handoffs"]],
   hiddenViews: () => ["ops-project"],

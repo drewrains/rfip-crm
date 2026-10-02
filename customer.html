@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Project Status · RFIP</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231d5fc4'/%3E%3Cpath d='M8 22V10h7a4 4 0 010 8h-7M15 18l5 4' stroke='white' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+:root{
+  --bg:#f3f5f7;--panel:#fff;--sunk:#e8ecf0;--line:#d5dbe2;--fg:#16202b;--muted:#5b6876;
+  --accent:#1d5fc4;--accent-soft:#e2ebfa;--go:#1d7a4a;--go-soft:#dcf1e5;--warn:#a15c00;--warn-soft:#fbecd5;--bad:#b4282e;--bad-soft:#f8dfe0;
+  --f-display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;--f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;--f-mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0f151c;--panel:#17202a;--sunk:#1e2935;--line:#2c3a48;--fg:#e4eaf0;--muted:#94a3b3;
+  --accent:#6ea2ff;--accent-soft:#1c2c47;--go:#5fd394;--go-soft:#163527;--warn:#f0b05a;--warn-soft:#3a2a12;--bad:#ff7a7f;--bad-soft:#3d1a1d;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 var(--f-body)}
+header{background:var(--panel);border-bottom:1px solid var(--line)}
+.wrap{max-width:960px;margin:0 auto;padding:0 16px}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:12px;height:56px}
+.brand{font-family:var(--f-display);font-weight:700;font-size:22px;letter-spacing:.04em;text-transform:uppercase}
+.brand span{color:var(--accent)}
+.bar small{color:var(--muted)}
+main.wrap{padding:24px 16px 48px}
+a{color:var(--accent)}
+.eyebrow{font-family:var(--f-mono);font-size:12px;color:var(--muted);letter-spacing:.04em;text-transform:uppercase}
+h1{font-family:var(--f-display);font-size:clamp(28px,5vw,40px);line-height:1.05;margin:4px 0 10px;letter-spacing:.01em}
+.meta{display:flex;flex-wrap:wrap;gap:6px 18px;color:var(--muted);font-size:14px}
+.meta b{color:var(--fg);font-weight:600}
+.chip{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;background:var(--sunk);color:var(--muted)}
+.chip.go{background:var(--go-soft);color:var(--go)}.chip.warn{background:var(--warn-soft);color:var(--warn)}.chip.bad{background:var(--bad-soft);color:var(--bad)}.chip.acc{background:var(--accent-soft);color:var(--accent)}
+.hero{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:22px 0}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.tile .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.tile .v{font-family:var(--f-display);font-size:34px;font-weight:700;line-height:1.1;margin-top:2px}
+.tile .s{font-size:13px;color:var(--muted)}
+.meter{height:10px;background:var(--sunk);border-radius:5px;overflow:hidden;margin-top:8px}
+.meter i{display:block;height:100%;background:var(--go);border-radius:5px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin-top:16px;overflow:hidden}
+section > h2{font-size:15px;margin:0;padding:12px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+section > h2 span{font-weight:400;color:var(--muted);font-size:13px}
+.rows{list-style:none;margin:0;padding:0}
+.rows li{padding:12px 16px;border-top:1px solid var(--line)}
+.rows li:first-child{border-top:0}
+.ph{display:grid;grid-template-columns:1fr 150px;gap:6px 16px;align-items:center}
+.ph .t{font-weight:600}
+.ph .d{color:var(--muted);font-size:13px}
+.ph .bar2{height:8px;background:var(--sunk);border-radius:4px;overflow:hidden}
+.ph .bar2 i{display:block;height:100%;background:var(--accent)}
+.ph.done .bar2 i{background:var(--go)}
+.ms{display:flex;gap:12px;align-items:baseline;justify-content:space-between}
+.ms .dot{width:10px;height:10px;border-radius:50%;border:2px solid var(--muted);flex:none;margin-top:5px}
+.ms.done .dot{background:var(--go);border-color:var(--go)}
+.ms .n{flex:1}
+.ms .when{font-family:var(--f-mono);font-size:13px;color:var(--muted);white-space:nowrap}
+.upd h3{font-size:14px;margin:0 0 6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.upd .f{margin:8px 0 0}
+.upd .f .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.upd .f p{margin:2px 0 0;white-space:pre-wrap}
+details.older{padding:0 16px 12px}
+details.older summary{cursor:pointer;color:var(--accent);padding:10px 0}
+.foot{margin-top:28px;color:var(--muted);font-size:13px;text-align:center}
+.foot a{color:var(--accent)}
+.msg{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:32px 24px;text-align:center;margin-top:40px}
+.msg h1{font-size:28px}
+.empty{padding:14px 16px;color:var(--muted)}
+@media (max-width:640px){.hero{grid-template-columns:1fr}.ph{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header><div class="wrap bar"><div class="brand">RF<span>IP</span></div><small>Project status</small></div></header>
+<main class="wrap" id="main"><p style="color:var(--muted)">Loading your project…</p></main>
+<script src="config.js"></script>
+<script>
+(async function () {
+  "use strict";
+  const main = document.getElementById("main");
+  const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const fmt = d => d ? new Date(d + "T12:00:00").toLocaleDateString("en-US", {month:"short", day:"numeric", year:"numeric"}) : "";
+  const short = d => d ? new Date(d + "T12:00:00").toLocaleDateString("en-US", {month:"short", day:"numeric"}) : "";
+  const today = new Date().toISOString().slice(0, 10);
+  const PHASE = {mobilizing:["Getting started", "acc"], in_progress:["In progress", "acc"], closeout:["Wrapping up", "go"], closed:["Complete", "go"]};
+  const SCHED = {on_track:["On schedule", "go"], at_risk:["Schedule at risk", "warn"], off_track:["Behind schedule", "bad"]};
+  const chip = ([t, c]) => `<span class="chip ${c}">${esc(t)}</span>`;
+  const fail = (title, text) => { main.innerHTML = `<div class="msg"><h1>${esc(title)}</h1><p>${esc(text)}</p></div>`; document.title = "Project Status · RFIP"; };
+
+  const k = new URLSearchParams(location.search).get("k") || "";
+  if (!/^[0-9a-f]{48}$/.test(k)) return fail("This link isn't complete", "Check that you copied the whole link from the email, or ask your RFIP project manager for a new one.");
+  const cfg = window.RFIP_CONFIG || {};
+  let v;
+  try {
+    const r = await fetch(cfg.supabaseUrl + "/rest/v1/rpc/customer_view", {method:"POST",
+      headers:{"apikey":cfg.supabaseAnonKey, "Content-Type":"application/json"}, body:JSON.stringify({k})});
+    if (!r.ok) throw new Error(r.status);
+    v = await r.json();
+  } catch (e) { return fail("We couldn't load your project", "Please refresh in a minute. If it keeps happening, contact your RFIP project manager."); }
+  if (!v) return fail("This link is no longer active", "Your RFIP project manager can send you a current link.");
+
+  document.title = v.name + " · RFIP";
+  const pct = Math.max(0, Math.min(100, Math.round(Number(v.pct_complete) || 0)));
+  const latest = (v.updates || [])[0];
+  const days = v.end_date ? Math.round((Date.parse(v.end_date + "T12:00:00Z") - Date.parse(today + "T12:00:00Z")) / 864e5) : null;
+  const plan = v.plan || [], ms = v.milestones || [], ups = v.updates || [];
+
+  const phaseRow = p => {
+    const share = p.items ? Math.round(p.done / p.items * 100) : (p.status === "done" ? 100 : p.status === "in_progress" ? 50 : 0);
+    const st = p.status === "done" ? "Done" : p.status === "in_progress" ? "Underway" : p.status === "blocked" ? "On hold" : "Upcoming";
+    return `<li class="ph${p.status === "done" ? " done" : ""}"><div><div class="t">${esc(p.title)}</div>
+      <div class="d">${esc(st)}${p.start || p.due ? " · " + esc(short(p.start || p.due)) + (p.due && p.start ? " – " + esc(short(p.due)) : "") : ""}${p.items ? " · " + p.done + " of " + p.items + " tasks done" : ""}</div></div>
+      <div class="bar2" role="img" aria-label="${share}% done"><i style="width:${share}%"></i></div></li>`;
+  };
+  const msRow = m => {
+    const done = !!m.actual;
+    return `<li class="ms${done ? " done" : ""}"><span class="dot" aria-hidden="true"></span><span class="n">${esc(m.name)}</span>
+      <span class="when">${done ? "Done " + esc(short(m.actual)) : m.planned ? "Planned " + esc(short(m.planned)) : ""}</span></li>`;
+  };
+  const updCard = u => `<div class="upd"><h3>Week of ${esc(fmt(u.week_start))} ${SCHED[u.schedule] ? chip(SCHED[u.schedule]) : ""}
+      ${u.pct != null ? `<span class="chip">${Math.round(u.pct)}% complete</span>` : ""}</h3>
+      ${u.done ? `<div class="f"><div class="k">Done this week</div><p>${esc(u.done)}</p></div>` : ""}
+      ${u.next ? `<div class="f"><div class="k">Next week</div><p>${esc(u.next)}</p></div>` : ""}</div>`;
+
+  main.innerHTML = `
+    <div class="eyebrow">Job ${esc(v.number)}${v.department ? " · " + esc(v.department) : ""}</div>
+    <h1>${esc(v.name)}</h1>
+    <div class="meta">${v.customer ? `<span>For <b>${esc(v.customer)}</b></span>` : ""}
+      ${v.pm ? `<span>Project manager <b>${esc(v.pm.name)}</b>${v.pm.email ? ` · <a href="mailto:${esc(v.pm.email)}">${esc(v.pm.email)}</a>` : ""}</span>` : ""}
+      ${chip(PHASE[v.phase] || PHASE.in_progress)}</div>
+    <div class="hero">
+      <div class="tile"><div class="k">Complete</div><div class="v">${pct}%</div><div class="meter" role="img" aria-label="${pct}% complete"><i style="width:${pct}%"></i></div></div>
+      <div class="tile"><div class="k">Schedule</div><div class="v" style="font-size:24px;margin-top:6px">${latest && SCHED[latest.schedule] ? chip(SCHED[latest.schedule]) : chip(["Updated weekly", ""])}</div>
+        <div class="s">${v.start_date ? "Started " + esc(fmt(v.start_date)) : ""}</div></div>
+      <div class="tile"><div class="k">Planned completion</div><div class="v">${v.end_date ? esc(short(v.end_date)) : "—"}</div>
+        <div class="s">${v.phase === "closed" ? "Complete" : days == null ? "" : days >= 0 ? days + " days from today" : "Past the planned date"}</div></div>
+    </div>
+    ${plan.length ? `<section><h2>Project plan <span>${plan.filter(p => p.status === "done").length} of ${plan.length} phases done</span></h2><ul class="rows">${plan.map(phaseRow).join("")}</ul></section>` : ""}
+    ${ms.length ? `<section><h2>Milestones <span>${ms.filter(m => m.actual).length} of ${ms.length} done</span></h2><ul class="rows">${ms.map(msRow).join("")}</ul></section>` : ""}
+    <section><h2>Weekly update ${latest ? `<span>from ${esc(v.pm ? v.pm.name : "your project manager")}</span>` : ""}</h2>
+      ${latest ? `<ul class="rows"><li>${updCard(latest)}</li></ul>` : `<div class="empty">The first weekly update will appear here.</div>`}
+      ${ups.length > 1 ? `<details class="older"><summary>Earlier updates (${ups.length - 1})</summary><ul class="rows">${ups.slice(1).map(u => `<li>${updCard(u)}</li>`).join("")}</ul></details>` : ""}
+    </section>
+    <p class="foot">Updated ${esc(new Date(v.as_of).toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}))}.
+      Questions? ${v.pm && v.pm.email ? `<a href="mailto:${esc(v.pm.email)}">Email ${esc(v.pm.name)}</a> or call` : "Call"} RFIP at <a href="tel:+14052860928">405-286-0928</a>.</p>`;
+})();
+</script>
+</body>
+</html>

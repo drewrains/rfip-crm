@@ -152,13 +152,22 @@ The same app has an **Operations** section for delivery: a company overview, pro
 
 **Weekly PM updates**: due Friday at noon (change `UPDATE_DUE` in `ops.js`). Each update records percent complete (which updates the project), schedule / cost / safety status, what got done, next week's plan, needs and decisions, and customer notes. The form is pre-filled with that week's daily logs and labor facts. The **Weekly updates** tab rolls every job up for the week, missing ones first, then off track and at risk. Missing updates also show on the project list and in Needs attention.
 
+**Project plan** (on each project page): phases, tasks inside them and sub-tasks below those, each with who it's assigned to, start and due dates and a status, plus a timeline bar against today. "Start from the standard phases" drops in the usual phases for the project's department, spread across its dates. The PM, department lead and admins build the plan; whoever a task is assigned to can tick it off and update its status and notes. Overdue plan tasks show in Needs attention.
+
+**My tasks** (Operations → My tasks): everything assigned to you across all your projects, grouped into overdue, due in the next 7 days, later and no date, with a tick box to mark each done. PMs, leads and admins can switch to everyone's tasks, one person's, or tasks nobody has been assigned yet.
+
+**Expenses** (on each project page, and Operations → Expenses): anyone working a job, foremen included, logs an expense with a photo or PDF of the receipt (required), the amount, category, vendor and how it was paid. It goes to the job's **PM to approve**, then to the **CFO for final approval**. Either can send it back with a reason; the person who logged it fixes it and resubmits. Only fully approved expenses count toward the job's cost, as a "Field expenses" line in Cost to complete and in the margin forecast. The Expenses tab shows what's waiting on you, what you've logged, and totals waiting on PMs and on the CFO. Who gives final approval is set by an admin on the Team tab ("Expense final approval"). Foremen only see their own expenses; receipts are stored in the project's private `expenses` folder.
+
+**Customer view** (on each project page, for the PM, lead and admins): turns on a private link to a live, read-only status page for the customer: percent complete, schedule status, planned completion, the plan's phases with progress, milestones and the weekly update's "done this week" and "next week". It never shows money, needs and decisions, customer notes, documents or crew. Each weekly update has a box to leave it off the customer page. The link can be turned off or replaced (the old one stops working), and the panel shows how many times it's been opened. The customer page is `customer.html`; nobody needs a login.
+
 **Database scripts**
 
 - `supabase/ops_schema.sql` adds the operations tables and rules. Run it after `schema.sql`.
 - `supabase/manpower_schema.sql` adds the tech roster and daily schedule. Run it after `ops_schema.sql`.
 - `supabase/materials_schema.sql` adds purchasing and receiving to materials. Run it after `ops_schema.sql`.
 - `supabase/docs_updates_schema.sql` adds project documents (storage bucket and rules) and weekly PM updates. Run it after `ops_schema.sql`.
-- `supabase/test_seed.sql` loads demo logins and sample projects. **Test database only.**
+- `supabase/plan_expenses_customer_schema.sql` adds project plans and tasks, expenses with PM and CFO approval, and the customer view link. Run it after the scripts above.
+- `supabase/test_seed.sql` (and `test_seed_part6.sql` for plans, expenses and a customer link) loads demo logins and sample data. **Test database only.**
 
 ## Test environment
 
@@ -173,10 +182,11 @@ Demo logins on the test database all use the password `RfipDemo-2026`:
 | demo-dayers@rfip.com | DataComm department lead | DataComm projects and handoffs |
 | demo-jpike@rfip.com | Project manager | His two projects |
 | demo-cmoran@rfip.com | Project manager | Clinic tower DAS; can accept the Hospital annex handoff |
-| demo-rdelgado@rfip.com | Field foreman | Concourse Wi-Fi job, daily log (works on a phone) |
+| demo-rdelgado@rfip.com | Field foreman | Concourse Wi-Fi job, daily log, his tasks and expenses (works on a phone) |
+| gkolton@rfip.com | Gabe, admin and CFO | Gives final approval on expenses |
 | demo-agrant@rfip.com | Sales rep | His deals and their handoffs |
 | demo-accounting@rfip.com | Accounting | All projects and billing, read-only |
 
 Other leads and PMs: demo-mcapps, demo-hseabolt, demo-ddell, demo-mhale, demo-treese, demo-acole, demo-rbanks, demo-swhitfield (all `@rfip.com`).
 
-Going live later: run `ops_schema.sql`, `manpower_schema.sql`, `materials_schema.sql` and `docs_updates_schema.sql` on the live database first (the live project needs the Pro plan for file storage), then merge the `ops-test` branch. Don't run `test_seed.sql` on live.
+Going live later: run `ops_schema.sql`, `manpower_schema.sql`, `materials_schema.sql`, `docs_updates_schema.sql` and `plan_expenses_customer_schema.sql` on the live database first (the live project needs the Pro plan for file storage), then merge the `ops-test` branch. Don't run `test_seed.sql` on live.
