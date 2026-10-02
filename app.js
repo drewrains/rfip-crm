@@ -219,7 +219,8 @@ async function fetchAll(table, order) {
 }
 const TABLES = {profiles:"profiles", accounts:"accounts", contacts:"contacts", deals:"deals", members:"deal_members", tasks:"tasks", targets:"targets"};
 async function loadTable(key) {
-  try { S[key] = await fetchAll(TABLES[key], key === "members" ? "deal_id" : "created_at"); }
+  const ORDER = {members:"deal_id", targets:"year"};
+  try { S[key] = await fetchAll(TABLES[key], ORDER[key] || "created_at"); status(""); }
   catch (e) { status("Couldn't load " + key + ": " + friendly(e)); }
 }
 async function loadAll() {
