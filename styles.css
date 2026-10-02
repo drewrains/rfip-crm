@@ -417,3 +417,13 @@ td.wrap{white-space:normal;min-width:160px}
 .doc-main small{color:var(--muted);font-size:12px}
 .wu-row.pending{border-color:var(--warn)}
 .doc-name{color:var(--accent);text-decoration:none}.doc-name:hover{text-decoration:underline}
+/* materials */
+.mat-tbl{min-width:860px}
+.mat-tbl td,.mat-tbl th{vertical-align:middle}
+.mat-tbl .cb{width:34px;padding-right:0}
+.mat-tbl .cb input{width:16px;height:16px;accent-color:var(--accent)}
+.mat-item{font-weight:500}
+.mat-recv{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.rcpt-list{list-style:none;margin:0;padding:0}
+.rcpt-list li{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.rcpt-list li:last-child{border-bottom:0}

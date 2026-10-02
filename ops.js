@@ -11,7 +11,7 @@ const {h, sb, S, money, fmtDate, daysUntil, todayStr, run, toast, friendly, open
 // ---------------------------------------------------------------- data
 const TABLES = {projects:"projects", handoffs:"handoffs", depts:"departments", costs:"cost_lines", labor:"labor_weeks", ms:"milestones",
   cos:"change_orders", mats:"materials", logs:"daily_logs", plan:"crew_plan", roster:"crew_roster", closeout:"closeout_items",
-  bills:"billings", safety:"safety_events", techs:"techs", asg:"assignments", docs:"documents", wu:"weekly_updates"};
+  bills:"billings", safety:"safety_events", techs:"techs", asg:"assignments", docs:"documents", wu:"weekly_updates", rcpts:"material_receipts"};
 const KEY_OF = Object.fromEntries(Object.entries(TABLES).map(([k, t]) => [t, k]));
 const O = {missing:false, detail:null, q:"", dept:"", pm:"", phase:"active", hand:true, mpMode:"week", mpDate:null, mpDept:""};
 try { const m = localStorage.getItem("rfipops.mpMode"); if (m) O.mpMode = m; } catch (e) {}
@@ -426,8 +426,8 @@ function viewProject() {
   } else wrap.append(milestonesPanel(p, c, false));
 
   if (money) wrap.append(costPanel(p, c, edit));
-  if (opsView) wrap.append(h("div", {class:"o-two even"}, coPanel(p, c, edit, money), matPanel(p, c, edit)));
-  wrap.append(h("div", {class:"o-two even"}, opsView && role() !== "field" ? logPanel(p) : null, h("div", {class:"o-stack"}, rosterPanel(p, c, edit), closeoutPanel(p, c, edit))));
+  if (opsView) wrap.append(matPanel(p, c, edit));
+  wrap.append(h("div", {class:"o-two even"}, opsView && role() !== "field" ? logPanel(p) : null, h("div", {class:"o-stack"}, opsView ? coPanel(p, c, edit, money) : null, rosterPanel(p, c, edit), closeoutPanel(p, c, edit))));
   if (opsView) wrap.append(docsPanel(p));
   if (money) wrap.append(projectBilling(p, c, edit));
   return wrap;
@@ -506,17 +506,42 @@ function coPanel(p, c, edit, showMoney) {
       : h("div", {class:"empty"}, "No change orders."),
     edit || role() === "field" ? h("div", {class:"o-actions"}, h("button", {class:"btn small", onclick:() => openCO(p)}, "+ Change order")) : null);
 }
-const MAT_ST = [["to_order", "To order", "warn"], ["ordered", "Ordered", ""], ["partial", "Partial", "acc"], ["received", "Received", "go"], ["backordered", "Backordered", "bad"]];
+const MAT_ST = [["to_order", "To order", "warn"], ["ordered", "On order", ""], ["partial", "Partly received", "acc"], ["received", "Received", "go"], ["backordered", "Backordered", "bad"]];
+const DISTIS = ["Graybar", "Anixter (Wesco)", "CDW", "ADI Global", "Accu-Tech", "Communications Supply Corp", "Power & Telephone Supply", "Border States", "Kirby Risk", "Direct from manufacturer"];
+const MAT_ORDER = {backordered:0, to_order:1, partial:2, ordered:3, received:4};
+const qtyFmt = (v, uom) => num(v) + (uom && uom !== "ea" ? " " + uom : "");
+const matCost = m => (Number(m.unit_cost) || 0) * (Number(m.qty) || 0);
 function matPanel(p, c, edit) {
-  return panel("Materials", plural(c.matOpen.length, "line") + " still open",
-    c.mats.length ? h("div", {class:"tbl-wrap flat"}, h("table", null,
-      h("thead", null, h("tr", null, h("th", null, "Item"), h("th", {class:"num"}, "Received"), h("th", null, "Status"))),
-      h("tbody", null, c.mats.slice().sort((a, b) => MAT_ST.findIndex(s => s[0] === b.status) - MAT_ST.findIndex(s => s[0] === a.status)).map(m => { const st = MAT_ST.find(s => s[0] === m.status) || MAT_ST[1];
-        return h("tr", {class: edit ? "click" : null, onclick: edit ? () => openMat(p, m) : null},
-          h("td", {class:"wrap"}, m.item, m.note || m.eta ? h("div", {class:"muted small"}, [m.eta && m.status !== "received" ? "ETA " + fmtDate(m.eta) : null, m.note].filter(Boolean).join(" · ")) : null),
-          h("td", {class:"num"}, num(m.received) + " / " + num(m.qty)), h("td", null, chip(st[2], st[1]))); }))))
-      : h("div", {class:"empty"}, "No materials listed."),
-    edit ? h("div", {class:"o-actions"}, h("button", {class:"btn small", onclick:() => openMat(p)}, "+ Material")) : null);
+  const showMoney = role() !== "field";
+  const mats = c.mats.slice().sort((a, b) => (MAT_ORDER[a.status] ?? 9) - (MAT_ORDER[b.status] ?? 9) || (a.sort || 0) - (b.sort || 0) || a.item.localeCompare(b.item));
+  O.matSel = O.matSel || new Set();
+  for (const id of [...O.matSel]) if (!mats.some(m => m.id === id)) O.matSel.delete(id);
+  const total = sum(mats, matCost), ordered = sum(mats.filter(m => Number(m.qty_ordered) > 0), m => (Number(m.unit_cost) || 0) * Number(m.qty_ordered));
+  const toOrder = mats.filter(m => Number(m.qty_ordered) < Number(m.qty)).length;
+  const sel = edit ? m => h("td", {class:"cb", onclick: e => e.stopPropagation()}, h("input", {type:"checkbox", "aria-label":"Select " + m.item, checked:O.matSel.has(m.id),
+    onchange: e => { e.target.checked ? O.matSel.add(m.id) : O.matSel.delete(m.id); render(); }})) : () => null;
+  const sub = plural(mats.length, "line") + " · " + toOrder + " to order · " + plural(c.matOpen.length, "line") + " not fully received" + (showMoney && total ? " · " + compact(ordered) + " ordered of " + compact(total) : "");
+  return panel("Materials", sub,
+    mats.length ? h("div", {class:"tbl-wrap flat"}, h("table", {class:"mat-tbl"},
+      h("thead", null, h("tr", null, edit ? h("th", {class:"cb"}, h("input", {type:"checkbox", "aria-label":"Select all", checked: mats.length > 0 && mats.every(m => O.matSel.has(m.id)),
+          onchange: e => { mats.forEach(m => e.target.checked ? O.matSel.add(m.id) : O.matSel.delete(m.id)); render(); }})) : null,
+        h("th", null, "Item"), h("th", null, "Distributor · PO"), h("th", {class:"num"}, "Needed"), h("th", {class:"num"}, "Ordered"), h("th", null, "Received"), h("th", null, "Status"), h("th"))),
+      h("tbody", null, mats.map(m => { const st = MAT_ST.find(s => s[0] === m.status) || MAT_ST[1];
+        const q = Number(m.qty) || 0, o = Number(m.qty_ordered) || 0, r = Number(m.received) || 0;
+        return h("tr", {class: edit ? "click" : null, onclick: edit ? () => openMat(p, m) : null}, sel(m),
+          h("td", {class:"wrap"}, h("b", {class:"mat-item"}, m.item), h("div", {class:"muted small"}, [m.part_no, m.manufacturer, showMoney && m.unit_cost ? money(m.unit_cost) + "/" + (m.uom || "ea") : null].filter(Boolean).join(" · "))),
+          h("td", null, m.distributor || h("span", {class:"muted"}, "—"), m.po_number ? h("div", {class:"muted small mono"}, m.po_number + (m.ordered_on ? " · " + fmtDate(m.ordered_on) : "")) : null),
+          h("td", {class:"num"}, qtyFmt(q, m.uom)),
+          h("td", {class:"num" + (o < q ? " warn-t" : "")}, o ? num(o) : "—"),
+          h("td", null, h("div", {class:"mat-recv"}, h("span", {class:"mono"}, num(r) + " / " + num(q)), h("span", {class:"minibar inline"}, h("i", {class: r >= q ? "go" : r > 0 ? "" : "warn", style:"width:" + (q ? Math.min(100, r / q * 100) : 0) + "%"})))),
+          h("td", null, chip(st[2], st[1]), m.eta && r < q ? h("div", {class:"muted small"}, "ETA " + fmtDate(m.eta)) : null),
+          h("td", {onclick: e => e.stopPropagation()}, o > r || (o === 0 && r < q && m.status === "backordered") ? h("button", {class:"btn small", onclick:() => openReceive(p, m)}, "Receive") : null)); }))))
+      : h("div", {class:"empty"}, "No materials yet. Import the material list or add lines."),
+    h("datalist", {id:"distis"}, DISTIS.map(d => h("option", {value:d}))),
+    edit ? h("div", {class:"o-actions"},
+      O.matSel.size ? h("button", {class:"btn primary small", onclick:() => openOrder(p, [...O.matSel])}, "Order selected (" + O.matSel.size + ")") : null,
+      h("button", {class:"btn small", onclick:() => openImport(p)}, "Import list"),
+      h("button", {class:"btn small", onclick:() => openMat(p)}, "+ Line")) : null);
 }
 function logPanel(p) {
   const logs = O.logs.filter(l => l.project_id === p.id).sort((a, b) => b.log_date.localeCompare(a.log_date) || b.created_at.localeCompare(a.created_at));
@@ -641,14 +666,166 @@ function openCO(p, x) {
       return saveRow("change_orders", {project_id:p.id, number:d.number, description:d.description.trim(), amount:nullify(d.amount), status:d.status, submitted_on:nullify(d.submitted_on), decided_on:nullify(d.decided_on), note:nullify(d.note)}, x && x.id); },
     x && canPrice ? del("change_orders", x.id) : null);
 }
+function distiInput(d, key, label) {
+  const inp = h("input", {id:"f-" + key, list:"distis", autocomplete:"off", oninput: e => { d[key] = e.target.value; }}); inp.value = d[key] || "";
+  return h("div", {class:"field"}, h("label", {for:"f-" + key}, label), inp, h("datalist", {id:"distis"}, DISTIS.map(x => h("option", {value:x}))));
+}
 function openMat(p, m) {
-  const d = m ? {...m} : {item:"", qty:1, received:0, status:"to_order", eta:null, note:""};
-  drawerForm(m ? m.item : "New material line", d, [
-    fld(d, "item", "Item", "text", {full:true}), fld(d, "qty", "Quantity", "number"), fld(d, "received", "Received", "number"),
-    fld(d, "status", "Status", "select", {options:MAT_ST.map(s => [s[0], s[1]]), blank:false}), fld(d, "eta", "Expected", "date"), fld(d, "note", "Note", "text", {full:true})],
-    () => { if (!(d.item || "").trim()) { toast("Name the item."); return false; }
-      return saveRow("materials", {project_id:p.id, item:d.item.trim(), qty:Number(d.qty) || 0, received:Number(d.received) || 0, status:d.status, eta:nullify(d.eta), note:nullify(d.note)}, m && m.id); },
-    m ? del("materials", m.id) : null);
+  const showMoney = role() !== "field";
+  const d = m ? {...m, qty:Number(m.qty), qty_ordered:Number(m.qty_ordered), unit_cost:m.unit_cost == null ? null : Number(m.unit_cost), backordered:m.status === "backordered"}
+              : {item:"", part_no:"", manufacturer:"", qty:1, uom:"ea", unit_cost:null, distributor:"", po_number:"", qty_ordered:0, ordered_on:null, eta:null, note:"", backordered:false};
+  const receipts = m ? O.rcpts.filter(r => r.material_id === m.id).sort((a, b) => b.received_on.localeCompare(a.received_on)) : [];
+  const body = h("div", null,
+    h("div", {class:"section-h"}, "Item"),
+    h("div", {class:"form"}, fld(d, "item", "Description", "text", {full:true}), fld(d, "part_no", "Part number", "text"), fld(d, "manufacturer", "Manufacturer", "text"),
+      fld(d, "qty", "Quantity needed", "number"), fld(d, "uom", "Unit (ea, ft, box, lot)", "text"), showMoney ? fld(d, "unit_cost", "Unit cost (USD)", "number") : null),
+    h("div", {class:"section-h"}, "Order"),
+    h("div", {class:"form"}, distiInput(d, "distributor", "Distributor"), fld(d, "po_number", "PO number", "text"),
+      fld(d, "qty_ordered", "Quantity ordered", "number"), fld(d, "ordered_on", "Ordered on", "date"), fld(d, "eta", "Expected delivery", "date"),
+      h("label", {class:"field check"}, h("input", {type:"checkbox", checked:d.backordered, onchange: e => { d.backordered = e.target.checked; }}), h("span", null, "Backordered by the distributor")),
+      fld(d, "note", "Note", "text", {full:true})),
+    m ? h("div", null, h("div", {class:"section-h"}, "Deliveries"),
+      receipts.length ? h("ul", {class:"rcpt-list"}, receipts.map(r => h("li", null,
+        h("div", null, h("b", null, "+" + num(r.qty) + " " + (m.uom || "ea")), " on " + fmtDate(r.received_on) + " · " + personName(r.received_by),
+          r.packing_slip || r.note ? h("div", {class:"muted small"}, [r.packing_slip ? "Packing slip " + r.packing_slip : null, r.note].filter(Boolean).join(" · ")) : null),
+        r.received_by === S.me.id || canEdit(p) ? h("button", {class:"btn small", onclick: async () => {
+          if (await run(sb.from("material_receipts").delete().eq("id", r.id), "Delivery removed")) { await Promise.all([reload("rcpts"), reload("mats")]); render(); closeDrawer(); }
+        }}, "Remove") : null))) : h("div", {class:"muted"}, "Nothing received yet."),
+      h("div", {style:"margin-top:8px"}, h("button", {class:"btn small", onclick:() => { closeDrawer(); openReceive(p, m); }}, "Log a delivery"))) : null);
+  const foot = [];
+  if (m) foot.push(deleteButton(async () => { if (await run(sb.from("materials").delete().eq("id", m.id), "Deleted")) { await reload("mats"); render(); closeDrawer(); } }));
+  foot.push(h("button", {class:"btn" + (m ? "" : " spacer"), onclick:() => closeDrawer()}, "Cancel"));
+  foot.push(h("button", {class:"btn primary", onclick: async e => {
+    if (!(d.item || "").trim()) { toast("Describe the item."); return; }
+    if (!(Number(d.qty) > 0)) { toast("Quantity needed must be more than zero."); return; }
+    const row = {project_id:p.id, item:d.item.trim(), part_no:nullify((d.part_no || "").trim()), manufacturer:nullify((d.manufacturer || "").trim()), qty:Number(d.qty), uom:(d.uom || "ea").trim() || "ea",
+      distributor:nullify((d.distributor || "").trim()), po_number:nullify((d.po_number || "").trim()), qty_ordered:Number(d.qty_ordered) || 0, ordered_on:nullify(d.ordered_on), eta:nullify(d.eta),
+      note:nullify((d.note || "").trim()), status: d.backordered ? "backordered" : "ordered"};
+    if (showMoney) row.unit_cost = nullify(d.unit_cost);
+    if (row.qty_ordered > 0 && !row.ordered_on) row.ordered_on = TODAY;
+    const btn = e.currentTarget; btn.disabled = true;
+    const ok = m ? await run(sb.from("materials").update(row).eq("id", m.id), "Saved") : await run(sb.from("materials").insert(row), "Added");
+    btn.disabled = false;
+    if (ok) { await reload("mats"); render(); closeDrawer(); }
+  }}, m ? "Save" : "Add"));
+  openDrawer({title: m ? m.item : "New material line", body, foot});
+}
+function openOrder(p, ids) {
+  const lines = O.mats.filter(m => ids.includes(m.id));
+  const d = {distributor:"", po_number:"", ordered_on:TODAY, eta:null};
+  const showMoney = role() !== "field";
+  const body = h("div", null,
+    h("p", {class:"muted"}, "Marks each selected line as ordered in full from this distributor on this PO."),
+    h("ul", {class:"rcpt-list"}, lines.map(m => h("li", null, h("div", null, h("b", null, m.item), h("div", {class:"muted small"}, qtyFmt(Number(m.qty), m.uom) + (m.part_no ? " · " + m.part_no : "") + (Number(m.qty_ordered) ? " · " + num(m.qty_ordered) + " already ordered" + (m.distributor ? " from " + m.distributor : "") : ""))),
+      showMoney && m.unit_cost ? h("span", {class:"mono"}, money(matCost(m))) : null))),
+    showMoney ? h("p", null, "Total ", h("b", {class:"mono"}, money(sum(lines, matCost)))) : null,
+    h("div", {class:"form"}, distiInput(d, "distributor", "Distributor"), fld(d, "po_number", "PO number", "text"), fld(d, "ordered_on", "Ordered on", "date"), fld(d, "eta", "Expected delivery", "date")));
+  openDrawer({title:"Order " + plural(lines.length, "line"), body, foot:[h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel"),
+    h("button", {class:"btn primary", onclick: async e => {
+      if (!(d.distributor || "").trim()) { toast("Choose the distributor."); return; }
+      const btn = e.currentTarget; btn.disabled = true; let ok = true;
+      for (const m of lines) ok = !!(await run(sb.from("materials").update({distributor:d.distributor.trim(), po_number:nullify((d.po_number || "").trim()), ordered_on:d.ordered_on || TODAY,
+        eta:nullify(d.eta), qty_ordered:Math.max(Number(m.qty), Number(m.qty_ordered) || 0)}).eq("id", m.id))) && ok;
+      btn.disabled = false;
+      await reload("mats"); O.matSel.clear(); render();
+      if (ok) { closeDrawer(); toast(plural(lines.length, "line") + " ordered from " + d.distributor.trim()); }
+    }}, "Mark ordered")]});
+}
+function openReceive(p, m) {
+  const remaining = Math.max(0, Math.max(Number(m.qty_ordered), Number(m.qty)) - Number(m.received));
+  const d = {qty:remaining, received_on:TODAY, packing_slip:"", note:""};
+  const photo = h("input", {type:"file", id:"f-slip", accept:"image/*,application/pdf", class:"inp"});
+  const body = h("div", null,
+    h("p", null, h("b", null, m.item), h("br"), h("span", {class:"muted small"}, [m.distributor, m.po_number, num(m.received) + " of " + num(m.qty) + " " + (m.uom || "ea") + " received so far"].filter(Boolean).join(" · "))),
+    h("div", {class:"form"}, fld(d, "qty", "Quantity received now", "number"), fld(d, "received_on", "Received on", "date"),
+      fld(d, "packing_slip", "Packing slip or delivery #", "text"), h("div"),
+      h("div", {class:"field full"}, h("label", {for:"f-slip"}, "Photo of the packing slip (optional)"), photo),
+      fld(d, "note", "Note (damage, shortages, where it's staged)", "text", {full:true})));
+  openDrawer({title:"Receive material · " + p.number, body, foot:[h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel"),
+    h("button", {class:"btn primary", onclick: async e => {
+      const q = Number(d.qty); if (!q) { toast("Enter how many arrived."); return; }
+      const btn = e.currentTarget; btn.disabled = true;
+      const ok = await run(sb.from("material_receipts").insert({material_id:m.id, project_id:p.id, qty:q, received_on:d.received_on || TODAY, received_by:S.me.id,
+        packing_slip:nullify((d.packing_slip || "").trim()), note:nullify((d.note || "").trim())}));
+      if (ok && photo.files[0]) await uploadOne(p, "field", photo.files[0], "Packing slip · " + m.item + (d.packing_slip ? " · " + d.packing_slip : ""));
+      btn.disabled = false;
+      if (ok) { await Promise.all([reload("rcpts"), reload("mats"), reload("docs")]); render(); closeDrawer(); toast("Received " + num(q) + " " + (m.uom || "ea") + " of " + m.item); }
+    }}, "Log delivery")]});
+}
+// a material list from Excel or CSV
+const MAT_FIELDS = [["item", "Description", /desc|item|material|product|name/i, true], ["part_no", "Part number", /part|sku|model|cat(alog)?\b|mfr ?#|p\/n/i],
+  ["manufacturer", "Manufacturer", /manuf|mfr|brand|make/i], ["qty", "Quantity", /qty|quant|count|amount/i, true], ["uom", "Unit", /^u\/?o\/?m|unit$|^units?$/i],
+  ["unit_cost", "Unit cost", /unit ?(cost|price)|price|cost/i], ["distributor", "Distributor", /dist|vendor|supplier|source/i]];
+function parseCsvText(text) {
+  const rows = []; let row = [], cur = "", q = false;
+  for (let i = 0; i < text.length; i++) { const ch = text[i];
+    if (q) { if (ch === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+    else if (ch === '"') q = true; else if (ch === ",") { row.push(cur); cur = ""; }
+    else if (ch === "\n" || ch === "\r") { if (ch === "\r" && text[i + 1] === "\n") i++; row.push(cur); rows.push(row); row = []; cur = ""; }
+    else cur += ch; }
+  if (cur || row.length) { row.push(cur); rows.push(row); }
+  return rows.filter(r => r.some(c => String(c).trim()));
+}
+let xlsxLoading = null;
+function loadXlsx() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  if (!xlsxLoading) xlsxLoading = new Promise((res, rej) => { const s = document.createElement("script"); s.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+    s.onload = () => res(window.XLSX); s.onerror = () => { xlsxLoading = null; rej(new Error("Couldn't load the Excel reader. Save the sheet as CSV and try again.")); }; document.head.append(s); });
+  return xlsxLoading;
+}
+async function readSheet(file) {
+  if (/\.csv$|text\/csv/i.test(file.name + " " + file.type)) return parseCsvText(await file.text());
+  const X = await loadXlsx();
+  const wb = X.read(await file.arrayBuffer(), {type:"array"});
+  return X.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, raw:false, defval:""}).filter(r => r.some(c => String(c).trim()));
+}
+const toNum = v => { const n = Number(String(v == null ? "" : v).replace(/[$,\s]/g, "")); return isFinite(n) ? n : NaN; };
+function openImport(p) {
+  const st = {rows:null, head:null, map:{}, headerRow:0};
+  const input = h("input", {type:"file", id:"f-bom", accept:".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel", class:"inp"});
+  const area = h("div");
+  const draw = () => {
+    if (!st.rows) { area.replaceChildren(h("p", {class:"muted small"}, "Use the material list or BOM from the estimate. The first row should be column headings (Description, Part #, Manufacturer, Qty, Unit, Unit cost, Distributor); you'll match them on the next step.")); return; }
+    const data = st.rows.slice(st.headerRow + 1);
+    const pick = ([key, label, , req]) => h("div", {class:"field"}, h("label", {for:"map-" + key}, label + (req ? " (required)" : "")),
+      h("select", {id:"map-" + key, onchange: e => { st.map[key] = e.target.value === "" ? null : Number(e.target.value); draw(); }},
+        h("option", {value:""}, "—"), st.head.map((c, i) => h("option", {value:String(i), selected:st.map[key] === i}, c || "Column " + (i + 1)))));
+    const parsed = data.map(r => { const o = {}; for (const [k] of MAT_FIELDS) o[k] = st.map[k] == null ? "" : String(r[st.map[k]] ?? "").trim(); return o; });
+    const good = parsed.filter(o => o.item && toNum(o.qty) > 0);
+    st.good = good;
+    area.replaceChildren(
+      h("div", {class:"section-h"}, "Match the columns"), h("div", {class:"form"}, MAT_FIELDS.map(pick)),
+      h("div", {class:"section-h"}, "Preview"),
+      h("p", {class:"muted small"}, good.length + " of " + data.length + " rows will be imported" + (data.length > good.length ? " (rows without a description or quantity are skipped)" : "") + "."),
+      h("div", {class:"tbl-wrap flat"}, h("table", null, h("thead", null, h("tr", null, MAT_FIELDS.map(f => h("th", null, f[1])))),
+        h("tbody", null, good.slice(0, 8).map(o => h("tr", null, MAT_FIELDS.map(([k]) => h("td", null, o[k] || "—"))))))));
+  };
+  input.addEventListener("change", async () => {
+    const f = input.files[0]; if (!f) return;
+    area.replaceChildren(h("p", {class:"muted"}, "Reading " + f.name + "…"));
+    try {
+      const rows = await readSheet(f);
+      if (!rows.length) { area.replaceChildren(h("p", {class:"bad-t"}, "That file looks empty.")); return; }
+      // the header is the first row that names a description or quantity column
+      st.headerRow = Math.max(0, rows.slice(0, 10).findIndex(r => r.some(c => /desc|item|qty|quant/i.test(String(c)))));
+      st.rows = rows; st.head = rows[st.headerRow].map(c => String(c).trim());
+      st.map = {};
+      for (const [key, , re] of MAT_FIELDS) { const i = st.head.findIndex((c, j) => re.test(c) && !Object.values(st.map).includes(j)); st.map[key] = i >= 0 ? i : null; }
+      draw();
+    } catch (e) { area.replaceChildren(h("p", {class:"bad-t"}, friendly(e))); }
+  });
+  draw();
+  openDrawer({title:"Import material list · " + p.number, body:h("div", null, h("div", {class:"field full"}, h("label", {for:"f-bom"}, "Excel or CSV file"), input), area),
+    foot:[h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel"), h("button", {class:"btn primary", onclick: async e => {
+      if (!st.good || !st.good.length) { toast(st.rows ? "Match the Description and Quantity columns first." : "Choose a file first."); return; }
+      const start = (Math.max(0, ...O.mats.filter(m => m.project_id === p.id).map(m => m.sort || 0)));
+      const rows = st.good.map((o, i) => ({project_id:p.id, item:o.item.slice(0, 300), part_no:nullify(o.part_no), manufacturer:nullify(o.manufacturer), qty:toNum(o.qty),
+        uom:o.uom || "ea", unit_cost: isNaN(toNum(o.unit_cost)) || o.unit_cost === "" ? null : toNum(o.unit_cost), distributor:nullify(o.distributor), qty_ordered:0, received:0, status:"to_order", sort:start + i + 1}));
+      const btn = e.currentTarget; btn.disabled = true;
+      const ok = await run(sb.from("materials").insert(rows));
+      btn.disabled = false;
+      if (ok) { await reload("mats"); render(); closeDrawer(); toast("Imported " + plural(rows.length, "line")); }
+    }}, "Import")]});
 }
 function openRoster(p, r) {
   const d = r ? {...r} : {name:"", role:"Tech", days:"MTWRF", profile_id:null, sort:calc(p).roster.length + 1};
@@ -1262,6 +1439,16 @@ function docsPanel(p) {
   const canUp = folders.some(f => canUploadTo(p, f[0]));
   return panel("Documents", plural(docs.length, "file") + (canUp ? " · photos are resized for the phone" : ""), h("div", {class:"o-pad"}, box),
     canUp ? h("div", {class:"o-actions"}, h("button", {class:"btn primary small", onclick:() => openUpload(p, cur)}, "Upload files")) : null);
+}
+async function uploadOne(p, folder, file0, note) {
+  const f = await shrinkImage(file0);
+  const safe = f.name.replace(/[^\w.\- ]+/g, "_").replace(/\s+/g, " ").slice(-120);
+  const path = p.id + "/" + folder + "/" + Date.now() + "-" + Math.random().toString(36).slice(2, 6) + "-" + safe;
+  const {error} = await sb.storage.from(BUCKET).upload(path, f, {contentType:f.type || "application/octet-stream", upsert:false});
+  if (error) { toast("Photo didn't upload: " + friendly(error)); return false; }
+  const {error:e2} = await sb.from("documents").insert({project_id:p.id, folder, name:f.name, path, size_bytes:f.size, mime_type:f.type || null, note:nullify(note), uploaded_by:S.me.id});
+  if (e2) { await sb.storage.from(BUCKET).remove([path]); toast("Photo didn't save: " + friendly(e2)); return false; }
+  return true;
 }
 async function shrinkImage(file) {
   if (!/^image\/(jpeg|png|webp|heic|heif)$/.test(file.type) || file.size < 900000) return file;

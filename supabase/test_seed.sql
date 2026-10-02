@@ -530,3 +530,51 @@ begin
   ) v(num, wk, pct, sch, cst, sfy, acc, nxt, need, cust)
   join public.projects p on p.number = v.num;
 end $$;
+
+-- ---------- part 5: material purchasing detail (run after materials_schema.sql) --
+do $$
+declare drew uuid := (select id from public.profiles where email = 'drains@rfip.com');
+        ray uuid := (select id from public.profiles where email = 'demo-rdelgado@rfip.com');
+begin
+  perform set_config('request.jwt.claims', json_build_object('sub', drew, 'role', 'authenticated')::text, true);
+  if exists (select 1 from public.material_receipts) then raise exception 'Material receipts are already loaded.'; end if;
+  update public.materials m set part_no = v.part, manufacturer = v.mfr, uom = v.uom, unit_cost = v.cost, distributor = v.disti, po_number = v.po,
+    qty_ordered = case when m.status = 'to_order' then 0 else m.qty end, ordered_on = v.ordered::date, sort = v.s
+  from (values
+    ('Wireless APs','AP-635-US','HPE Aruba','ea',612.00,'CDW','PO-26118-01','2026-07-02',1),
+    ('AP mounts and enclosures','AP-MNT-ENC2','Oberon','ea',148.00,'Graybar','PO-26118-02','2026-07-02',2),
+    ('Cat6A plenum (1,000 ft boxes)','6A-P-BL-1000','CommScope','box',642.00,'Graybar','PO-26118-03','2026-07-08',3),
+    ('SFP+ optics','J9150D','HPE Aruba','ea',245.00,'CDW','PO-26118-04','2026-09-10',4),
+    ('Club-level APs (CO-01)','AP-635-US','HPE Aruba','ea',612.00,'CDW','PO-26118-05','2026-09-24',5),
+    ('Single-mode fiber trunks (144 strand)','FX144-SM-MTP','Corning','ea',1180.00,'Anixter (Wesco)','PO-26127-01','2026-09-18',1),
+    ('Rack-mount fiber enclosures','CCH-04U','Corning','ea',890.00,'Anixter (Wesco)','PO-26127-02','2026-09-18',2),
+    ('Ladder rack (ft)','LR-12-10','Chatsworth','ft',14.50,'Accu-Tech','PO-26127-03','2026-09-22',3),
+    ('Fiber patch panels','CCH-CP24-A9','Corning','ea',310.00,null,null,null,4),
+    ('Card readers and controllers','MR52-OSDP','Mercury / HID','ea',540.00,'ADI Global','PO-26133-01','2026-09-25',1),
+    ('IP cameras','P3268-LVE','Axis','ea',815.00,'ADI Global','PO-26133-02','2026-09-25',2),
+    ('Coax, connectors and splitters','LDF4-50A kit','CommScope','lot',38600.00,'Graybar','PO-26121-01','2026-06-15',1),
+    ('Antennas','CMAX-DM-CEU','CommScope','ea',265.00,'Graybar','PO-26121-02','2026-06-15',2),
+    ('Category 6A cable and connectivity','6A-P-BL-1000 + jacks','Panduit','lot',61500.00,'Graybar','PO-26124-01','2026-07-20',1),
+    ('Outdoor APs and mounts','AP-575-US','HPE Aruba','ea',1040.00,'CDW','PO-26112-01','2026-07-01',1),
+    ('Antennas and RRU brackets','MBA-RRU-KIT','Site Pro 1','ea',420.00,'Power & Telephone Supply','PO-26130-01','2026-09-01',1)
+  ) v(item, part, mfr, uom, cost, disti, po, ordered, s)
+  where m.item = v.item;
+
+  -- deliveries so far, logged as receipts (received quantities follow from these)
+  insert into public.material_receipts (material_id, project_id, qty, received_on, received_by, packing_slip, note)
+  select m.id, m.project_id, v.qty, v.d::date, case when v.who = 'ray' then ray else drew end, v.slip, v.note
+  from (values
+    ('Wireless APs', 120, '2026-07-21', 'ray', 'CDW 88412907', null),
+    ('Wireless APs', 66, '2026-07-28', 'ray', 'CDW 88431150', 'Balance of order'),
+    ('AP mounts and enclosures', 186, '2026-07-16', 'ray', 'GB 4471-2219', null),
+    ('Cat6A plenum (1,000 ft boxes)', 80, '2026-07-14', 'ray', 'GB 4469-0012', null),
+    ('Cat6A plenum (1,000 ft boxes)', 32, '2026-08-19', 'ray', 'GB 4490-7731', '8 boxes still due'),
+    ('IP cameras', 20, '2026-09-30', 'drew', 'ADI 7712093', 'Split shipment; 22 due Oct 16'),
+    ('Coax, connectors and splitters', 1, '2026-06-26', 'drew', 'GB 4402-1188', null),
+    ('Antennas', 64, '2026-07-02', 'drew', 'GB 4410-3320', 'Floors 1–3'),
+    ('Category 6A cable and connectivity', 1, '2026-07-31', 'drew', 'GB 4480-5512', null),
+    ('Outdoor APs and mounts', 40, '2026-07-10', 'drew', 'CDW 88397771', null),
+    ('Antennas and RRU brackets', 18, '2026-09-04', 'drew', 'PTS 22091', null)
+  ) v(item, qty, d, who, slip, note)
+  join public.materials m on m.item = v.item;
+end $$;

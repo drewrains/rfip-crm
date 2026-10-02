@@ -146,6 +146,8 @@ The same app has an **Operations** section for delivery: a company overview, pro
 - Everyone on the operations side sees the whole board. Field logins with a tech record see their own schedule.
 - The project page's "Crew this week" comes from the schedule.
 
+**Materials** (on each project page): import the material list or BOM from Excel or CSV (columns are matched automatically, with a preview), or add lines by hand. Each line tracks part number, manufacturer, quantity needed, unit cost, distributor, PO, quantity ordered, ETA and quantity received. Tick lines and **Order selected** to mark them ordered from one distributor on one PO. **Receive** logs a delivery (quantity, date, packing slip, optional photo saved to the project's field photos); the received total and status follow the deliveries automatically. PMs, leads and admins manage the list and orders; foremen on the job can log deliveries from their phone.
+
 **Documents** (on each project page): every project has the same folders: Contract and PO, Scope and estimate, Submittals, Drawings, Change orders, Pay apps, Field photos and daily reports, Test results, Closeout, Safety. Files are stored privately in Supabase Storage (bucket `project-files`, 50 MB per file); phone photos over 1 MB are shrunk to 1600 px before upload. Contract, scope and pay apps are only visible to people who see the project's money; foremen can open the rest and upload field photos, test results and safety documents. Uploading to Closeout or Test results can tick off a closeout checklist item.
 
 **Weekly PM updates**: due Friday at noon (change `UPDATE_DUE` in `ops.js`). Each update records percent complete (which updates the project), schedule / cost / safety status, what got done, next week's plan, needs and decisions, and customer notes. The form is pre-filled with that week's daily logs and labor facts. The **Weekly updates** tab rolls every job up for the week, missing ones first, then off track and at risk. Missing updates also show on the project list and in Needs attention.
@@ -154,6 +156,7 @@ The same app has an **Operations** section for delivery: a company overview, pro
 
 - `supabase/ops_schema.sql` adds the operations tables and rules. Run it after `schema.sql`.
 - `supabase/manpower_schema.sql` adds the tech roster and daily schedule. Run it after `ops_schema.sql`.
+- `supabase/materials_schema.sql` adds purchasing and receiving to materials. Run it after `ops_schema.sql`.
 - `supabase/docs_updates_schema.sql` adds project documents (storage bucket and rules) and weekly PM updates. Run it after `ops_schema.sql`.
 - `supabase/test_seed.sql` loads demo logins and sample projects. **Test database only.**
 
@@ -176,4 +179,4 @@ Demo logins on the test database all use the password `RfipDemo-2026`:
 
 Other leads and PMs: demo-mcapps, demo-hseabolt, demo-ddell, demo-mhale, demo-treese, demo-acole, demo-rbanks, demo-swhitfield (all `@rfip.com`).
 
-Going live later: run `ops_schema.sql`, `manpower_schema.sql` and `docs_updates_schema.sql` on the live database first (the live project needs the Pro plan for file storage), then merge the `ops-test` branch. Don't run `test_seed.sql` on live.
+Going live later: run `ops_schema.sql`, `manpower_schema.sql`, `materials_schema.sql` and `docs_updates_schema.sql` on the live database first (the live project needs the Pro plan for file storage), then merge the `ops-test` branch. Don't run `test_seed.sql` on live.
