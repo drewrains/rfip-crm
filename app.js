@@ -26,6 +26,10 @@ const LOSS_REASONS = ["Price","Relationship / incumbent","Technical or scope fit
 const NOBID_REASONS = ["Not a fit for our services","Crew or PM capacity","Margin too low","Contract or risk terms","Timeline too short","Bonding, licensing or prequalification","Relationship favors another bidder","Other"];
 const reasonsFor = stage => stage === "won" ? WIN_REASONS : stage === "nobid" ? NOBID_REASONS : LOSS_REASONS;
 const NOTE_KINDS = [["note","Note"],["call","Call"],["meeting","Meeting"],["site_visit","Site visit"],["email","Email"]];
+const DEAL_ROLES = [["sales_engineer","Sales engineer"],["estimator","Estimator"],["account_manager","Co–account manager"],["support","Support"]];
+const JOB_ROLES = [["account_manager","Account manager"],["sales_engineer","Sales engineer"],["estimator","Estimator"],["manager","Manager"],["other","Other"]];
+const dealRoleLabel = r => (DEAL_ROLES.find(x => x[0] === r) || DEAL_ROLES[3])[1];
+const jobToDealRole = j => j === "sales_engineer" || j === "estimator" || j === "account_manager" ? j : "support";
 const kindLabel = k => (NOTE_KINDS.find(x => x[0] === k) || NOTE_KINDS[0])[1];
 const THIS_YEAR = new Date().getFullYear();
 const DEFAULT_GNG = {threshold:{go:70, review:55}, criteria:[]};
@@ -93,6 +97,8 @@ const isManager = () => !!S.me && reportsOf(S.me.id).length > 0;
 const myTeam = () => isAdmin() ? activePeople() : [S.me, ...reportsOf(S.me.id)].filter(Boolean);
 const canManage = d => isAdmin() || (d && d.owner_id === S.me.id);
 const membersOf = dealId => S.members.filter(m => m.deal_id === dealId).map(m => m.user_id);
+const membersWithRole = (dealId, role) => S.members.filter(m => m.deal_id === dealId && (m.role || "support") === role).map(m => m.user_id);
+const seNames = dealId => membersWithRole(dealId, "sales_engineer").map(personName).join(", ");
 const fmtDateTime = x => new Date(x).toLocaleString("en-US", {month:"short", day:"numeric", year:"numeric", hour:"numeric", minute:"2-digit"});
 const nullify = v => (v === "" || v === undefined) ? null : v;
 
@@ -322,9 +328,10 @@ function progressRow(label, actual, target) {
     h("div", {class:"track", title: money(actual) + " of " + money(target)}, h("div", {class:"fill", style:"width:" + Math.min(100, pct) + "%"})),
     h("div", {class:"val"}, money(actual, true), h("small", null, " / " + money(target, true) + " · " + pct + "%"))];
 }
-const DIMS = [["owner","Rep"],["vertical","Vertical"],["service","Service line"],["source","Source"],["acct_type","Account type"]];
+const DIMS = [["owner","Account manager"],["se","Sales engineer"],["vertical","Vertical"],["service","Service line"],["source","Source"],["acct_type","Account type"]];
 function dimKeys(d, dim) {
   if (dim === "owner") return [personName(d.owner_id)];
+  if (dim === "se") { const se = membersWithRole(d.id, "sales_engineer"); return se.length ? se.map(personName) : ["No sales engineer"]; }
   if (dim === "vertical") return [d.vertical || "Unassigned"];
   if (dim === "service") return d.services && d.services.length ? d.services : ["Unassigned"];
   if (dim === "source") return [d.source || "Unassigned"];
@@ -483,7 +490,7 @@ function viewScorecard() {
     h("tbody", null, rows.map(r => {
       const pct = r.target ? Math.round(r.yr.wonV / r.target * 100) : null;
       return h("tr", {class:"click", tabindex:"0", onclick:() => { S.ownerFilter = r.p.id; S.view = "dashboard"; renderNow(); }, onkeydown: e => { if (e.key === "Enter") { S.ownerFilter = r.p.id; S.view = "dashboard"; renderNow(); } }},
-        h("td", null, h("div", {style:"font-weight:600;white-space:nowrap"}, r.p.full_name || r.p.email), h("div", {class:"muted", style:"font-size:12px"}, r.p.role === "admin" ? "Admin" : reportsOf(r.p.id).length ? "Manager" : "Rep", r.shared ? " · on " + plural(r.shared, "shared deal") : "")),
+        h("td", null, h("div", {style:"font-weight:600;white-space:nowrap"}, r.p.full_name || r.p.email), h("div", {class:"muted", style:"font-size:12px"}, [(JOB_ROLES.find(x => x[0] === r.p.job_role) || [, reportsOf(r.p.id).length ? "Manager" : "Rep"])[1], r.p.role === "admin" ? "admin" : null].filter(Boolean).join(" · "), r.shared ? " · on " + plural(r.shared, "other deal") + " as team" : "")),
         cell(r.target ? money(r.target, true) : "—"),
         h("td", {class:"num"}, money(r.yr.wonV, true), pct != null ? h("div", null, miniBar(pct), h("div", {class:"muted", style:"font-size:11px"}, pct + "% of target")) : null),
         cell(r.yr.won.length + " / " + r.yr.lost.length),
@@ -502,6 +509,26 @@ function viewScorecard() {
       cell(String(tot.open)), cell(money(tot.pipe, true)), cell(money(tot.wtd, true)), cell(String(tot.due)), cell(String(tot.gng)),
       cell(ACT.rows == null ? "…" : String(tot.act)), cell(String(tot.od)), cell(""))))));
   if (!rows.length) wrap.append(h("div", {class:"panel"}, emptyState("No one on the team yet", "Create logins in Supabase; people appear here after their first sign-in.")));
+
+  // sales engineering: deals each person supports as a sales engineer
+  const teamIds = new Set(people.map(p => p.id));
+  const seRows = people.map(p => {
+    const ids = new Set(S.members.filter(m => m.user_id === p.id && m.role === "sales_engineer").map(m => m.deal_id));
+    const ds = S.deals.filter(d => ids.has(d.id));
+    return {p, ds, open:ds.filter(isOpen), yr:yearResults(ds, Y)};
+  }).filter(r => r.ds.length || r.p.job_role === "sales_engineer").sort((a, b) => b.open.length - a.open.length);
+  const noSE = S.deals.filter(d => isOpen(d) && ["proposal","submitted","negotiation"].includes(d.stage) && teamIds.has(d.owner_id) && !membersWithRole(d.id, "sales_engineer").length);
+  wrap.append(h("div", {class:"panel", style:"margin-top:16px"}, h("h3", null, "Sales engineering"),
+    h("p", {class:"hint"}, "Deals each person is on as a sales engineer. Results count deals closed in " + Y + "; open deals are as of today."),
+    seRows.length ? h("div", {class:"tbl-wrap", style:"border:0"}, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Sales engineer"), ...["Open deals","Open pipeline","Bids due 30d","Won / lost","Win rate","Won value"].map(t => h("th", {class:"num"}, t)))),
+      h("tbody", null, seRows.map(r => h("tr", null, h("td", {style:"font-weight:600"}, r.p.full_name || r.p.email),
+        cell(String(r.open.length)), cell(money(r.open.reduce((a, d) => a + (Number(d.value) || 0), 0), true)),
+        cell(String(r.open.filter(d => { const n = daysUntil(d.bid_due); return n != null && n >= 0 && n <= 30; }).length)),
+        cell(r.yr.won.length + " / " + r.yr.lost.length), cell(r.yr.rate == null ? "—" : r.yr.rate + "%"), cell(money(r.yr.wonV, true)))))))
+      : h("div", {class:"muted"}, "No sales engineers assigned yet. Add them on each deal's Deal team tab, and set job roles in Team."),
+    noSE.length ? h("div", {style:"margin-top:12px"}, h("div", {class:"lab", style:"margin-bottom:4px;color:var(--warn)"}, plural(noSE.length, "deal") + " in proposal or later with no sales engineer"),
+      h("div", null, noSE.map(d => h("div", {class:"list-row"}, h("button", {class:"linkish", onclick:() => openDeal(d.id, "p")}, d.name), h("span", {class:"muted", style:"font-size:12px"}, personName(d.owner_id) + " · " + STAGE[d.stage].name))))) : null));
   return wrap;
 }
 
@@ -547,7 +574,7 @@ function dealCard(d) {
     h("div", {class:"t"}, d.name || "Untitled deal"),
     h("div", {class:"a"}, [acctName(d.account_id), d.rfp_no].filter(Boolean).join(" · ") || "No account"),
     h("div", {class:"row"}, h("span", {class:"mono"}, money(d.value)), h("span", {class:"chips"}, gngChip(d), d.bid_due ? dueChip(d.bid_due) : null)),
-    h("div", {class:"row muted"}, h("span", null, personName(d.owner_id) + (shared ? " +" + shared : "")), h("span", null, (d.services || []).slice(0, 3).join(", "))));
+    h("div", {class:"row muted"}, h("span", null, personName(d.owner_id) + (seNames(d.id) ? " · SE: " + seNames(d.id) : shared ? " +" + shared : "")), h("span", null, (d.services || []).slice(0, 3).join(", "))));
   c.addEventListener("dragstart", e => e.dataTransfer.setData("text/plain", d.id));
   return c;
 }
@@ -569,7 +596,7 @@ function viewDeals() {
   if (!ds.length) { wrap.append(h("div", {class:"tbl-wrap"}, emptyState(S.deals.length ? "No deals match these filters" : "No deals yet", S.deals.length ? "Clear the search or change the filters." : "Add a deal to start tracking your pipeline."))); return wrap; }
   const tot = ds.reduce((a, d) => a + (Number(d.value) || 0), 0);
   wrap.append(h("div", {class:"tbl-wrap"}, h("table", null,
-    h("thead", null, h("tr", null, ["Deal","Account","Stage","Go/no-go"].map(t => h("th", null, t)), h("th", {class:"num"}, "Value"), h("th", {class:"num"}, "Prob."), h("th", null, "Bid due"), h("th", null, "Owner"))),
+    h("thead", null, h("tr", null, ["Deal","Account","Stage","Go/no-go"].map(t => h("th", null, t)), h("th", {class:"num"}, "Value"), h("th", {class:"num"}, "Prob."), h("th", null, "Bid due"), h("th", null, "Account manager"), h("th", null, "Sales engineer"))),
     h("tbody", null, ds.map(d => h("tr", {class:"click", tabindex:"0", onclick:() => openDeal(d.id), onkeydown: e => { if (e.key === "Enter") openDeal(d.id); }},
       h("td", null, h("div", {style:"font-weight:600"}, d.name), h("div", {class:"muted", style:"font-size:12px"}, (d.services || []).join(", "))),
       h("td", null, acctName(d.account_id) || "—"),
@@ -578,8 +605,9 @@ function viewDeals() {
       h("td", null, gngChip(d) || h("span", {class:"muted"}, "—")),
       h("td", {class:"num"}, money(d.value)), h("td", {class:"num"}, prob(d) + "%"),
       h("td", null, d.bid_due ? dueChip(d.bid_due) : "—"),
-      h("td", null, personName(d.owner_id) + (membersOf(d.id).length ? " +" + membersOf(d.id).length : ""))))),
-    h("tfoot", null, h("tr", null, h("td", {colspan:"4", class:"muted"}, plural(ds.length, "deal")), h("td", {class:"num"}, money(tot)), h("td", {colspan:"3"}))))));
+      h("td", null, personName(d.owner_id)),
+      h("td", null, seNames(d.id) || h("span", {class:"muted"}, "—"))))),
+    h("tfoot", null, h("tr", null, h("td", {colspan:"4", class:"muted"}, plural(ds.length, "deal")), h("td", {class:"num"}, money(tot)), h("td", {colspan:"4"}))))));
   return wrap;
 }
 
@@ -756,7 +784,7 @@ function openDeal(id, startTab) {
       fld(draft, "account_id", "Account", "select", {options:acctOptions(), blank:"Choose an account", onchange:drawContacts}),
       contactBox,
       fld(draft, "stage", "Stage", "select", {options:STAGES.map(s => [s.id, s.name]), blank:false, onchange:() => drawOutcome()}),
-      fld(draft, "owner_id", "Owner", "select", {options:peopleOptions(), blank:false, readonly: src ? !manage : !isAdmin()}),
+      fld(draft, "owner_id", "Account manager", "select", {options:peopleOptions(), blank:false, readonly: src ? !manage : !isAdmin()}),
       fld(draft, "value", "Value (USD)", "number"),
       fld(draft, "probability", "Probability % (blank = stage default)", "number"),
       fld(draft, "bid_due", "Bid / proposal due", "date"),
@@ -795,29 +823,42 @@ function openDeal(id, startTab) {
 
   const people = () => {
     const box = h("div");
-    if (!src) { box.append(h("div", {class:"muted"}, "Save the deal first, then share it with the people working it.")); return box; }
+    if (!src) { box.append(h("div", {class:"muted"}, "Save the deal first, then add the sales engineer and anyone else working it.")); return box; }
     const cur = byId(S.deals, src.id) || src;
-    const mem = membersOf(cur.id);
-    const row = (uid, role, removable) => h("div", {class:"person"}, h("div", {class:"av"}, initials(uid)),
-      h("div", {class:"who"}, personName(uid), h("small", null, ((person(uid) || {}).email || "") + " · " + role)),
-      removable ? h("button", {class:"btn small", onclick: async () => {
-        const ok = await run(sb.from("deal_members").delete().eq("deal_id", cur.id).eq("user_id", uid), uid === S.me.id ? "You left this deal" : "Removed");
-        if (ok) { S.members = S.members.filter(m => !(m.deal_id === cur.id && m.user_id === uid)); render(); if (uid === S.me.id && !isAdmin()) closeDrawer(); else drawerRefresh(); }
-      }}, uid === S.me.id && !canManage(cur) ? "Leave" : "Remove") : null);
-    box.append(h("p", {class:"hint muted", style:"margin-top:0"}, "Only the owner, the people listed here, and admins can see this deal and its notes and tasks."));
-    box.append(row(cur.owner_id, "owner", false));
-    for (const uid of mem) box.append(row(uid, "shared", canManage(cur) || uid === S.me.id));
-    if (canManage(cur)) {
-      const avail = activePeople().filter(p => p.id !== cur.owner_id && !mem.includes(p.id));
-      const sel = h("select", {class:"inp", id:"addMember", "aria-label":"Person to share with"}, h("option", {value:""}, avail.length ? "Choose a person" : "Everyone already has access"), avail.map(p => h("option", {value:p.id}, p.full_name || p.email)));
-      box.append(h("div", {class:"section-h", style:"margin-top:16px"}, "Share with"),
-        h("div", {style:"display:flex;gap:8px"}, sel, h("button", {class:"btn primary", onclick: async () => {
+    const rows = S.members.filter(m => m.deal_id === cur.id);
+    const manage = canManage(cur);
+    const avatar = uid => h("div", {class:"av"}, initials(uid));
+    box.append(h("p", {class:"hint muted", style:"margin-top:0"}, "Only the people on this deal, their managers, and admins can see it and its notes and tasks."));
+    box.append(h("div", {class:"person"}, avatar(cur.owner_id), h("div", {class:"who"}, personName(cur.owner_id), h("small", null, ((person(cur.owner_id) || {}).email || "") + " · Account manager (owner)"))));
+    for (const m of rows) {
+      const uid = m.user_id;
+      const roleCtl = manage ? h("select", {class:"inp", style:"max-width:190px", "aria-label":"Role for " + personName(uid), onchange: async e => {
+          const role = e.target.value;
+          if (await run(sb.from("deal_members").update({role}).eq("deal_id", cur.id).eq("user_id", uid), personName(uid) + " is now " + dealRoleLabel(role).toLowerCase())) { m.role = role; render(); }
+        }}, DEAL_ROLES.map(([v, t]) => h("option", {value:v, selected:(m.role || "support") === v}, t)))
+        : h("span", {class:"chip"}, dealRoleLabel(m.role));
+      box.append(h("div", {class:"person"}, avatar(uid),
+        h("div", {class:"who"}, personName(uid), h("small", null, (person(uid) || {}).email || "")), roleCtl,
+        manage || uid === S.me.id ? h("button", {class:"btn small", onclick: async () => {
+          const ok = await run(sb.from("deal_members").delete().eq("deal_id", cur.id).eq("user_id", uid), uid === S.me.id ? "You left this deal" : "Removed");
+          if (ok) { S.members = S.members.filter(x => !(x.deal_id === cur.id && x.user_id === uid)); render(); if (uid === S.me.id && !isAdmin() && !isManager()) closeDrawer(); else drawerRefresh(); }
+        }}, uid === S.me.id && !manage ? "Leave" : "Remove") : null));
+    }
+    if (manage) {
+      const taken = new Set([cur.owner_id, ...rows.map(m => m.user_id)]);
+      const avail = activePeople().filter(p => !taken.has(p.id));
+      const roleSel = h("select", {class:"inp", id:"addRole", "aria-label":"Role", style:"max-width:190px"}, DEAL_ROLES.map(([v, t]) => h("option", {value:v}, t)));
+      const sel = h("select", {class:"inp", id:"addMember", "aria-label":"Person to add", onchange: e => { const p = person(e.target.value); if (p) roleSel.value = jobToDealRole(p.job_role); }},
+        h("option", {value:""}, avail.length ? "Choose a person" : "Everyone is already on this deal"),
+        avail.map(p => h("option", {value:p.id}, (p.full_name || p.email) + (p.job_role ? " · " + (JOB_ROLES.find(x => x[0] === p.job_role) || [,""])[1] : ""))));
+      box.append(h("div", {class:"section-h", style:"margin-top:16px"}, "Add to the deal team"),
+        h("div", {style:"display:flex;gap:8px;flex-wrap:wrap"}, sel, roleSel, h("button", {class:"btn primary", onclick: async () => {
           if (!sel.value) return;
-          const ok = await run(sb.from("deal_members").insert({deal_id:cur.id, user_id:sel.value, added_by:S.me.id}), "Shared with " + personName(sel.value));
-          if (ok) { S.members.push({deal_id:cur.id, user_id:sel.value}); render(); drawerRefresh(); }
-        }}, "Share")),
-        h("p", {class:"muted", style:"font-size:12px"}, "People appear in this list after they've signed in to the CRM once."));
-    } else box.append(h("p", {class:"muted", style:"font-size:13px;margin-top:12px"}, "Ask " + personName(cur.owner_id) + " or an admin to share it with someone else."));
+          const row = {deal_id:cur.id, user_id:sel.value, added_by:S.me.id, role:roleSel.value};
+          if (await run(sb.from("deal_members").insert(row), personName(sel.value) + " added as " + dealRoleLabel(row.role).toLowerCase())) { S.members.push(row); render(); drawerRefresh(); }
+        }}, "Add")),
+        h("p", {class:"muted", style:"font-size:12px"}, "To change the account manager, use the Details tab. People appear in this list after they've signed in to the CRM once."));
+    } else box.append(h("p", {class:"muted", style:"font-size:13px;margin-top:12px"}, "Ask " + personName(cur.owner_id) + " or an admin to change who's on this deal."));
     return box;
   };
 
@@ -874,7 +915,7 @@ function openDeal(id, startTab) {
   }}, src ? "Save" : "Create deal"));
 
   openDrawer({title: src ? src.name : "New deal", start:startTab,
-    tabs:[["d","Details",details],["g","Go/no-go",gng],["p","People",people],["n","Notes",notes],["t","Tasks",tasks]], foot});
+    tabs:[["d","Details",details],["g","Go/no-go",gng],["p","Deal team",people],["n","Notes",notes],["t","Tasks",tasks]], foot});
 }
 
 // ---------------------------------------------------------------- account / contact / task drawers
@@ -979,14 +1020,16 @@ function viewTeam() {
     h("p", {class:"muted", style:"margin:-6px 0 12px"}, "Everyone with a CRM login. Admins see every deal. A manager (anyone with people reporting to them) sees their team's deals, tasks and targets, plus a team dashboard and scorecard. Turning someone off blocks their access right away; their deals stay put so you can reassign them."));
   const list = S.profiles.slice().sort((a, b) => (b.active - a.active) || (a.full_name || a.email).localeCompare(b.full_name || b.email));
   wrap.append(h("div", {class:"tbl-wrap"}, h("table", null,
-    h("thead", null, h("tr", null, h("th", null, "Name"), h("th", null, "Email"), h("th", null, "Role"), h("th", null, "Reports to"), h("th", null, "Access"), h("th", {class:"num"}, "Deals owned"), h("th"))),
+    h("thead", null, h("tr", null, h("th", null, "Name"), h("th", null, "Email"), h("th", null, "Access level"), h("th", null, "Job role"), h("th", null, "Reports to"), h("th", null, "Access"), h("th", {class:"num"}, "Deals owned"), h("th"))),
     h("tbody", null, list.map(p => {
-      const d = {full_name:p.full_name, role:p.role, active:p.active, manager_id:p.manager_id || null};
+      const d = {full_name:p.full_name, role:p.role, active:p.active, manager_id:p.manager_id || null, job_role:p.job_role || null};
       const owned = S.deals.filter(x => x.owner_id === p.id).length;
       return h("tr", null,
         h("td", null, h("input", {class:"inp", id:"tn-" + p.id, value:p.full_name || "", "aria-label":"Name", oninput: e => { d.full_name = e.target.value; }})),
         h("td", {class:"mono", style:"font-size:12.5px"}, p.email),
         h("td", null, h("select", {class:"inp", "aria-label":"Role", onchange: e => { d.role = e.target.value; }}, h("option", {value:"rep", selected:p.role === "rep"}, "Rep"), h("option", {value:"admin", selected:p.role === "admin"}, "Admin"))),
+        h("td", null, h("select", {class:"inp", "aria-label":"Job role", onchange: e => { d.job_role = e.target.value || null; }},
+          h("option", {value:""}, "—"), JOB_ROLES.map(([v, t]) => h("option", {value:v, selected:p.job_role === v}, t)))),
         h("td", null, h("select", {class:"inp", "aria-label":"Reports to", onchange: e => { d.manager_id = e.target.value || null; }},
           h("option", {value:""}, "No one (sees own deals)"), activePeople().filter(x => x.id !== p.id).map(x => h("option", {value:x.id, selected:p.manager_id === x.id}, x.full_name || x.email)))),
         h("td", null, h("select", {class:"inp", "aria-label":"Access", onchange: e => { d.active = e.target.value === "on"; }}, h("option", {value:"on", selected:p.active}, "Active"), h("option", {value:"off", selected:!p.active}, "Turned off"))),
@@ -1065,7 +1108,7 @@ function parseCSV(text) {
   return rows.filter(r => r.some(x => x.trim() !== ""));
 }
 const IMPORT_TARGETS = {
-  deals:[["name","Deal name",["deal","opportunity","project","name","pursuit"]],["account","Account / company",["account","company","customer","client"]],["stage","Stage",["stage","status"]],["value","Value",["value","amount","price","contract","bid amount","total"]],["owner","Owner (name or email)",["owner","rep","salesperson","assigned"]],["bid_due","Bid due",["bid due","due","proposal due","due date"]],["close_date","Close date",["close","award"]],["rfp_no","RFP #",["rfp","bid #","bid no","solicitation"]],["vertical","Vertical",["vertical","market","industry"]],["description","Scope / notes",["scope","description","notes"]],["outcome_reason","Win/loss reason",["reason","loss reason","lost reason"]]],
+  deals:[["name","Deal name",["deal","opportunity","project","name","pursuit"]],["account","Account / company",["account","company","customer","client"]],["stage","Stage",["stage","status"]],["value","Value",["value","amount","price","contract","bid amount","total"]],["owner","Account manager (name or email)",["account manager","owner","rep","salesperson","assigned"]],["se","Sales engineer (name or email)",["sales engineer","engineer","se"]],["bid_due","Bid due",["bid due","due","proposal due","due date"]],["close_date","Close date",["close","award"]],["rfp_no","RFP #",["rfp","bid #","bid no","solicitation"]],["vertical","Vertical",["vertical","market","industry"]],["description","Scope / notes",["scope","description","notes"]],["outcome_reason","Win/loss reason",["reason","loss reason","lost reason"]]],
   accounts:[["name","Account name",["account","company","name","organization"]],["type","Type",["type","category"]],["vertical","Vertical",["vertical","industry","market"]],["city","City",["city"]],["state","State",["state"]],["website","Website",["website","url","web"]],["notes","Notes",["notes"]]],
   contacts:[["name","Full name",["full name","name","contact"]],["first","First name",["first"]],["last","Last name",["last"]],["title","Title",["title","position","role"]],["account","Account / company",["company","account","organization"]],["email","Email",["email","e-mail"]],["phone","Phone",["phone","mobile","cell","office"]],["notes","Notes",["notes"]]],
 };
@@ -1131,7 +1174,7 @@ async function runImport(st, draw) {
   const get = (r, k) => st.map[k] != null ? (r[st.map[k]] || "").trim() : "";
   let n = 0, skipped = 0;
   try {
-    let rows = [];
+    let rows = []; const seFor = [];
     if (st.type === "accounts") {
       const have = new Set(S.accounts.map(a => a.name.trim().toLowerCase()));
       for (const r of st.rows) { const name = get(r, "name"); if (!name || have.has(name.toLowerCase())) { skipped++; continue; } have.add(name.toLowerCase());
@@ -1144,6 +1187,8 @@ async function runImport(st, draw) {
         for (const r of st.rows) { const name = get(r, "name") || [get(r, "first"), get(r, "last")].filter(Boolean).join(" "); if (!name) { skipped++; continue; }
           rows.push({name, title:get(r, "title") || null, account_id:aid(r), email:get(r, "email") || null, phone:get(r, "phone") || null, notes:get(r, "notes") || null}); }
       } else {
+        const findPerson = v => { v = (v || "").toLowerCase().trim(); if (!v) return null;
+          const p = S.profiles.find(p => p.active && ((p.email || "").toLowerCase() === v || (p.full_name || "").toLowerCase() === v)); return p ? p.id : null; };
         const findOwner = v => { v = (v || "").toLowerCase().trim(); if (!v) return S.me.id;
           const p = S.profiles.find(p => p.active && ((p.email || "").toLowerCase() === v || (p.full_name || "").toLowerCase() === v));
           return p ? (isAdmin() || p.id === S.me.id ? p.id : S.me.id) : S.me.id; };
@@ -1152,12 +1197,17 @@ async function runImport(st, draw) {
           const stg = normStage(get(r, "stage"));
           rows.push({name, account_id:aid(r), owner_id:findOwner(get(r, "owner")), stage:stg, outcome_reason: get(r, "outcome_reason") || (stg === "lost" ? "Unknown" : stg === "nobid" ? "Other" : null), value: isFinite(v) && v ? v : null,
             bid_due:normDate(get(r, "bid_due")), close_date:normDate(get(r, "close_date")), rfp_no:get(r, "rfp_no") || null,
-            vertical: VERTICALS.find(x => x.toLowerCase() === get(r, "vertical").toLowerCase()) || null, description:get(r, "description") || null, services:[], gng:{scores:{}}}); }
+            vertical: VERTICALS.find(x => x.toLowerCase() === get(r, "vertical").toLowerCase()) || null, description:get(r, "description") || null, services:[], gng:{scores:{}}});
+          seFor.push(findPerson(get(r, "se"))); }
       }
     }
     for (let i = 0; i < rows.length; i += 200) {
-      const {error} = await sb.from(st.type).insert(rows.slice(i, i + 200));
+      const {data:made, error} = await sb.from(st.type).insert(rows.slice(i, i + 200)).select("id,owner_id");
       if (error) throw error;
+      if (st.type === "deals" && made) {
+        const mem = made.map((d, j) => ({deal_id:d.id, user_id:seFor[i + j], role:"sales_engineer", added_by:S.me.id})).filter(m => m.user_id && m.user_id !== made.find(x => x.id === m.deal_id).owner_id);
+        if (mem.length) { const r2 = await sb.from("deal_members").insert(mem); if (r2.error) toast("Sales engineers couldn't be added: " + friendly(r2.error)); }
+      }
       n += Math.min(200, rows.length - i); prog(n + " imported…");
     }
     toast("Imported " + n + " " + st.type + (skipped ? " · skipped " + skipped + " (blank or already there)" : ""));
@@ -1170,8 +1220,8 @@ function csvEsc(v) { v = v == null ? "" : String(v); return /[",\n\r]/.test(v) ?
 function exportPanel() {
   const dl = type => {
     let head, rows;
-    if (type === "deals") { head = ["Deal","Account","Stage","Value","Probability","Bid due","Close date","Owner","Shared with","RFP #","Vertical","Services","Go/no-go score","Decision","Outcome reason","Won by","Their price","Outcome notes"];
-      rows = S.deals.map(d => [d.name, acctName(d.account_id), STAGE[d.stage].name, d.value, prob(d), d.bid_due, d.close_date, personName(d.owner_id), membersOf(d.id).map(personName).join("; "), d.rfp_no, d.vertical, (d.services || []).join("; "), gngScore(d).pct, (d.gng && d.gng.decision) || "", d.outcome_reason, d.winning_competitor, d.winning_price, d.outcome_notes]); }
+    if (type === "deals") { head = ["Deal","Account","Stage","Value","Probability","Bid due","Close date","Account manager","Sales engineer","Deal team","RFP #","Vertical","Services","Go/no-go score","Decision","Outcome reason","Won by","Their price","Outcome notes"];
+      rows = S.deals.map(d => [d.name, acctName(d.account_id), STAGE[d.stage].name, d.value, prob(d), d.bid_due, d.close_date, personName(d.owner_id), seNames(d.id), S.members.filter(m => m.deal_id === d.id).map(m => personName(m.user_id) + " (" + dealRoleLabel(m.role) + ")").join("; "), d.rfp_no, d.vertical, (d.services || []).join("; "), gngScore(d).pct, (d.gng && d.gng.decision) || "", d.outcome_reason, d.winning_competitor, d.winning_price, d.outcome_notes]); }
     else if (type === "accounts") { head = ["Account","Type","Vertical","City","State","Website"]; rows = S.accounts.map(a => [a.name, a.type, a.vertical, a.city, a.state, a.website]); }
     else if (type === "contacts") { head = ["Name","Title","Account","Email","Phone"]; rows = S.contacts.map(c => [c.name, c.title, acctName(c.account_id), c.email, c.phone]); }
     else { head = ["Task","Due","Assigned to","Deal","Done"]; rows = S.tasks.map(t => [t.title, t.due, personName(t.assignee_id), dealName(t.deal_id), t.done ? "yes" : ""]); }

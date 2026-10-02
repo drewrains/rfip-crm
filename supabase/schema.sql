@@ -170,6 +170,16 @@ create unique index if not exists targets_year_user_uq
 alter table public.profiles add column if not exists manager_id uuid references public.profiles(id) on delete set null;
 create index if not exists profiles_manager_idx on public.profiles(manager_id);
 
+-- Deal team roles (the deal owner is the account manager) and each person's usual job.
+alter table public.deal_members add column if not exists role text not null default 'support';
+do $$ begin
+  alter table public.deal_members add constraint deal_members_role_chk check (role in ('account_manager','sales_engineer','estimator','support'));
+exception when duplicate_object then null; end $$;
+alter table public.profiles add column if not exists job_role text;
+do $$ begin
+  alter table public.profiles add constraint profiles_job_role_chk check (job_role is null or job_role in ('account_manager','sales_engineer','estimator','manager','other'));
+exception when duplicate_object then null; end $$;
+
 -- ---------- helper functions (run with owner rights so policies don't loop)
 create or replace function public.is_active_user() returns boolean
 language sql stable security definer set search_path = public as $$
@@ -247,7 +257,7 @@ begin
   if not public.is_admin() then
     if new.role is distinct from old.role or new.active is distinct from old.active
        or new.email is distinct from old.email or new.id is distinct from old.id
-       or new.manager_id is distinct from old.manager_id then
+       or new.manager_id is distinct from old.manager_id or new.job_role is distinct from old.job_role then
       raise exception 'Only an admin can change roles or access.';
     end if;
   end if;
@@ -406,6 +416,8 @@ create policy deals_delete on public.deals for delete to authenticated using (pu
 -- sharing list: visible to anyone on the deal; changed by the owner or an admin
 create policy members_read   on public.deal_members for select to authenticated using (public.can_see_deal(deal_id));
 create policy members_insert on public.deal_members for insert to authenticated with check (public.can_manage_deal(deal_id));
+create policy members_update on public.deal_members for update to authenticated
+  using (public.can_manage_deal(deal_id)) with check (public.can_manage_deal(deal_id));
 create policy members_delete on public.deal_members for delete to authenticated
   using (public.can_manage_deal(deal_id) or (user_id = auth.uid() and public.is_active_user()));
 
