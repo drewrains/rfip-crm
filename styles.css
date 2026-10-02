@@ -165,3 +165,8 @@ main{padding-bottom:40px}
 }
 @media (prefers-reduced-motion:no-preference){.drawer{animation:slide .18s ease-out}@keyframes slide{from{transform:translateX(24px);opacity:.6}}}
 #meName:not(:empty)::after{content:" ·"}
+.pw-form{display:flex;flex-direction:column;gap:6px;text-align:left}
+.pw-form .btn{margin-top:8px}
+.or{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;margin-block:4px}
+.or::before,.or::after{content:"";flex:1;border-top:1px solid var(--line)}
+.small-print{font-size:12px;margin:0}

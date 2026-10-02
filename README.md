@@ -12,7 +12,7 @@ RFIP's sales CRM: deal pipeline, go/no-go scoring, accounts, contacts, tasks, a 
 | Go/no-go criteria | Read | Edit |
 | Team (roles, turn access off) | — | Yes |
 
-Only `@rfip.com` Microsoft accounts can sign in. `drains@rfip.com` starts as the admin.
+Only `@rfip.com` accounts can sign in. `drains@rfip.com` starts as the admin. People sign in with a password an admin creates for them, or with Microsoft once that's set up.
 
 ## Files
 
@@ -29,9 +29,20 @@ Do these in order. Total time is about an hour, mostly waiting on the Microsoft 
 
 1. In Supabase, open the `rfip-crm` project → **SQL Editor** → **New query**.
 2. Paste the whole contents of `supabase/schema.sql` and click **Run**. It should finish with "Success. No rows returned".
-3. **Authentication → Sign In / Providers → Email**: turn **off** "Enable Email provider" (everyone signs in through Microsoft).
+3. **Authentication → Sign In / Providers**: turn **off** "Allow new users to sign up". Leave the **Email** provider on. Nobody can create their own login; an admin creates them (see *Creating logins* below).
 
-### 2. Microsoft 365 admin: register the app (Entra ID)
+### Creating logins (email + password)
+
+For each person, in Supabase: **Authentication → Users → Add user → Create new user**.
+
+- **Email:** their @rfip.com address. **Password:** a temporary one you send them privately.
+- Check **Auto Confirm User**.
+
+They sign in, then click **Password** in the top bar to set their own. To reset a forgotten password, open the user in the same list and set a new one. To remove access, turn them off in the app's **Team** tab (or delete the user in Supabase).
+
+Create your own login (`drains@rfip.com`) first. You become the admin.
+
+### 2. Microsoft 365 admin: register the app (Entra ID) — optional, later
 
 Done by whoever administers RFIP's Microsoft 365.
 
@@ -62,6 +73,7 @@ Done by whoever administers RFIP's Microsoft 365.
 2. **Application (client) ID** and **Secret Value** from step 2.
 3. **Azure Tenant URL:** `https://login.microsoftonline.com/<tenant-id>` (the Directory (tenant) ID from step 2). This limits sign-in to RFIP's own Microsoft accounts.
 4. Save.
+5. In `config.js`, set `microsoftLogin: true` and push. The **Sign in with Microsoft** button appears. Once everyone uses Microsoft you can set `passwordLogin: false`.
 
 ### 4. Vercel: put the app online
 
@@ -78,9 +90,9 @@ Done by whoever administers RFIP's Microsoft 365.
 
 ### 6. First sign-in and starting data
 
-1. Open the app and **Sign in with Microsoft** as `drains@rfip.com`. You're the admin.
+1. Open the app and sign in as `drains@rfip.com`. You're the admin.
 2. Back in Supabase **SQL Editor**, run `supabase/seed.sql` to load the current pursuits (all assigned to Drew to start).
-3. Have each rep open the app and sign in once. They then appear in the Team tab and in the owner and sharing lists, and you can reassign and share deals with them.
+3. Create a login for each rep (see *Creating logins*) and have them sign in once. They then appear in the Team tab and in the owner and sharing lists, and you can reassign and share deals with them.
 
 ### 7. Optional: crm.rfip.com
 

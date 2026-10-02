@@ -13,9 +13,19 @@
 <div id="signin" class="signin" hidden>
   <div class="signin-card">
     <div class="brand big">RFIP <span>Pipeline</span></div>
-    <p class="muted">Sign in with your RFIP Microsoft 365 account.</p>
-    <button class="btn primary wide" id="msLogin">Sign in with Microsoft</button>
+    <form id="pwForm" class="pw-form">
+      <label class="lab" for="pwEmail">Email</label>
+      <input class="inp" id="pwEmail" type="email" autocomplete="username" required placeholder="you@rfip.com">
+      <label class="lab" for="pwPass">Password</label>
+      <input class="inp" id="pwPass" type="password" autocomplete="current-password" required>
+      <button class="btn primary wide" type="submit" id="pwSubmit">Sign in</button>
+    </form>
+    <div id="msBlock" hidden>
+      <div class="or"><span>or</span></div>
+      <button class="btn wide" id="msLogin">Sign in with Microsoft</button>
+    </div>
     <p class="error" id="signinError" hidden></p>
+    <p class="muted small-print">Need access or a password reset? Ask an admin.</p>
   </div>
 </div>
 
@@ -25,6 +35,7 @@
     <nav class="tabs" id="tabs" aria-label="Views"></nav>
     <div class="me">
       <button class="btn primary" id="newDeal">+ New deal</button>
+      <button class="btn small" id="changePw" hidden>Password</button>
       <button class="btn small" id="signOut" title="Sign out"><span id="meName"></span><span>Sign out</span></button>
     </div>
   </div></header>

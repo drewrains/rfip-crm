@@ -114,8 +114,32 @@ function gngChip(d) {
 // ---------------------------------------------------------------- auth
 function showSignin(err) {
   $("#app").hidden = true; $("#signin").hidden = false;
+  $("#pwForm").hidden = cfg.passwordLogin === false;
+  $("#msBlock").hidden = !cfg.microsoftLogin;
+  if (cfg.passwordLogin === false) { const o = document.querySelector("#msBlock .or"); if (o) o.hidden = true; }
   const e = $("#signinError"); e.textContent = err || ""; e.hidden = !err;
 }
+$("#pwForm").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  if (!sb) return;
+  const btn = $("#pwSubmit"); btn.disabled = true; btn.textContent = "Signing in…";
+  const {error} = await sb.auth.signInWithPassword({email: $("#pwEmail").value.trim().toLowerCase(), password: $("#pwPass").value});
+  btn.disabled = false; btn.textContent = "Sign in";
+  if (error) showSignin(/invalid login/i.test(error.message) ? "That email and password don't match. Ask an admin if you need a reset." : friendly(error));
+  else $("#pwPass").value = "";
+});
+$("#changePw").addEventListener("click", () => {
+  const p1 = h("input", {class:"inp", id:"np1", type:"password", autocomplete:"new-password"});
+  const p2 = h("input", {class:"inp", id:"np2", type:"password", autocomplete:"new-password"});
+  openDrawer({title:"Change password", body:h("div", {class:"form"},
+      h("div", {class:"field full"}, h("label", {for:"np1"}, "New password (at least 10 characters)"), p1),
+      h("div", {class:"field full"}, h("label", {for:"np2"}, "Type it again"), p2)),
+    foot:[h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel"), h("button", {class:"btn primary", onclick: async () => {
+      if (p1.value.length < 10) { toast("Use at least 10 characters."); return; }
+      if (p1.value !== p2.value) { toast("The two passwords don't match."); return; }
+      if (await run(sb.auth.updateUser({password:p1.value}), "Password changed")) closeDrawer();
+    }}, "Change password")]});
+});
 function authErrorFromUrl() {
   const p = new URLSearchParams(location.search + "&" + location.hash.replace(/^#/, ""));
   const d = p.get("error_description") || p.get("error");
@@ -150,6 +174,7 @@ async function start(session) {
   if (!me.active) { S.started = false; showSignin("Your CRM access is turned off. Ask an admin to turn it back on."); await sb.auth.signOut(); return; }
   S.me = me;
   $("#meName").textContent = me.full_name || me.email;
+  $("#changePw").hidden = !(session.user.app_metadata && (session.user.app_metadata.providers || [session.user.app_metadata.provider]).includes("email"));
   $("#signin").hidden = true; $("#app").hidden = false;
   await loadAll();
   subscribe();
