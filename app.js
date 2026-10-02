@@ -19,7 +19,15 @@ const SERVICES = ["DAS","ERRCS","Wi-Fi","Network","Structured cabling","Fiber","
 const VERTICALS = ["Stadiums & venues","Collegiate athletics","Oil & energy","Data centers","Healthcare","Government","Enterprise","Retail & auto","Other"];
 const ACCT_TYPES = ["Owner / end user","General contractor","Electrical contractor","Integrator / partner","Developer","Consultant / designer","Manufacturer / vendor","Carrier / neutral host"];
 const SOURCES = ["Public RFP","Invited bid","Repeat client","Referral","GC / partner","Cold outreach","Inbound"];
-const DEAL_FIELDS = ["name","account_id","contact_id","owner_id","stage","value","probability","bid_due","close_date","rfp_no","source","vertical","services","description","gng"];
+const DEAL_FIELDS = ["name","account_id","contact_id","owner_id","stage","value","probability","bid_due","close_date","rfp_no","source","vertical","services","description","gng",
+  "outcome_reason","winning_competitor","winning_price","outcome_notes"];
+const WIN_REASONS = ["Relationship","Price","Technical solution","Self-perform crews / schedule","Local or diversity preference","GC / partner pull-through","Incumbent","Other"];
+const LOSS_REASONS = ["Price","Relationship / incumbent","Technical or scope fit","Schedule or capacity","Bonding, licensing or prequalification","Late or incomplete submission","Project cancelled or delayed","Unknown","Other"];
+const NOBID_REASONS = ["Not a fit for our services","Crew or PM capacity","Margin too low","Contract or risk terms","Timeline too short","Bonding, licensing or prequalification","Relationship favors another bidder","Other"];
+const reasonsFor = stage => stage === "won" ? WIN_REASONS : stage === "nobid" ? NOBID_REASONS : LOSS_REASONS;
+const NOTE_KINDS = [["note","Note"],["call","Call"],["meeting","Meeting"],["site_visit","Site visit"],["email","Email"]];
+const kindLabel = k => (NOTE_KINDS.find(x => x[0] === k) || NOTE_KINDS[0])[1];
+const THIS_YEAR = new Date().getFullYear();
 const DEFAULT_GNG = {threshold:{go:70, review:55}, criteria:[]};
 
 // ---------------------------------------------------------------- setup
@@ -30,7 +38,7 @@ const sb = configured ? window.supabase.createClient(cfg.supabaseUrl, cfg.supaba
 }) : null;
 
 const S = {
-  me:null, profiles:[], accounts:[], contacts:[], deals:[], members:[], tasks:[], gng:DEFAULT_GNG,
+  me:null, profiles:[], accounts:[], contacts:[], deals:[], members:[], tasks:[], targets:[], gng:DEFAULT_GNG, year:THIS_YEAR, dim:"owner",
   view:"dashboard", q:"", stageFilter:"open", ownerFilter:"", started:false,
 };
 try { const v = localStorage.getItem("rfipcrm.view"); if (v) S.view = v; } catch (e) {}
@@ -77,6 +85,7 @@ const isOpen = d => (STAGE[d.stage] || STAGE.lead).open;
 const isAdmin = () => S.me && S.me.role === "admin";
 const canManage = d => isAdmin() || (d && d.owner_id === S.me.id);
 const membersOf = dealId => S.members.filter(m => m.deal_id === dealId).map(m => m.user_id);
+const fmtDateTime = x => new Date(x).toLocaleString("en-US", {month:"short", day:"numeric", year:"numeric", hour:"numeric", minute:"2-digit"});
 const nullify = v => (v === "" || v === undefined) ? null : v;
 
 function toast(msg) { const t = h("div", {class:"toast", role:"status"}, msg); document.body.append(t); setTimeout(() => t.remove(), 3000); }
@@ -194,7 +203,7 @@ async function fetchAll(table, order) {
   }
   return out;
 }
-const TABLES = {profiles:"profiles", accounts:"accounts", contacts:"contacts", deals:"deals", members:"deal_members", tasks:"tasks"};
+const TABLES = {profiles:"profiles", accounts:"accounts", contacts:"contacts", deals:"deals", members:"deal_members", tasks:"tasks", targets:"targets"};
 async function loadTable(key) {
   try { S[key] = await fetchAll(TABLES[key], key === "members" ? "deal_id" : "created_at"); }
   catch (e) { status("Couldn't load " + key + ": " + friendly(e)); }
@@ -285,60 +294,127 @@ function bars(rows, fmt) {
     h("div", {class:"track", title: r.label + ": " + fmt(r.v) + (r.n != null ? " · " + r.n + " deals" : "")}, h("div", {class:"fill", style:"width:" + (r.v / max * 100) + "%"})),
     h("div", {class:"val"}, fmt(r.v), r.n != null ? h("small", null, " · " + r.n) : null)]));
 }
+function closedIn(deals, year) { return deals.filter(d => !isOpen(d) && (d.close_date || "").startsWith(String(year))); }
+function yearResults(deals, year) {
+  const c = closedIn(deals, year);
+  const won = c.filter(d => d.stage === "won"), lost = c.filter(d => d.stage === "lost"), nobid = c.filter(d => d.stage === "nobid");
+  const wonV = won.reduce((a, d) => a + (Number(d.value) || 0), 0);
+  return {won, lost, nobid, wonV, rate: won.length + lost.length ? Math.round(won.length / (won.length + lost.length) * 100) : null,
+    avg: won.length ? wonV / won.length : 0};
+}
+function delta(cur, prev, fmt, suffix) {
+  if (prev == null || cur == null) return "";
+  const d = cur - prev; if (!d) return "same as " + suffix;
+  return (d > 0 ? "▲ " : "▼ ") + fmt(Math.abs(d)) + " vs " + suffix;
+}
+function targetFor(userId, year) { return S.targets.find(t => t.year === year && (t.user_id || null) === (userId || null)); }
+function progressRow(label, actual, target) {
+  const pct = target ? Math.round(actual / target * 100) : 0;
+  return [h("div", {class:"lbl"}, label),
+    h("div", {class:"track", title: money(actual) + " of " + money(target)}, h("div", {class:"fill", style:"width:" + Math.min(100, pct) + "%"})),
+    h("div", {class:"val"}, money(actual, true), h("small", null, " / " + money(target, true) + " · " + pct + "%"))];
+}
+const DIMS = [["owner","Rep"],["vertical","Vertical"],["service","Service line"],["source","Source"],["acct_type","Account type"]];
+function dimKeys(d, dim) {
+  if (dim === "owner") return [personName(d.owner_id)];
+  if (dim === "vertical") return [d.vertical || "Unassigned"];
+  if (dim === "service") return d.services && d.services.length ? d.services : ["Unassigned"];
+  if (dim === "source") return [d.source || "Unassigned"];
+  const a = byId(S.accounts, d.account_id); return [(a && a.type) || "Unassigned"];
+}
 function viewDashboard() {
   const wrap = h("div");
+  const yearsSet = new Set([THIS_YEAR]); for (const d of S.deals) if (d.close_date) yearsSet.add(Number(d.close_date.slice(0, 4)));
+  const years = [...yearsSet].sort((a, b) => b - a);
   const deals = S.ownerFilter ? S.deals.filter(d => d.owner_id === S.ownerFilter || membersOf(d.id).includes(S.ownerFilter)) : S.deals;
   wrap.append(h("div", {class:"toolbar"}, h("h2", null, isAdmin() ? "Company dashboard" : "My dashboard"),
+    h("select", {"aria-label":"Year", id:"dash-year", onchange: e => { S.year = Number(e.target.value); render(); }}, years.map(y => h("option", {value:String(y), selected:S.year === y}, String(y)))),
     isAdmin() ? h("select", {"aria-label":"Rep", id:"dash-rep", onchange: e => { S.ownerFilter = e.target.value; render(); }},
       h("option", {value:""}, "Everyone"), activePeople().map(p => h("option", {value:p.id, selected:S.ownerFilter === p.id}, p.full_name || p.email))) : null));
   if (!isAdmin()) wrap.append(h("p", {class:"muted", style:"margin:-6px 0 12px"}, "Deals you own or that have been shared with you."));
   if (!S.deals.length) { wrap.append(h("div", {class:"panel"}, emptyState("No deals yet", "Create a deal or import a spreadsheet to fill the dashboard.", h("button", {class:"btn primary", onclick:() => openDeal()}, "+ New deal")))); return wrap; }
   const st = stats(deals);
+  const Y = S.year, cur = yearResults(deals, Y), prev = yearResults(deals, Y - 1);
+  const hasPrev = closedIn(deals, Y - 1).length > 0, py = String(Y - 1);
   const grid = h("div", {class:"dash"});
 
+  // results for the year
+  const tScope = S.ownerFilter || (isAdmin() ? null : S.me.id);
+  const tRows = [];
+  const tMain = targetFor(tScope, Y);
+  if (tMain && Number(tMain.won_value)) {
+    const actual = tScope ? yearResults(S.deals.filter(d => d.owner_id === tScope), Y).wonV : cur.wonV;
+    tRows.push(progressRow(tScope ? personName(tScope) + " target" : "Company target", actual, Number(tMain.won_value)));
+  }
+  if (isAdmin() && !S.ownerFilter) for (const p of activePeople()) { const t = targetFor(p.id, Y);
+    if (t && Number(t.won_value)) tRows.push(progressRow(p.full_name || p.email, yearResults(S.deals.filter(d => d.owner_id === p.id), Y).wonV, Number(t.won_value))); }
+  grid.append(h("div", {class:"panel wide"}, h("h3", null, Y + " results"),
+    h("p", {class:"hint"}, "Deals with a close or award date in " + Y + (hasPrev ? ", compared with " + py : "") + ". Win rate counts won against lost; no-bids are left out."),
+    h("div", {class:"strip mini", style:"margin:0 0 12px"},
+      metric("Won", money(cur.wonV, true), hasPrev ? delta(cur.wonV, prev.wonV, v => money(v, true), py) : plural(cur.won.length, "deal")),
+      metric("Deals won", String(cur.won.length), hasPrev ? delta(cur.won.length, prev.won.length, String, py) : "of " + plural(cur.won.length + cur.lost.length, "decided bid")),
+      metric("Win rate", cur.rate == null ? "—" : cur.rate + "%", hasPrev && prev.rate != null && cur.rate != null ? delta(cur.rate, prev.rate, v => v + " pts", py) : cur.lost.length + " lost"),
+      metric("Average win", money(cur.avg, true), hasPrev ? delta(Math.round(cur.avg), Math.round(prev.avg), v => money(v, true), py) : "per won deal"),
+      metric("No-bids", String(cur.nobid.length), "passed on")),
+    tRows.length ? h("div", null, h("div", {class:"lab", style:"margin-bottom:6px"}, "Targets (won revenue)"), h("div", {class:"bars"}, tRows.flat()))
+      : (isAdmin() ? h("p", {class:"muted", style:"font-size:12px;margin:0"}, "Set " + Y + " targets in the Team tab to track progress here.") : null)));
+
+  // win rate by dimension
+  const closed = closedIn(deals, Y); const gmap = {};
+  for (const d of closed) for (const k of dimKeys(d, S.dim)) { const g = gmap[k] = gmap[k] || {won:0, lost:0, nobid:0, v:0}; g[d.stage]++; if (d.stage === "won") g.v += Number(d.value) || 0; }
+  const grows = Object.entries(gmap).sort((a, b) => b[1].v - a[1].v || b[1].won - a[1].won);
+  grid.append(h("div", {class:"panel wide"}, h("div", {class:"toolbar", style:"margin-bottom:4px"}, h("h3", {style:"margin:0 auto 0 0"}, "Where we win in " + Y),
+      h("select", {"aria-label":"Group by", id:"dash-dim", onchange: e => { S.dim = e.target.value; render(); }}, DIMS.map(([v, t]) => h("option", {value:v, selected:S.dim === v}, "By " + t.toLowerCase())))),
+    grows.length ? h("div", {class:"tbl-wrap", style:"border:0"}, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, (DIMS.find(x => x[0] === S.dim) || [])[1]), ...["Won","Lost","No-bid","Win rate","Won value"].map(t => h("th", {class:"num"}, t)))),
+      h("tbody", null, grows.map(([k, g]) => h("tr", null, h("td", {style:"font-weight:600"}, k), h("td", {class:"num"}, String(g.won)), h("td", {class:"num"}, String(g.lost)),
+        h("td", {class:"num"}, String(g.nobid)), h("td", {class:"num"}, g.won + g.lost ? Math.round(g.won / (g.won + g.lost) * 100) + "%" : "—"), h("td", {class:"num"}, money(g.v)))))))
+      : h("div", {class:"muted"}, "No deals closed in " + Y + " yet. As deals are marked won, lost or no-bid, this fills in.")));
+
+  // why we lose / pass / who beats us
+  const tally = (list, f) => { const m = {}; for (const d of list) { const k = f(d); if (k) m[k] = (m[k] || 0) + 1; } return Object.entries(m).map(([label, v]) => ({label, v})).sort((a, b) => b.v - a.v); };
+  grid.append(h("div", {class:"panel"}, h("h3", null, "Why we lost"), h("p", {class:"hint"}, Y + " · number of deals"), bars(tally(cur.lost, d => d.outcome_reason || "Not recorded"), String)));
+  grid.append(h("div", {class:"panel"}, h("h3", null, "Who beat us"), h("p", {class:"hint"}, Y + " · deals lost to each competitor"), bars(tally(cur.lost, d => d.winning_competitor && d.winning_competitor.trim()), String)));
+  grid.append(h("div", {class:"panel"}, h("h3", null, "Why we passed"), h("p", {class:"hint"}, Y + " · no-bid reasons"), bars(tally(cur.nobid, d => d.outcome_reason || "Not recorded"), String)));
+
+  // go/no-go vs results
+  const t = S.gng.threshold; const buckets = [["Scored GO (" + t.go + "%+)", s => s != null && s >= t.go], ["Scored review (" + t.review + "–" + (t.go - 1) + "%)", s => s != null && s >= t.review && s < t.go],
+    ["Scored below " + t.review + "%", s => s != null && s < t.review], ["Not scored", s => s == null]];
+  const decidedAll = deals.filter(d => d.stage === "won" || d.stage === "lost");
+  grid.append(h("div", {class:"panel wide"}, h("h3", null, "Is go/no-go predicting wins?"),
+    h("p", {class:"hint"}, "All won and lost deals to date, grouped by their go/no-go score. If high scores win more often, the criteria are working; if not, adjust the weights."),
+    h("div", {class:"tbl-wrap", style:"border:0"}, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, "Score"), ...["Won","Lost","Win rate"].map(x => h("th", {class:"num"}, x)))),
+      h("tbody", null, buckets.map(([label, test]) => { const ds = decidedAll.filter(d => test(gngScore(d).pct)); const w = ds.filter(d => d.stage === "won").length;
+        return h("tr", null, h("td", null, label), h("td", {class:"num"}, String(w)), h("td", {class:"num"}, String(ds.length - w)), h("td", {class:"num"}, ds.length ? Math.round(w / ds.length * 100) + "%" : "—")); }))))));
+
+  // current open pipeline
   if (isAdmin() && !S.ownerFilter) {
-    const reps = activePeople().map(p => {
-      const own = S.deals.filter(d => d.owner_id === p.id); const s = stats(own);
-      const od = S.tasks.filter(t => !t.done && t.assignee_id === p.id && daysUntil(t.due) < 0).length;
-      return {p, own, s, od};
-    }).filter(r => r.own.length || r.od).sort((a, b) => b.s.pipe - a.s.pipe);
-    grid.append(h("div", {class:"panel wide"}, h("h3", null, "By rep"), h("p", {class:"hint"}, "Deals each person owns. Pick a name to see their deals, including ones shared with them."),
+    const reps = activePeople().map(p => { const own = S.deals.filter(d => d.owner_id === p.id); const s = stats(own);
+      const od = S.tasks.filter(t => !t.done && t.assignee_id === p.id && daysUntil(t.due) < 0).length; return {p, own, s, od}; })
+      .filter(r => r.own.length || r.od).sort((a, b) => b.s.pipe - a.s.pipe);
+    grid.append(h("div", {class:"panel wide"}, h("h3", null, "Open pipeline by rep"), h("p", {class:"hint"}, "Deals each person owns today. Pick a name to see their deals, including ones shared with them."),
       reps.length ? h("div", {class:"tbl-wrap", style:"border:0"}, h("table", null,
-        h("thead", null, h("tr", null, h("th", null, "Rep"), ...["Open deals","Pipeline","Weighted","Won this year","Win rate","Overdue tasks"].map(t => h("th", {class:"num"}, t)))),
+        h("thead", null, h("tr", null, h("th", null, "Rep"), ...["Open deals","Pipeline","Weighted","Won " + THIS_YEAR,"Overdue tasks"].map(t => h("th", {class:"num"}, t)))),
         h("tbody", null, reps.map(r => h("tr", {class:"click", tabindex:"0", onclick:() => { S.ownerFilter = r.p.id; render(); }},
           h("td", {style:"font-weight:600"}, r.p.full_name || r.p.email),
-          h("td", {class:"num"}, String(r.s.open.length)), h("td", {class:"num"}, money(r.s.pipe)), h("td", {class:"num"}, money(r.s.wtd)),
-          h("td", {class:"num"}, money(r.s.wonV)), h("td", {class:"num"}, r.s.winRate == null ? "—" : r.s.winRate + "%"),
+          h("td", {class:"num"}, String(r.s.open.length)), h("td", {class:"num"}, money(r.s.pipe)), h("td", {class:"num"}, money(r.s.wtd)), h("td", {class:"num"}, money(r.s.wonV)),
           h("td", {class:"num", style: r.od ? "color:var(--bad)" : null}, String(r.od)))))))
       : h("div", {class:"muted"}, "No deals are assigned yet.")));
   }
-
   const byStage = STAGES.filter(s => s.open).map(s => { const ds = deals.filter(d => d.stage === s.id);
     return {label:s.name, v: ds.reduce((a, d) => a + (Number(d.value) || 0), 0), n: ds.length, onclick:() => { S.view = "deals"; S.stageFilter = s.id; renderNow(); }}; });
   grid.append(h("div", {class:"panel"}, h("h3", null, "Open pipeline by stage"), h("p", {class:"hint"}, "Dollar value · number of deals"), bars(byStage, v => money(v, true))));
-
   const vmap = {}; for (const d of st.open) { const k = d.vertical || "Unassigned"; vmap[k] = vmap[k] || {v:0, n:0}; vmap[k].v += Number(d.value) || 0; vmap[k].n++; }
-  const byVert = Object.entries(vmap).map(([label, o]) => ({label, v:o.v, n:o.n})).sort((a, b) => b.v - a.v);
-  grid.append(h("div", {class:"panel"}, h("h3", null, "Open pipeline by vertical"), h("p", {class:"hint"}, "Dollar value · number of deals"), bars(byVert, v => money(v, true))));
-
-  const smap = {}; for (const d of st.open) for (const s of (d.services && d.services.length ? d.services : ["Unassigned"])) { smap[s] = smap[s] || {v:0, n:0}; smap[s].n++; }
-  grid.append(h("div", {class:"panel"}, h("h3", null, "Open deals by service line"), h("p", {class:"hint"}, "Number of open deals that include each service"),
-    bars(Object.entries(smap).map(([label, o]) => ({label, v:o.n})).sort((a, b) => b.v - a.v), v => String(v))));
-
+  grid.append(h("div", {class:"panel"}, h("h3", null, "Open pipeline by vertical"), h("p", {class:"hint"}, "Dollar value · number of deals"),
+    bars(Object.entries(vmap).map(([label, o]) => ({label, v:o.v, n:o.n})).sort((a, b) => b.v - a.v), v => money(v, true))));
   const upcoming = st.open.filter(d => { const n = daysUntil(d.bid_due); return n != null && n >= -7 && n <= 30; }).sort((a, b) => a.bid_due.localeCompare(b.bid_due));
   grid.append(h("div", {class:"panel"}, h("h3", null, "Bids due in the next 30 days"),
     upcoming.length ? upcoming.map(d => h("div", {class:"list-row"}, h("button", {class:"linkish", onclick:() => openDeal(d.id)}, d.name), h("span", {class:"chips"}, h("span", {class:"muted", style:"font-size:12px"}, personName(d.owner_id)), dueChip(d.bid_due))))
       : h("div", {class:"muted"}, "No bids due in the next 30 days.")));
-
   grid.append(h("div", {class:"panel"}, h("h3", null, "Waiting on a go/no-go"),
     st.pendingGng.length ? st.pendingGng.map(d => h("div", {class:"list-row"}, h("button", {class:"linkish", onclick:() => openDeal(d.id, "g")}, d.name), h("span", {class:"chips"}, h("span", {class:"muted", style:"font-size:12px"}, personName(d.owner_id)), gngChip(d) || h("span", {class:"chip"}, "not scored"))))
       : h("div", {class:"muted"}, "Every early-stage deal has a decision.")));
-
-  const recent = deals.filter(d => !isOpen(d) && d.close_date && daysUntil(d.close_date) >= -90).sort((a, b) => b.close_date.localeCompare(a.close_date)).slice(0, 10);
-  grid.append(h("div", {class:"panel"}, h("h3", null, "Closed in the last 90 days"),
-    recent.length ? recent.map(d => h("div", {class:"list-row"}, h("button", {class:"linkish", onclick:() => openDeal(d.id)}, d.name),
-      h("span", {class:"chips"}, h("span", {class:"mono", style:"font-size:12px"}, money(d.value, true)), h("span", {class:"chip " + (d.stage === "won" ? "go" : "bad")}, STAGE[d.stage].name))))
-      : h("div", {class:"muted"}, "Nothing closed recently.")));
   wrap.append(grid);
   return wrap;
 }
@@ -391,8 +467,8 @@ function dealCard(d) {
 }
 async function moveStage(id, stage) {
   const d = byId(S.deals, id); if (!d || d.stage === stage) return;
+  if (!STAGE[stage].open) { openCloseOut(d, stage); return; }
   const patch = {stage, probability:null};
-  if (!STAGE[stage].open && !d.close_date) patch.close_date = todayStr();
   const before = {...d}; Object.assign(d, patch); render();
   const ok = await run(sb.from("deals").update(patch).eq("id", id), "Moved to " + STAGE[stage].name);
   if (!ok) { Object.assign(d, before); render(); }
@@ -411,7 +487,8 @@ function viewDeals() {
     h("tbody", null, ds.map(d => h("tr", {class:"click", tabindex:"0", onclick:() => openDeal(d.id), onkeydown: e => { if (e.key === "Enter") openDeal(d.id); }},
       h("td", null, h("div", {style:"font-weight:600"}, d.name), h("div", {class:"muted", style:"font-size:12px"}, (d.services || []).join(", "))),
       h("td", null, acctName(d.account_id) || "—"),
-      h("td", null, h("span", {class:"chip" + (d.stage === "won" ? " go" : d.stage === "lost" || d.stage === "nobid" ? " bad" : " acc")}, (STAGE[d.stage] || STAGE.lead).name)),
+      h("td", null, h("span", {class:"chip" + (d.stage === "won" ? " go" : d.stage === "lost" || d.stage === "nobid" ? " bad" : " acc")}, (STAGE[d.stage] || STAGE.lead).name),
+        !isOpen(d) && d.outcome_reason ? h("div", {class:"muted", style:"font-size:12px;margin-top:2px"}, d.outcome_reason) : null),
       h("td", null, gngChip(d) || h("span", {class:"muted"}, "—")),
       h("td", {class:"num"}, money(d.value)), h("td", {class:"num"}, prob(d) + "%"),
       h("td", null, d.bid_due ? dueChip(d.bid_due) : "—"),
@@ -543,6 +620,36 @@ function deleteButton(onConfirm) {
   return del;
 }
 
+// ---------------------------------------------------------------- close-out (won / lost / no-bid)
+function outcomeFields(draft) {
+  const st = draft.stage;
+  if (!st || STAGE[st].open) return null;
+  if (draft.outcome_reason && !reasonsFor(st).includes(draft.outcome_reason)) draft.outcome_reason = null;
+  const req = st !== "won";
+  return h("div", {style:"grid-column:1/-1"},
+    h("div", {class:"section-h", style:"margin:8px 0"}, st === "won" ? "Why we won" : st === "lost" ? "Why we lost" : "Why we didn't bid"),
+    h("div", {class:"form"},
+      fld(draft, "outcome_reason", (st === "won" ? "Main reason" : "Reason") + (req ? " (required)" : ""), "select", {options:reasonsFor(st), blank:"Choose a reason", full: st !== "lost"}),
+      st === "lost" ? fld(draft, "winning_competitor", "Who won it", "text", {placeholder:"Company, if known"}) : null,
+      st === "lost" ? fld(draft, "winning_price", "Their price (USD), if known", "number") : null,
+      fld(draft, "outcome_notes", st === "won" ? "What made the difference" : "What would we do differently next time", "textarea", {full:true})));
+}
+function needsReason(d) { return (d.stage === "lost" || d.stage === "nobid") && !(d.outcome_reason || "").trim(); }
+function openCloseOut(d, stage) {
+  const draft = {stage, outcome_reason:null, winning_competitor:d.winning_competitor || null, winning_price:d.winning_price ?? null,
+    outcome_notes:d.outcome_notes || "", close_date:d.close_date || todayStr()};
+  openDrawer({title:"Mark " + STAGE[stage].name.toLowerCase(),
+    body:h("div", null, h("p", {class:"muted", style:"margin-top:0"}, d.name),
+      h("div", {class:"form"}, fld(draft, "close_date", stage === "won" ? "Award date" : "Close date", "date"), outcomeFields(draft))),
+    foot:[h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel"), h("button", {class:"btn primary", onclick: async () => {
+      if (needsReason(draft)) { toast("Pick a reason first."); return; }
+      const patch = {stage, probability:null, close_date:draft.close_date || todayStr(), outcome_reason:nullify(draft.outcome_reason),
+        winning_competitor:nullify((draft.winning_competitor || "").trim()), winning_price:nullify(draft.winning_price), outcome_notes:nullify((draft.outcome_notes || "").trim())};
+      const res = await run(sb.from("deals").update(patch).eq("id", d.id).select().single(), "Marked " + STAGE[stage].name.toLowerCase());
+      if (res) { Object.assign(d, res); render(); closeDrawer(); }
+    }}, "Save")]});
+}
+
 // ---------------------------------------------------------------- deal drawer
 function openDeal(id, startTab) {
   const src = id ? byId(S.deals, id) : null;
@@ -555,11 +662,14 @@ function openDeal(id, startTab) {
     const contactBox = h("div", {style:"display:contents"});
     const drawContacts = () => contactBox.replaceChildren(fld(draft, "contact_id", "Primary contact", "select", {options:contactOptions(draft.account_id)}));
     drawContacts();
+    const outcomeBox = h("div", {style:"display:contents"});
+    const drawOutcome = () => outcomeBox.replaceChildren(...[outcomeFields(draft)].filter(Boolean));
+    drawOutcome();
     return h("div", {class:"form"},
       fld(draft, "name", "Deal name", "text", {full:true, placeholder:"e.g. Camping World Stadium CNS"}),
       fld(draft, "account_id", "Account", "select", {options:acctOptions(), blank:"Choose an account", onchange:drawContacts}),
       contactBox,
-      fld(draft, "stage", "Stage", "select", {options:STAGES.map(s => [s.id, s.name]), blank:false}),
+      fld(draft, "stage", "Stage", "select", {options:STAGES.map(s => [s.id, s.name]), blank:false, onchange:() => drawOutcome()}),
       fld(draft, "owner_id", "Owner", "select", {options:peopleOptions(), blank:false, readonly: src ? !manage : !isAdmin()}),
       fld(draft, "value", "Value (USD)", "number"),
       fld(draft, "probability", "Probability % (blank = stage default)", "number"),
@@ -569,7 +679,8 @@ function openDeal(id, startTab) {
       fld(draft, "source", "Source", "select", {options:SOURCES}),
       fld(draft, "vertical", "Vertical", "select", {options:VERTICALS, full:true}),
       fld(draft, "services", "Service lines", "chips", {options:SERVICES, full:true}),
-      fld(draft, "description", "Scope summary", "textarea", {full:true}));
+      fld(draft, "description", "Scope summary", "textarea", {full:true}),
+      outcomeBox);
   };
 
   const gng = () => {
@@ -583,10 +694,10 @@ function openDeal(id, startTab) {
           h("div", {style:"flex:1;min-width:160px"}, h("div", {style:"font-weight:600;margin-bottom:6px"}, rec),
             h("div", {class:"gbar"}, h("i", {style:"width:" + (s.pct || 0) + "%;background:" + color})),
             h("div", {class:"muted", style:"font-size:12px;margin-top:4px"}, s.scored + " of " + s.total + " criteria scored · Go at " + t.go + "%, review at " + t.review + "%"))),
-        (S.gng.criteria || []).map(c => { const v = Number(draft.gng.scores[c.id]) || 0;
+        h("div", null, (S.gng.criteria || []).map(c => { const v = Number(draft.gng.scores[c.id]) || 0;
           return h("div", {class:"crit"}, h("div", null, h("div", null, c.name), h("div", {class:"w"}, "Weight " + c.weight)),
             h("div", {class:"score", role:"group", "aria-label":c.name}, [1,2,3,4,5].map(n => h("button", {type:"button", "aria-pressed": String(v === n),
-              onclick:() => { draft.gng.scores[c.id] = v === n ? null : n; draw(); }}, String(n))))); }),
+              onclick:() => { draft.gng.scores[c.id] = v === n ? null : n; draw(); }}, String(n))))); })),
         h("div", {class:"form", style:"margin-top:14px"},
           fld(draft.gng, "decision", "Decision", "select", {options:[["go","Go"],["nogo","No-go"],["hold","Hold / need info"]], blank:"Not decided"}),
           fld(draft.gng, "decided_on", "Decided on", "date"),
@@ -628,19 +739,20 @@ function openDeal(id, startTab) {
     const box = h("div");
     if (!src) { box.append(h("div", {class:"muted"}, "Save the deal first to add notes.")); return box; }
     const ta = h("textarea", {class:"inp", id:"f-newnote", placeholder:"Call notes, walkthrough findings, competitor intel…"});
+    const kindSel = h("select", {class:"inp", id:"f-notekind", "aria-label":"Type", style:"max-width:170px"}, NOTE_KINDS.map(([v, t]) => h("option", {value:v}, t)));
     const list = h("div", {style:"margin-top:14px"}, h("div", {class:"muted"}, "Loading notes…"));
     const load = async () => {
       const {data, error} = await sb.from("deal_notes").select("*").eq("deal_id", src.id).order("created_at", {ascending:false}).limit(300);
       if (error) { list.replaceChildren(h("div", {class:"muted"}, friendly(error))); return; }
       list.replaceChildren(...(data.length ? data.map(n => h("div", {class:"note"},
-        h("div", {class:"m"}, new Date(n.created_at).toLocaleString("en-US", {month:"short", day:"numeric", year:"numeric", hour:"numeric", minute:"2-digit"}) + " · " + (n.author_id ? personName(n.author_id) : "System")),
+        h("div", {class:"m"}, fmtDateTime(n.created_at) + " · " + (n.author_id ? personName(n.author_id) : "System") + (n.kind && n.kind !== "note" ? " · " + kindLabel(n.kind) : "")),
         h("p", {class: n.system ? "muted" : null}, n.body))) : [h("div", {class:"muted"}, "No notes yet.")]));
     };
     openNotes = {dealId:src.id, reload:load};
     load();
-    box.append(ta, h("div", {style:"margin-top:8px;display:flex;justify-content:flex-end"}, h("button", {class:"btn", onclick: async () => {
+    box.append(ta, h("div", {style:"margin-top:8px;display:flex;justify-content:flex-end;gap:8px"}, kindSel, h("button", {class:"btn", onclick: async () => {
       const body = ta.value.trim(); if (!body) return;
-      if (await run(sb.from("deal_notes").insert({deal_id:src.id, body, author_id:S.me.id}), "Note added")) { ta.value = ""; load(); }
+      if (await run(sb.from("deal_notes").insert({deal_id:src.id, body, author_id:S.me.id, kind:kindSel.value}), "Note added")) { ta.value = ""; kindSel.value = "note"; load(); }
     }}, "Add note")), list);
     return box;
   };
@@ -659,6 +771,7 @@ function openDeal(id, startTab) {
   foot.push(h("button", {class:"btn" + (src && canManage(src) ? "" : " spacer"), onclick:() => closeDrawer()}, "Cancel"));
   foot.push(h("button", {class:"btn primary", onclick: async e => {
     if (!(draft.name || "").trim()) { toast("Give the deal a name."); return; }
+    if (needsReason(draft)) { toast("Pick a reason for marking it " + STAGE[draft.stage].name.toLowerCase() + " (Details tab)."); return; }
     if (!STAGE[draft.stage].open && !draft.close_date) draft.close_date = todayStr();
     const payload = {};
     for (const k of DEAL_FIELDS) payload[k] = k === "services" ? (draft.services || []) : k === "gng" ? draft.gng : nullify(draft[k]);
@@ -679,7 +792,7 @@ function openDeal(id, startTab) {
 }
 
 // ---------------------------------------------------------------- account / contact / task drawers
-function simpleDrawer(table, key, id, defaults, title, fields, extra) {
+function simpleDrawer(table, key, id, defaults, title, fields, extra, moreTabs) {
   const src = id ? byId(S[key], id) : null; if (id && !src) return;
   const draft = JSON.parse(JSON.stringify(src || defaults || {}));
   const body = h("div", null, h("div", {class:"form"}, fields(draft)), extra ? extra(src) : null);
@@ -698,7 +811,9 @@ function simpleDrawer(table, key, id, defaults, title, fields, extra) {
     const i = S[key].findIndex(x => x.id === res.id); if (i >= 0) S[key][i] = res; else S[key].push(res);
     render(); closeDrawer();
   }}, src ? "Save" : "Add"));
-  openDrawer({title: src ? (src.name || src.title) : "New " + title.toLowerCase(), body, foot});
+  const dTitle = src ? (src.name || src.title) : "New " + title.toLowerCase();
+  if (src && moreTabs) openDrawer({title:dTitle, tabs:[["d","Details",() => body], ...moreTabs(src)], foot});
+  else openDrawer({title:dTitle, body, foot});
 }
 function openAccount(id) {
   simpleDrawer("accounts", "accounts", id, {}, "Account", d => [
@@ -709,12 +824,49 @@ function openAccount(id) {
     fld(d, "website", "Website", "text", {full:true}),
     fld(d, "notes", "Notes", "textarea", {full:true})],
   src => { if (!src) return null;
-    const ds = S.deals.filter(x => x.account_id === src.id); const cs = S.contacts.filter(x => x.account_id === src.id);
-    return h("div", null, h("div", {class:"section-h", style:"margin-top:20px"}, "Deals you can see"),
-      ds.length ? ds.map(d => h("div", {class:"list-row"}, h("button", {class:"linkish", onclick:() => openDeal(d.id)}, d.name), h("span", {class:"mono muted"}, STAGE[d.stage].name + " · " + money(d.value, true)))) : h("div", {class:"muted"}, "None."),
-      h("div", {class:"section-h"}, "Contacts"),
+    const cs = S.contacts.filter(x => x.account_id === src.id);
+    return h("div", null, h("div", {class:"section-h", style:"margin-top:20px"}, "Contacts"),
       cs.length ? cs.map(c => h("div", {class:"list-row"}, h("button", {class:"linkish", onclick:() => openContact(c.id)}, c.name), h("span", {class:"muted"}, c.title || ""))) : h("div", {class:"muted"}, "None."),
-      h("div", {style:"margin-top:10px"}, h("button", {class:"btn small", onclick:() => openContact(null, {account_id:src.id})}, "+ Contact at this account"))); });
+      h("div", {style:"margin-top:10px"}, h("button", {class:"btn small", onclick:() => openContact(null, {account_id:src.id})}, "+ Contact at this account"))); },
+  src => [["h", "History", () => accountHistory(src)]]);
+}
+function accountHistory(src) {
+  const box = h("div", null, h("div", {class:"muted"}, "Loading history…"));
+  (async () => {
+    const {data:tr} = await sb.rpc("account_track_record", {a:src.id});
+    const t = tr || {};
+    const ds = S.deals.filter(d => d.account_id === src.id)
+      .sort((a, b) => (b.close_date || (b.created_at || "").slice(0, 10)).localeCompare(a.close_date || (a.created_at || "").slice(0, 10)));
+    let notes = [];
+    if (ds.length) {
+      const r = await sb.from("deal_notes").select("*").in("deal_id", ds.map(d => d.id)).eq("system", false).order("created_at", {ascending:false}).limit(60);
+      notes = r.data || [];
+    }
+    const decided = (t.won || 0) + (t.lost || 0);
+    const hidden = (t.total || 0) - ds.length;
+    const reasons = t.loss_reasons ? Object.entries(t.loss_reasons).map(([label, v]) => ({label, v})).sort((a, b) => b.v - a.v) : [];
+    box.replaceChildren(...[
+      h("div", {class:"strip mini"},
+        metric("Deals", String(t.total ?? ds.length), (t.open || 0) + " open"),
+        metric("Won", String(t.won || 0), t.won_value != null ? money(t.won_value, true) + " total" : "dollar totals: admins"),
+        metric("Win rate", decided ? Math.round(t.won / decided * 100) + "%" : "—", (t.lost || 0) + " lost · " + (t.nobid || 0) + " no-bid"),
+        metric("Last activity", t.last_activity ? fmtDate(t.last_activity.slice(0, 10)) : "—", t.first_deal ? "first deal " + fmtDate(t.first_deal.slice(0, 10)) : "")),
+      reasons.length ? h("div", null, h("div", {class:"section-h"}, "Why we've lost here"), bars(reasons, v => String(v))) : null,
+      h("div", {class:"section-h"}, isAdmin() ? "Every deal" : "Deals you're on"),
+      ds.length ? h("div", null, ds.map(d => h("div", {class:"list-row"},
+        h("div", {style:"min-width:0"}, h("button", {class:"linkish", onclick:() => openDeal(d.id)}, d.name),
+          d.outcome_reason ? h("div", {class:"muted", style:"font-size:12px"}, d.outcome_reason + (d.winning_competitor ? " · went to " + d.winning_competitor : "")) : null),
+        h("span", {class:"chips"}, d.close_date && !isOpen(d) ? h("span", {class:"muted", style:"font-size:12px"}, fmtDate(d.close_date)) : null,
+          h("span", {class:"mono muted", style:"font-size:12px"}, money(d.value, true)),
+          h("span", {class:"chip " + (d.stage === "won" ? "go" : d.stage === "lost" || d.stage === "nobid" ? "bad" : "acc")}, STAGE[d.stage].name)))))
+        : h("div", {class:"muted"}, "No deals you can see."),
+      hidden > 0 ? h("p", {class:"muted", style:"font-size:12px"}, plural(hidden, "other deal") + " with this account " + (hidden === 1 ? "isn't" : "aren't") + " shared with you. They're counted in the numbers above.") : null,
+      h("div", {class:"section-h"}, "Recent activity"),
+      notes.length ? h("div", null, notes.map(n => h("div", {class:"note"},
+        h("div", {class:"m"}, fmtDateTime(n.created_at) + " · " + (n.author_id ? personName(n.author_id) : "") + " · " + kindLabel(n.kind) + " · " + dealName(n.deal_id)),
+        h("p", null, n.body)))) : h("div", {class:"muted"}, "No notes yet.")].filter(Boolean));
+  })();
+  return box;
 }
 function openContact(id, defaults) {
   simpleDrawer("contacts", "contacts", id, defaults || {}, "Contact", d => [
@@ -738,7 +890,7 @@ $("#newDeal").addEventListener("click", () => openDeal());
 function viewTeam() {
   const wrap = h("div");
   wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Team")),
-    h("p", {class:"muted", style:"margin:-6px 0 12px"}, "Everyone who has signed in with an RFIP Microsoft account. Admins see every deal. Turning someone off blocks their access right away; their deals stay put so you can reassign them."));
+    h("p", {class:"muted", style:"margin:-6px 0 12px"}, "Everyone with a CRM login. Admins see every deal. Turning someone off blocks their access right away; their deals stay put so you can reassign them."));
   const list = S.profiles.slice().sort((a, b) => (b.active - a.active) || (a.full_name || a.email).localeCompare(b.full_name || b.email));
   wrap.append(h("div", {class:"tbl-wrap"}, h("table", null,
     h("thead", null, h("tr", null, h("th", null, "Name"), h("th", null, "Email"), h("th", null, "Role"), h("th", null, "Access"), h("th", {class:"num"}, "Deals owned"), h("th"))),
@@ -756,7 +908,36 @@ function viewTeam() {
           if (res) { Object.assign(p, res); if (p.id === S.me.id) S.me = p; render(); }
         }}, "Save")));
     })))));
+  wrap.append(targetsPanel());
   return wrap;
+}
+function targetsPanel() {
+  const box = h("div", {class:"panel", style:"margin-top:16px"});
+  let year = S.year >= THIS_YEAR ? S.year : THIS_YEAR;
+  const draw = () => {
+    const vals = {};
+    const row = (key, label) => { const t = targetFor(key === "company" ? null : key, year); vals[key] = t ? Number(t.won_value) : 0;
+      const inp = h("input", {class:"inp mono", id:"tg-" + key, type:"number", min:"0", step:"1000", value: vals[key] ? String(vals[key]) : "", placeholder:"0", "aria-label":label + " target",
+        oninput: e => { vals[key] = Number(e.target.value) || 0; }});
+      return h("div", {class:"field"}, h("label", {for:"tg-" + key}, label), inp); };
+    box.replaceChildren(
+      h("div", {class:"toolbar", style:"margin-bottom:4px"}, h("h3", {style:"margin:0 auto 0 0"}, "Won-revenue targets"),
+        h("select", {"aria-label":"Target year", id:"tg-year", onchange: e => { year = Number(e.target.value); draw(); }},
+          [THIS_YEAR, THIS_YEAR + 1].map(y => h("option", {value:String(y), selected:year === y}, String(y))))),
+      h("p", {class:"hint"}, "Set each January. Progress shows on the dashboard. Reps see their own target and the company target; only admins see everyone's."),
+      h("div", {class:"form"}, row("company", "Company"), activePeople().map(p => row(p.id, p.full_name || p.email))),
+      h("div", {style:"margin-top:12px;display:flex;justify-content:flex-end"}, h("button", {class:"btn primary", onclick: async e => {
+        e.currentTarget.disabled = true; let ok = true;
+        for (const [key, v] of Object.entries(vals)) {
+          const uid = key === "company" ? null : key; const t = targetFor(uid, year);
+          if (t && Number(t.won_value) !== v) ok = !!(await run(sb.from("targets").update({won_value:v, updated_at:new Date().toISOString()}).eq("id", t.id))) && ok;
+          else if (!t && v > 0) ok = !!(await run(sb.from("targets").insert({year, user_id:uid, won_value:v}))) && ok;
+        }
+        await loadTable("targets"); e.currentTarget.disabled = false;
+        if (ok) toast(year + " targets saved"); render();
+      }}, "Save targets")));
+  };
+  draw(); return box;
 }
 
 // ---------------------------------------------------------------- settings, import, export
@@ -796,7 +977,7 @@ function parseCSV(text) {
   return rows.filter(r => r.some(x => x.trim() !== ""));
 }
 const IMPORT_TARGETS = {
-  deals:[["name","Deal name",["deal","opportunity","project","name","pursuit"]],["account","Account / company",["account","company","customer","client"]],["stage","Stage",["stage","status"]],["value","Value",["value","amount","price","contract","bid amount","total"]],["owner","Owner (name or email)",["owner","rep","salesperson","assigned"]],["bid_due","Bid due",["bid due","due","proposal due","due date"]],["close_date","Close date",["close","award"]],["rfp_no","RFP #",["rfp","bid #","bid no","solicitation"]],["vertical","Vertical",["vertical","market","industry"]],["description","Scope / notes",["scope","description","notes"]]],
+  deals:[["name","Deal name",["deal","opportunity","project","name","pursuit"]],["account","Account / company",["account","company","customer","client"]],["stage","Stage",["stage","status"]],["value","Value",["value","amount","price","contract","bid amount","total"]],["owner","Owner (name or email)",["owner","rep","salesperson","assigned"]],["bid_due","Bid due",["bid due","due","proposal due","due date"]],["close_date","Close date",["close","award"]],["rfp_no","RFP #",["rfp","bid #","bid no","solicitation"]],["vertical","Vertical",["vertical","market","industry"]],["description","Scope / notes",["scope","description","notes"]],["outcome_reason","Win/loss reason",["reason","loss reason","lost reason"]]],
   accounts:[["name","Account name",["account","company","name","organization"]],["type","Type",["type","category"]],["vertical","Vertical",["vertical","industry","market"]],["city","City",["city"]],["state","State",["state"]],["website","Website",["website","url","web"]],["notes","Notes",["notes"]]],
   contacts:[["name","Full name",["full name","name","contact"]],["first","First name",["first"]],["last","Last name",["last"]],["title","Title",["title","position","role"]],["account","Account / company",["company","account","organization"]],["email","Email",["email","e-mail"]],["phone","Phone",["phone","mobile","cell","office"]],["notes","Notes",["notes"]]],
 };
@@ -880,7 +1061,8 @@ async function runImport(st, draw) {
           return p ? (isAdmin() || p.id === S.me.id ? p.id : S.me.id) : S.me.id; };
         for (const r of st.rows) { const name = get(r, "name"); if (!name) { skipped++; continue; }
           const v = Number(get(r, "value").replace(/[$,\s]/g, ""));
-          rows.push({name, account_id:aid(r), owner_id:findOwner(get(r, "owner")), stage:normStage(get(r, "stage")), value: isFinite(v) && v ? v : null,
+          const stg = normStage(get(r, "stage"));
+          rows.push({name, account_id:aid(r), owner_id:findOwner(get(r, "owner")), stage:stg, outcome_reason: get(r, "outcome_reason") || (stg === "lost" ? "Unknown" : stg === "nobid" ? "Other" : null), value: isFinite(v) && v ? v : null,
             bid_due:normDate(get(r, "bid_due")), close_date:normDate(get(r, "close_date")), rfp_no:get(r, "rfp_no") || null,
             vertical: VERTICALS.find(x => x.toLowerCase() === get(r, "vertical").toLowerCase()) || null, description:get(r, "description") || null, services:[], gng:{scores:{}}}); }
       }
@@ -900,8 +1082,8 @@ function csvEsc(v) { v = v == null ? "" : String(v); return /[",\n\r]/.test(v) ?
 function exportPanel() {
   const dl = type => {
     let head, rows;
-    if (type === "deals") { head = ["Deal","Account","Stage","Value","Probability","Bid due","Close date","Owner","Shared with","RFP #","Vertical","Services","Go/no-go score","Decision"];
-      rows = S.deals.map(d => [d.name, acctName(d.account_id), STAGE[d.stage].name, d.value, prob(d), d.bid_due, d.close_date, personName(d.owner_id), membersOf(d.id).map(personName).join("; "), d.rfp_no, d.vertical, (d.services || []).join("; "), gngScore(d).pct, (d.gng && d.gng.decision) || ""]); }
+    if (type === "deals") { head = ["Deal","Account","Stage","Value","Probability","Bid due","Close date","Owner","Shared with","RFP #","Vertical","Services","Go/no-go score","Decision","Outcome reason","Won by","Their price","Outcome notes"];
+      rows = S.deals.map(d => [d.name, acctName(d.account_id), STAGE[d.stage].name, d.value, prob(d), d.bid_due, d.close_date, personName(d.owner_id), membersOf(d.id).map(personName).join("; "), d.rfp_no, d.vertical, (d.services || []).join("; "), gngScore(d).pct, (d.gng && d.gng.decision) || "", d.outcome_reason, d.winning_competitor, d.winning_price, d.outcome_notes]); }
     else if (type === "accounts") { head = ["Account","Type","Vertical","City","State","Website"]; rows = S.accounts.map(a => [a.name, a.type, a.vertical, a.city, a.state, a.website]); }
     else if (type === "contacts") { head = ["Name","Title","Account","Email","Phone"]; rows = S.contacts.map(c => [c.name, c.title, acctName(c.account_id), c.email, c.phone]); }
     else { head = ["Task","Due","Assigned to","Deal","Done"]; rows = S.tasks.map(t => [t.title, t.due, personName(t.assignee_id), dealName(t.deal_id), t.done ? "yes" : ""]); }

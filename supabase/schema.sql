@@ -142,6 +142,30 @@ insert into public.gng_config (id, config) values (true, '{
   ]}'::jsonb)
 on conflict (id) do nothing;
 
+-- ---------- history & results (added Oct 2026) -----------------------
+-- Why a deal was won, lost or not bid, and who beat us.
+alter table public.deals add column if not exists outcome_reason     text;
+alter table public.deals add column if not exists winning_competitor text;
+alter table public.deals add column if not exists winning_price      numeric(14,2);
+alter table public.deals add column if not exists outcome_notes      text;
+
+-- What kind of touch a note records.
+alter table public.deal_notes add column if not exists kind text not null default 'note';
+do $$ begin
+  alter table public.deal_notes add constraint deal_notes_kind_chk check (kind in ('note','call','meeting','site_visit','email'));
+exception when duplicate_object then null; end $$;
+
+-- Yearly won-revenue targets: one company row (user_id null) and one per person.
+create table if not exists public.targets (
+  id         uuid primary key default gen_random_uuid(),
+  year       integer not null check (year between 2000 and 2100),
+  user_id    uuid references public.profiles(id) on delete cascade,
+  won_value  numeric(14,2) not null default 0,
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists targets_year_user_uq
+  on public.targets (year, coalesce(user_id, '00000000-0000-0000-0000-000000000000'::uuid));
+
 -- ---------- helper functions (run with owner rights so policies don't loop)
 create or replace function public.is_active_user() returns boolean
 language sql stable security definer set search_path = public as $$
@@ -268,6 +292,43 @@ create trigger contacts_touch before update on public.contacts for each row exec
 drop trigger if exists tasks_touch on public.tasks;
 create trigger tasks_touch before update on public.tasks for each row execute function public.touch_updated_at();
 
+-- Lost and no-bid deals need a reason; closed deals get a close date.
+create or replace function public.require_outcome() returns trigger
+language plpgsql set search_path = public as $$
+begin
+  if new.stage in ('lost','nobid') and coalesce(trim(new.outcome_reason), '') = '' then
+    raise exception 'Pick a reason before marking this deal lost or no-bid.';
+  end if;
+  if new.stage in ('won','lost','nobid') and new.close_date is null then
+    new.close_date := current_date;
+  end if;
+  return new;
+end $$;
+drop trigger if exists deals_outcome on public.deals;
+create trigger deals_outcome before insert or update on public.deals
+  for each row execute function public.require_outcome();
+
+-- A customer's track record. Everyone signed in gets counts and loss reasons
+-- across ALL deals with the account (no deal names); dollar totals are admin-only.
+create or replace function public.account_track_record(a uuid) returns json
+language sql stable security definer set search_path = public as $$
+  select case when not public.is_active_user() then null else (
+    select json_build_object(
+      'total',   count(*),
+      'open',    count(*) filter (where d.stage not in ('won','lost','nobid')),
+      'won',     count(*) filter (where d.stage = 'won'),
+      'lost',    count(*) filter (where d.stage = 'lost'),
+      'nobid',   count(*) filter (where d.stage = 'nobid'),
+      'won_value', case when public.is_admin() then coalesce(sum(d.value) filter (where d.stage = 'won'), 0) end,
+      'first_deal', min(d.created_at),
+      'last_activity', greatest(max(d.updated_at),
+          (select max(n.created_at) from deal_notes n join deals d2 on d2.id = n.deal_id where d2.account_id = a)),
+      'loss_reasons', (select json_object_agg(r, c) from (
+          select coalesce(outcome_reason, 'Not recorded') r, count(*) c from deals
+          where account_id = a and stage = 'lost' group by 1) x))
+    from deals d where d.account_id = a) end;
+$$;
+
 -- ---------- row-level security --------------------------------------
 alter table public.app_config   enable row level security;
 alter table public.profiles     enable row level security;
@@ -278,11 +339,12 @@ alter table public.deal_members enable row level security;
 alter table public.deal_notes   enable row level security;
 alter table public.tasks        enable row level security;
 alter table public.gng_config   enable row level security;
+alter table public.targets      enable row level security;
 
 -- clear old versions of our policies so this file can be re-run
 do $$ declare r record; begin
   for r in select policyname, tablename from pg_policies where schemaname='public'
-    and tablename in ('app_config','profiles','accounts','contacts','deals','deal_members','deal_notes','tasks','gng_config')
+    and tablename in ('app_config','profiles','accounts','contacts','deals','deal_members','deal_notes','tasks','gng_config','targets')
   loop execute format('drop policy if exists %I on public.%I', r.policyname, r.tablename); end loop;
 end $$;
 
@@ -346,6 +408,12 @@ create policy tasks_delete on public.tasks for delete to authenticated using (
 create policy gng_read  on public.gng_config for select to authenticated using (public.is_active_user());
 create policy gng_write on public.gng_config for update to authenticated using (public.is_admin()) with check (public.is_admin());
 
+-- targets: everyone sees the company target and their own; admins see and set all
+create policy targets_read on public.targets for select to authenticated using (
+  public.is_admin() or (public.is_active_user() and (user_id is null or user_id = auth.uid())));
+create policy targets_write on public.targets for all to authenticated
+  using (public.is_admin()) with check (public.is_admin());
+
 -- ---------- table privileges (RLS above decides the rows) -------------
 revoke all on all tables in schema public from anon;
 grant select, insert, update, delete on
@@ -353,15 +421,18 @@ grant select, insert, update, delete on
   public.deal_notes, public.tasks to authenticated;
 grant select, update on public.profiles, public.gng_config to authenticated;
 grant select, update on public.app_config to authenticated;
+grant select, insert, update, delete on public.targets to authenticated;
 
 -- ---------- function access: nobody signed out calls anything; trigger
 -- functions can't be called directly; permission helpers only answer for the caller
 revoke execute on function public.is_active_user(), public.is_admin(), public.can_see_deal(uuid), public.can_manage_deal(uuid),
-  public.handle_new_user(), public.guard_profile_update(), public.guard_deal_update(), public.log_deal_changes(), public.touch_updated_at()
+  public.handle_new_user(), public.guard_profile_update(), public.guard_deal_update(), public.log_deal_changes(), public.touch_updated_at(),
+  public.require_outcome(), public.account_track_record(uuid)
   from public, anon;
 revoke execute on function public.handle_new_user(), public.guard_profile_update(), public.guard_deal_update(),
-  public.log_deal_changes(), public.touch_updated_at() from authenticated;
-grant execute on function public.is_active_user(), public.is_admin(), public.can_see_deal(uuid), public.can_manage_deal(uuid) to authenticated;
+  public.log_deal_changes(), public.touch_updated_at(), public.require_outcome() from authenticated;
+grant execute on function public.is_active_user(), public.is_admin(), public.can_see_deal(uuid), public.can_manage_deal(uuid),
+  public.account_track_record(uuid) to authenticated;
 
 -- ---------- live updates in the app ----------------------------------
 do $$ begin

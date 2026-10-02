@@ -170,3 +170,5 @@ main{padding-bottom:40px}
 .or{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;margin-block:4px}
 .or::before,.or::after{content:"";flex:1;border-top:1px solid var(--line)}
 .small-print{font-size:12px;margin:0}
+.strip.mini{grid-template-columns:repeat(auto-fit,minmax(130px,1fr));margin-block:0 8px}
+.strip.mini .metric .v{font-size:24px}

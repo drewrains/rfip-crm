@@ -104,3 +104,13 @@ In Vercel: **Project → Settings → Domains → Add** `crm.rfip.com`. Vercel s
 - **Someone leaves:** turn their access off in **Team** (and disable their Microsoft account as usual). Their deals stay; filter Deals by their name and reassign.
 - **Changes:** edits to the code in GitHub redeploy automatically on Vercel.
 - **Database changes:** re-running `schema.sql` is safe; it updates functions and permission rules without touching data.
+
+## Customer history and year-end
+
+Nothing is deleted or reset at year-end. Open deals carry into the new year automatically; won, lost and no-bid deals leave the pipeline board but stay in the history.
+
+- **Closing a deal** (dragging it to Won, or setting the stage to Lost or No-bid) asks why. A reason is required for lost and no-bid; for lost deals, also record who won and their price if known.
+- **Account → History** shows the customer's track record: deals won, lost and not bid, win rate, loss reasons and recent activity across deals. Reps see the counts for every deal with that account, but only the deals they're on; dollar totals are admin-only.
+- **Dashboard → year picker** shows results for any year, compared with the year before: won revenue, win rate, average win, where you win (by rep, vertical, service line, source or account type), why you lose, who beats you, and whether go/no-go scores predict wins.
+- **Team → Won-revenue targets**: set the company and per-person targets each January; progress shows on the dashboard.
+- **Notes** can be tagged as a call, meeting, site visit or email.
