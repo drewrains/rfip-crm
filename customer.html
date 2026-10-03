@@ -6,18 +6,18 @@
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="no-referrer">
 <title>Project Status · RFIP</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231d5fc4'/%3E%3Cpath d='M8 22V10h7a4 4 0 010 8h-7M15 18l5 4' stroke='white' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23c8102e'/%3E%3Cpath d='M8 22V10h7a4 4 0 010 8h-7M15 18l5 4' stroke='white' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
 <style>
 :root{
   --bg:#f3f5f7;--panel:#fff;--sunk:#e8ecf0;--line:#d5dbe2;--fg:#16202b;--muted:#5b6876;
-  --accent:#1d5fc4;--accent-soft:#e2ebfa;--go:#1d7a4a;--go-soft:#dcf1e5;--warn:#a15c00;--warn-soft:#fbecd5;--bad:#b4282e;--bad-soft:#f8dfe0;
+  --accent:#c8102e;--accent-soft:#fbe6e9;--data:#2b5c9e;--data-soft:#e3ebf6;--go:#1d7a4a;--go-soft:#dcf1e5;--warn:#a15c00;--warn-soft:#fbecd5;--bad:#b4282e;--bad-soft:#f8dfe0;
   --f-display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;--f-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;--f-mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
 }
 @media (prefers-color-scheme:dark){:root{
   --bg:#0f151c;--panel:#17202a;--sunk:#1e2935;--line:#2c3a48;--fg:#e4eaf0;--muted:#94a3b3;
-  --accent:#6ea2ff;--accent-soft:#1c2c47;--go:#5fd394;--go-soft:#163527;--warn:#f0b05a;--warn-soft:#3a2a12;--bad:#ff7a7f;--bad-soft:#3d1a1d;color-scheme:dark}}
+  --accent:#ff5c66;--accent-soft:#3a1a1f;--data:#7fa8ec;--data-soft:#1c2c47;--go:#5fd394;--go-soft:#163527;--warn:#f0b05a;--warn-soft:#3a2a12;--bad:#ff7a7f;--bad-soft:#3d1a1d;color-scheme:dark}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 var(--f-body)}
 header{background:var(--panel);border-bottom:1px solid var(--line)}
@@ -33,7 +33,7 @@ h1{font-family:var(--f-display);font-size:clamp(28px,5vw,40px);line-height:1.05;
 .meta{display:flex;flex-wrap:wrap;gap:6px 18px;color:var(--muted);font-size:14px}
 .meta b{color:var(--fg);font-weight:600}
 .chip{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;background:var(--sunk);color:var(--muted)}
-.chip.go{background:var(--go-soft);color:var(--go)}.chip.warn{background:var(--warn-soft);color:var(--warn)}.chip.bad{background:var(--bad-soft);color:var(--bad)}.chip.acc{background:var(--accent-soft);color:var(--accent)}
+.chip.go{background:var(--go-soft);color:var(--go)}.chip.warn{background:var(--warn-soft);color:var(--warn)}.chip.bad{background:var(--bad-soft);color:var(--bad)}.chip.acc{background:var(--data-soft);color:var(--data)}
 .hero{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:22px 0}
 .tile{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
 .tile .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
@@ -51,7 +51,7 @@ section > h2 span{font-weight:400;color:var(--muted);font-size:13px}
 .ph .t{font-weight:600}
 .ph .d{color:var(--muted);font-size:13px}
 .ph .bar2{height:8px;background:var(--sunk);border-radius:4px;overflow:hidden}
-.ph .bar2 i{display:block;height:100%;background:var(--accent)}
+.ph .bar2 i{display:block;height:100%;background:var(--data)}
 .ph.done .bar2 i{background:var(--go)}
 .ms{display:flex;gap:12px;align-items:baseline;justify-content:space-between}
 .ms .dot{width:10px;height:10px;border-radius:50%;border:2px solid var(--muted);flex:none;margin-top:5px}

@@ -1,4 +1,4 @@
-# RFIP Hub (CRM + Operations)
+# RFIP (sales and operations)
 
 RFIP's sales CRM and operations platform. The sales side: deal pipeline, go/no-go scoring, accounts, contacts, tasks, a company dashboard for admins, and per-deal sharing. Reps sign in with their RFIP Microsoft 365 account.
 

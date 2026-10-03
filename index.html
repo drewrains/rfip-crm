@@ -3,16 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>RFIP Hub</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%231d5fc4'/%3E%3Cpath d='M8 22V10h7a4 4 0 010 8h-7M15 18l5 4' stroke='white' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<title>RFIP</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23c8102e'/%3E%3Cpath d='M8 22V10h7a4 4 0 010 8h-7M15 18l5 4' stroke='white' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="styles.css?v=20261002g">
+<link rel="stylesheet" href="styles.css?v=20261002i">
 </head>
 <body>
 <div id="signin" class="signin" hidden>
   <div class="signin-card">
-    <div class="brand big">RFIP <span>Pipeline</span></div>
+    <div class="brand big">RF<span>IP</span></div>
     <form id="pwForm" class="pw-form">
       <label class="lab" for="pwEmail">Email</label>
       <input class="inp" id="pwEmail" type="email" autocomplete="username" required placeholder="you@rfip.com">
@@ -31,7 +31,7 @@
 
 <div id="app" hidden>
   <header class="bar"><div class="wrap">
-    <div class="brand">RFIP <span id="brandSub">Pipeline</span><em id="envTag" class="env" hidden title="You're in the test environment. Nothing here touches live data.">Test</em></div>
+    <div class="brand">RF<span>IP</span><span id="brandSub" hidden></span><em id="envTag" class="env" hidden title="You're in the test environment. Nothing here touches live data.">Test</em></div>
     <div class="sections" id="sections" role="group" aria-label="Section" hidden></div>
     <nav class="tabs" id="tabs" aria-label="Views"></nav>
     <div class="me">
@@ -49,8 +49,8 @@
 <div id="layer"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/dist/umd/supabase.js"></script>
-<script src="config.js?v=20261002g"></script>
-<script src="ops.js?v=20261002g"></script>
-<script src="app.js?v=20261002g"></script>
+<script src="config.js?v=20261002i"></script>
+<script src="ops.js?v=20261002i"></script>
+<script src="app.js?v=20261002i"></script>
 </body>
 </html>

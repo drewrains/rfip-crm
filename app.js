@@ -1,4 +1,4 @@
-/* RFIP Pipeline — CRM front end. Talks to Supabase; the database's row-level
+/* RFIP — sales and operations front end. Talks to Supabase; the database's row-level
    security decides what each person can see and change. */
 (() => {
 "use strict";
@@ -330,7 +330,7 @@ function renderNow() {
   const both = hasSales() && hasOps();
   $("#sections").hidden = !both;
   $("#sections").replaceChildren(...[["sales","Sales"],["ops","Operations"]].map(([id, name]) => h("button", {"aria-pressed": String(S.section === id), onclick:() => { if (S.section !== id) setSection(id); }}, name)));
-  $("#brandSub").textContent = S.section === "ops" ? "Operations" : "Pipeline";
+  document.title = "RFIP" + (S.section === "ops" ? " · Operations" : " · Sales");
   $("#newDeal").hidden = S.section === "ops";
   $("#envTag").hidden = cfg.environment !== "test";
   $("#tabs").replaceChildren(...views.map(([id, name]) => h("button", {"aria-current": S.view === id || (OPS && OPS.parentView(S.view) === id) ? "page" : null,
