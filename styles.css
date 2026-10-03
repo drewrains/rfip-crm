@@ -492,3 +492,7 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
 .plan-t .linkish,.task-main .linkish,.mat-item,.o-ms .linkish{text-decoration:none}
 .plan-t .linkish:hover,.task-main .linkish:hover{text-decoration:underline}
 .doc-name{color:var(--fg)} .doc-name:hover{color:var(--accent)}
+
+/* SharePoint folder on a deal */
+.sp-box .sp-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--sunk)}
+.sp-box a.btn{text-decoration:none}

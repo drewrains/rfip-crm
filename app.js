@@ -160,10 +160,15 @@ function gngChip(d) {
 }
 
 // ---------------------------------------------------------------- auth
+// The Microsoft button shows by itself once Microsoft sign-in is switched on in Supabase.
+let MS_ON = false;
+if (configured) fetch(cfg.supabaseUrl + "/auth/v1/settings", {headers:{apikey:cfg.supabaseAnonKey}})
+  .then(r => r.ok ? r.json() : null).then(j => { MS_ON = !!(j && j.external && j.external.azure);
+    if (MS_ON && !$("#signin").hidden) $("#msBlock").hidden = false; }).catch(() => {});
 function showSignin(err) {
   $("#app").hidden = true; $("#signin").hidden = false;
   $("#pwForm").hidden = cfg.passwordLogin === false;
-  $("#msBlock").hidden = !cfg.microsoftLogin;
+  $("#msBlock").hidden = !(cfg.microsoftLogin || MS_ON);
   if (cfg.passwordLogin === false) { const o = document.querySelector("#msBlock .or"); if (o) o.hidden = true; }
   const e = $("#signinError"); e.textContent = err || ""; e.hidden = !err;
 }
@@ -835,6 +840,36 @@ function openCloseOut(d, stage) {
 }
 
 // ---------------------------------------------------------------- deal drawer
+// ---------------------------------------------------------------- SharePoint folder per deal
+// The "sharepoint" Edge Function makes <year>/<Account – Deal>/Sales/… and /Operations/… in the
+// Sales SharePoint site and saves the link on the deal (and its project once it's won).
+async function sharepointFolder(dealId, quiet) {
+  const {data, error} = await sb.functions.invoke("sharepoint", {body:{action:"create", deal_id:dealId}});
+  const {data:row} = await sb.from("deals").select("*").eq("id", dealId).maybeSingle();
+  if (row) { const i = S.deals.findIndex(d => d.id === dealId); if (i >= 0) S.deals[i] = row; }
+  if (!quiet) {
+    if (error) toast("Couldn't reach SharePoint: " + friendly(error));
+    else if (data && data.status === "ready") toast("SharePoint folder ready");
+    else if (data && data.status === "waiting") toast("The folder will be created once SharePoint is connected.");
+    else if (data && data.error) toast("SharePoint: " + data.error);
+  }
+  return row;
+}
+function sharepointBox(deal) {
+  if (!deal || !("sharepoint_status" in deal || "sharepoint_url" in deal)) return null;
+  const box = h("div", {class:"field full sp-box"});
+  const draw = d => {
+    const retry = (label) => h("button", {type:"button", class:"btn small", onclick: async e => { e.currentTarget.disabled = true; const r = await sharepointFolder(d.id); draw(r || d); render(); }}, label);
+    box.replaceChildren(h("label", null, "SharePoint folder"),
+      d.sharepoint_url ? h("div", {class:"sp-row"}, h("a", {class:"btn small primary", href:d.sharepoint_url, target:"_blank", rel:"noopener"}, "Open folder"),
+          h("a", {class:"linkish", href:d.sharepoint_url + "/Sales", target:"_blank", rel:"noopener"}, "Sales"), h("a", {class:"linkish", href:d.sharepoint_url + "/Operations", target:"_blank", rel:"noopener"}, "Operations"))
+      : d.sharepoint_status === "waiting" ? h("div", {class:"sp-row muted"}, "Will be created as soon as SharePoint is connected.", retry("Try now"))
+      : d.sharepoint_status === "error" ? h("div", {class:"sp-row"}, h("span", {class:"bad-t small"}, d.sharepoint_error || "Something went wrong."), retry("Try again"))
+      : h("div", {class:"sp-row"}, h("span", {class:"muted"}, "No folder yet."), retry("Create folder")));
+  };
+  draw(deal); return box;
+}
+
 // Repeat work (moves, adds and changes for the same customer): start a new deal from an old one.
 // Keeps the customer, contact, scope, service lines, vertical, value and go/no-go scores;
 // starts fresh on stage, dates, bid number and outcome. The deal team comes along too.
@@ -881,7 +916,7 @@ function openDeal(id, startTab, prefill, copiedFrom) {
       fld(draft, "vertical", "Vertical", "select", {options:VERTICALS, full:true}),
       fld(draft, "services", "Service lines", "chips", {options:SERVICES, full:true}),
       fld(draft, "description", "Scope summary", "textarea", {full:true}),
-      outcomeBox);
+      outcomeBox, src ? sharepointBox(byId(S.deals, src.id) || src) : null);
   };
 
   const gng = () => {
@@ -1008,6 +1043,7 @@ function openDeal(id, startTab, prefill, copiedFrom) {
         {deal_id:copiedFrom, author_id:S.me.id, body:"Copied to " + res.name + "."}]);
     }
     render(); closeDrawer();
+    if (!src && "sharepoint_status" in res) sharepointFolder(res.id, true).then(() => render());
     if (!src) setTimeout(() => openDeal(res.id, "p"), 200);
   }}, src ? "Save" : copiedFrom ? "Create copy" : "Create deal"));
   if (src) foot.splice(foot.length - 2, 0, h("button", {class:"btn", title:"Start a new deal for repeat work with this customer", onclick:() => copyDeal(src)}, "Copy"));
@@ -1123,7 +1159,16 @@ const OPS_COLS = () => !!(OPS && S.profiles.length && "ops_role" in S.profiles[0
 const FIN_COL = () => !!(S.profiles.length && "finance_approver" in S.profiles[0]);
 function viewTeam() {
   const wrap = h("div");
-  wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Team")),
+  const spMissing = S.deals.filter(d => "sharepoint_status" in d && d.sharepoint_status !== "ready").length;
+  wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Team"),
+      isAdmin() && spMissing ? h("button", {class:"btn small", title:"Creates the Sales and Operations folders in SharePoint for every deal that doesn't have one yet", onclick: async e => {
+        const btn = e.currentTarget; btn.disabled = true; btn.textContent = "Creating folders…";
+        const {data, error} = await sb.functions.invoke("sharepoint", {body:{action:"backfill"}});
+        btn.disabled = false; btn.textContent = "Create missing SharePoint folders (" + spMissing + ")";
+        if (error) { let m = friendly(error); try { const j = await error.context.json(); if (j.error) m = j.error; } catch (x) {} toast(m); return; }
+        toast("Created " + data.ready + " folder" + (data.ready === 1 ? "" : "s") + (data.error ? ", " + data.error + " failed: " + (data.errors[0] || "") : ""));
+        await loadAll(); render();
+      }}, "Create missing SharePoint folders (" + spMissing + ")") : null),
     h("p", {class:"muted", style:"margin:-6px 0 12px"}, "Everyone with a CRM login. Admins see every deal. A manager (anyone with people reporting to them) sees their team's deals, tasks and targets, plus a team dashboard and scorecard. Turning someone off blocks their access right away; their deals stay put so you can reassign them."));
   const list = S.profiles.slice().sort((a, b) => (b.active - a.active) || (a.full_name || a.email).localeCompare(b.full_name || b.email));
   wrap.append(h("div", {class:"tbl-wrap"}, h("table", null,

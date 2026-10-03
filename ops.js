@@ -435,7 +435,8 @@ function viewProject() {
     p.sold_margin != null && money ? h("span", null, "Margin at handoff ", h("b", {class:"mono"}, Number(p.sold_margin).toFixed(0) + "%")) : null,
     ho && ho.accepted_at ? h("span", null, "Accepted ", h("b", null, fmtDate(ho.accepted_at.slice(0, 10))), ho.kickbacks ? " after " + plural(ho.kickbacks, "kick-back") : "") : null,
     deal ? h("button", {class:"linkish", onclick:() => core.openDeal(deal.id)}, "Open deal") : null,
-    ho ? h("button", {class:"linkish", onclick:() => openHandoff(ho.id)}, "Handoff packet") : null));
+    ho ? h("button", {class:"linkish", onclick:() => openHandoff(ho.id)}, "Handoff packet") : null,
+    p.sharepoint_url ? h("a", {class:"linkish", href:p.sharepoint_url, target:"_blank", rel:"noopener"}, "SharePoint folder") : null));
 
   wrap.append(h("div", {class:"o-tiles"},
     money ? tile("Contract", compact(c.total), compact(p.contract_value) + " original" + (c.coAppr ? " + " + compact(c.coAppr) + " approved COs" : "")) : null,

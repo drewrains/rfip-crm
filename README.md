@@ -162,12 +162,17 @@ The same app has an **Operations** section for delivery: a company overview, pro
 
 **Customer view** (on each project page, for the PM, lead and admins): turns on a private link to a live, read-only status page for the customer: percent complete, schedule status, planned completion, the plan's phases with progress, milestones and the weekly update's "done this week" and "next week". It never shows money, needs and decisions, customer notes, documents or crew. Each weekly update has a box to leave it off the customer page. The link can be turned off or replaced (the old one stops working), and the panel shows how many times it's been opened. The customer page is `customer.html`; nobody needs a login.
 
+**SharePoint folder per deal**: when a deal is created, RFIP creates its folder in the Sales SharePoint site: `Deals/<year>/<Account> – <Deal name>/` with a **Sales** folder (01 RFP and Bid Docs, 02 Site Walk and Photos, 03 Drawings and Specs, 04 Estimate and Pricing, 05 Proposal, 06 Contract and PO, 07 Correspondence) and an **Operations** folder (01 Handoff Packet, 02 Submittals, 03 Drawings and As-Builts, 04 Change Orders, 05 Field Photos and Daily Reports, 06 Test Results, 07 Pay Apps, 08 Closeout, 09 Safety). The deal shows Open folder / Sales / Operations links; when the deal is won and accepted, the project page links to the same folder, so operations picks up everything sales gathered. Admins can create folders for older deals from the Team tab. The work is done by the `sharepoint` Edge Function (`supabase/functions/sharepoint`), which needs these secrets in Supabase → Edge Functions → Secrets: `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `SP_SITE_URL` (optional `SP_LIBRARY`, default Documents; `SP_ROOT_FOLDER`, default Deals). Until they're set, deals wait and get their folder as soon as it's connected. The Microsoft app registration needs the Microsoft Graph application permission **Sites.ReadWrite.All** with admin consent.
+
+**Microsoft sign-in**: the "Sign in with Microsoft" button appears by itself once the Azure provider is switched on in Supabase. Only rfip.com accounts can sign in; someone who already has a password login lands in the same account.
+
 **Database scripts**
 
 - `supabase/ops_schema.sql` adds the operations tables and rules. Run it after `schema.sql`.
 - `supabase/manpower_schema.sql` adds the tech roster and daily schedule. Run it after `ops_schema.sql`.
 - `supabase/materials_schema.sql` adds purchasing and receiving to materials. Run it after `ops_schema.sql`.
 - `supabase/docs_updates_schema.sql` adds project documents (storage bucket and rules) and weekly PM updates. Run it after `ops_schema.sql`.
+- `supabase/sharepoint_schema.sql` adds the SharePoint folder link to deals and projects. Run it after `ops_schema.sql`.
 - `supabase/installs_schema.sql` adds install tracking (install unit and quantity, labor hours per unit, milestone link, install log). Run it after `materials_schema.sql`.
 - `supabase/plan_expenses_customer_schema.sql` adds project plans and tasks, expenses with PM and CFO approval, and the customer view link. Run it after the scripts above.
 - `supabase/test_seed.sql` (and `test_seed_part6.sql` for plans, expenses and a customer link) loads demo logins and sample data. **Test database only.**
@@ -192,4 +197,4 @@ Demo logins on the test database all use the password `RfipDemo-2026`:
 
 Other leads and PMs: demo-mcapps, demo-hseabolt, demo-ddell, demo-mhale, demo-treese, demo-acole, demo-rbanks, demo-swhitfield (all `@rfip.com`).
 
-Going live later: run `ops_schema.sql`, `manpower_schema.sql`, `materials_schema.sql`, `docs_updates_schema.sql`, `plan_expenses_customer_schema.sql` and `installs_schema.sql` on the live database first (the live project needs the Pro plan for file storage), then merge the `ops-test` branch. Don't run `test_seed.sql` on live.
+Going live later: run `ops_schema.sql`, `manpower_schema.sql`, `materials_schema.sql`, `docs_updates_schema.sql`, `plan_expenses_customer_schema.sql`, `installs_schema.sql` and `sharepoint_schema.sql` on the live database first, deploy the `sharepoint` Edge Function there with its secrets (the live project needs the Pro plan for file storage), then merge the `ops-test` branch. Don't run `test_seed.sql` on live.
