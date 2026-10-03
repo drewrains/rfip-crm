@@ -962,7 +962,7 @@ function dealFilesTab(deal) {
     const up = h("div", {class:"form sp-up"},
       fld(d, "folder", "Upload to", "select", {options:folders.map(f => [f.key, f.label]), blank:false}),
       h("div", {class:"field"}, h("label", {for:"sp-files"}, "Files (up to 50 MB each)"), input),
-      h("div", {class:"field full sp-row"}, h("button", {class:"btn primary small", onclick: async e => {
+      h("div", {class:"field full sp-acts"}, h("button", {class:"btn primary small", onclick: async e => {
         const files = [...input.files]; if (!files.length) { toast("Choose one or more files."); return; }
         const btn = e.currentTarget; btn.disabled = true; let done = 0; const failed = [];
         for (const f of files) {
@@ -975,13 +975,13 @@ function dealFilesTab(deal) {
         cur = d.folder; await spLoad(key, target, true); draw();
         if (failed.length) status.textContent = "Couldn't upload: " + failed.join("; ");
       }}, "Upload"), status));
-    box.replaceChildren(
-      h("div", {class:"sp-row", style:"justify-content:space-between;margin-bottom:10px"},
+    box.replaceChildren(...[
+      h("div", {class:"sp-head"},
         h("span", {class:"muted small"}, "Synced with SharePoint" + (st.loading ? " · refreshing…" : "")),
-        h("span", {class:"sp-row"}, h("button", {class:"btn small", onclick:() => { spLoad(key, target, true).then(draw); draw(); }}, "Refresh"),
+        h("span", {class:"sp-acts"}, h("button", {class:"btn small", onclick:() => { spLoad(key, target, true).then(draw); draw(); }}, "Refresh"),
           st.data.url ? h("a", {class:"btn small", href:st.data.url + "/Sales", target:"_blank", rel:"noopener"}, "Open in SharePoint") : null)),
       st.error ? h("p", {class:"bad-t small"}, st.error) : null,
-      tabs, list, h("hr", {class:"sp-sep"}), up);
+      tabs, list, h("hr", {class:"sp-sep"}), up].filter(Boolean));
   };
   spLoad(key, target).then(draw); draw();
   return box;

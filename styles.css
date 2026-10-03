@@ -496,3 +496,7 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
 /* SharePoint folder on a deal */
 .sp-box .sp-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--sunk)}
 .sp-box a.btn{text-decoration:none}
+.sp-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.sp-acts{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sp-files a.btn,.o-actions a.btn{text-decoration:none}
+.sp-sep{border:0;border-top:1px solid var(--line);margin:16px 0}
