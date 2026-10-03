@@ -12,9 +12,9 @@ const {h, sb, S, money, fmtDate, daysUntil, todayStr, run, toast, friendly, open
 const TABLES = {projects:"projects", handoffs:"handoffs", depts:"departments", costs:"cost_lines", labor:"labor_weeks", ms:"milestones",
   cos:"change_orders", mats:"materials", logs:"daily_logs", plan:"crew_plan", roster:"crew_roster", closeout:"closeout_items",
   bills:"billings", safety:"safety_events", techs:"techs", asg:"assignments", docs:"documents", wu:"weekly_updates", rcpts:"material_receipts",
-  items:"plan_items", exps:"expenses", clinks:"customer_links"};
+  items:"plan_items", exps:"expenses", clinks:"customer_links", insts:"material_installs"};
 // added later than the rest; if a database hasn't been given these yet, the rest of operations still works
-const OPTIONAL = new Set(["items", "exps", "clinks"]);
+const OPTIONAL = new Set(["items", "exps", "clinks", "insts"]);
 const KEY_OF = Object.fromEntries(Object.entries(TABLES).map(([k, t]) => [t, k]));
 const O = {missing:false, detail:null, q:"", dept:"", pm:"", phase:"active", hand:true, mpMode:"week", mpDate:null, mpDept:""};
 try { const m = localStorage.getItem("rfipops.mpMode"); if (m) O.mpMode = m; } catch (e) {}
@@ -93,6 +93,31 @@ async function saveRow(table, row, id) {
   return res;
 }
 
+// ---------------------------------------------------------------- installed work
+// Each material line is counted in the field in its install unit (208 drops, 186 APs) and
+// carries labor hours per unit. Installed labor hours ÷ planned labor hours = a suggested
+// percent complete. Milestones with no material carry their own hours and the PM's progress.
+const instQty = m => Number(m.install_qty ?? m.qty) || 0;
+const instUnit = m => m.install_unit || m.uom || "ea";
+const instDone = m => Math.min(Number(m.qty_installed) || 0, instQty(m));
+function installCalc(mats, ms) {
+  const lpu = m => Number(m.labor_per_unit) || 0;
+  const lines = mats.filter(m => lpu(m) > 0);
+  let plan = sum(lines, m => instQty(m) * lpu(m)), earned = sum(lines, m => instDone(m) * lpu(m));
+  const tied = new Set(mats.filter(m => m.milestone_id).map(m => m.milestone_id));
+  const msOnly = ms.filter(x => Number(x.labor_hours) > 0 && !tied.has(x.id));
+  for (const x of msOnly) { const hrs = Number(x.labor_hours); plan += hrs; earned += hrs * (x.actual ? 1 : Math.min(100, Number(x.progress) || 0) / 100); }
+  const byMs = new Map();
+  for (const x of ms) {
+    const ls = mats.filter(m => m.milestone_id === x.id); if (!ls.length) continue;
+    const hl = ls.filter(m => lpu(m) > 0);
+    const pl = hl.length ? sum(hl, m => instQty(m) * lpu(m)) : sum(ls, instQty), ea = hl.length ? sum(hl, m => instDone(m) * lpu(m)) : sum(ls, instDone);
+    byMs.set(x.id, {lines:ls, pct: pl ? ea / pl : 0, plan:pl, earned:ea, hours:hl.length > 0});
+  }
+  return {plan, earned, pct: plan > 0 ? earned / plan : null, lines, byMs, msOnly};
+}
+const instSummary = ls => ls.map(m => (ls.length > 1 || !m.install_unit ? m.item.replace(/\s*\(.*?\)\s*$/, "") + " " : "") + num(Number(m.qty_installed) || 0) + "/" + num(instQty(m)) + (m.install_unit ? " " + m.install_unit : "")).join(" · ");
+
 // ---------------------------------------------------------------- project math
 const CALC = new Map();
 function calc(p) {
@@ -117,6 +142,7 @@ function calc(p) {
   const ms = O.ms.filter(m => m.project_id === p.id).sort((a, b) => (a.planned || "").localeCompare(b.planned || "") || a.sort - b.sort);
   const late = ms.filter(m => !m.actual && m.planned && daysUntil(m.planned) < -5);
   const mats = O.mats.filter(m => m.project_id === p.id);
+  const inst = installCalc(mats, ms);
   const closeout = O.closeout.filter(c => c.project_id === p.id).sort((a, b) => a.sort - b.sort);
   const roster = scheduleRoster(p.id);
   const staffed = new Set(O.asg.filter(a => a.project_id === p.id && a.work_date >= TODAY && a.work_date <= addDays(TODAY, 14)).map(a => a.tech_id)).size;
@@ -127,7 +153,7 @@ function calc(p) {
     retH: billed * (Number(p.retainage_pct) || 0) / 100,
     earnH: done * hb, burn: hb ? hu / hb : 0, prod: hu > 0 && done > .05 ? (done * hb) / hu : null,
     ms, late, lateDays: late.length ? Math.max(...late.map(m => -daysUntil(m.planned))) : 0,
-    mats, matOpen: mats.filter(m => m.status !== "received"), backordered: mats.filter(m => m.status === "backordered"),
+    mats, inst, matOpen: mats.filter(m => m.status !== "received"), backordered: mats.filter(m => m.status === "backordered"),
     closeout, docsOpen: closeout.filter(c => c.status !== "done"), roster, staffed: O.techs.length ? staffed : roster.length,
     elapsed: p.start_date && p.end_date ? Math.min(1, Math.max(0, -daysUntil(p.start_date) / Math.max(1, daysUntil(p.end_date) - daysUntil(p.start_date)))) : null,
   };
@@ -414,6 +440,7 @@ function viewProject() {
   wrap.append(h("div", {class:"o-tiles"},
     money ? tile("Contract", compact(c.total), compact(p.contract_value) + " original" + (c.coAppr ? " + " + compact(c.coAppr) + " approved COs" : "")) : null,
     tile("Complete vs schedule", pct(c.done), c.elapsed == null ? "" : pct(c.elapsed) + " of schedule elapsed", c.elapsed != null && c.done < c.elapsed - .1 ? "warn" : ""),
+    c.inst.pct != null ? tile("Installed work", pct(c.inst.pct), "Suggested % complete · PM has " + pct(c.done), Math.abs(c.inst.pct - c.done) >= .05 ? "warn" : "") : null,
     tile("Labor hours used", pct(c.burn), num(c.hu) + " of " + num(c.hb) + " budgeted", c.burn >= .8 && c.done < .8 ? "bad" : ""),
     money ? tile("Margin forecast", pct(c.fcM), (c.fcM < c.estM - .005 ? "Down from " : "Budget ") + pct(c.estM), c.fcM < c.estM - .02 ? "bad" : "") : null,
     money ? tile("Ready to bill", compact(c.ready), "Billed " + compact(c.billed) + " · " + compact(c.retH) + " retainage held") : null));
@@ -478,13 +505,15 @@ function milestonesPanel(p, c, edit) {
   const done = c.ms.filter(m => m.actual).length;
   return panel("Schedule", plural(done, "milestone") + " of " + c.ms.length + " done",
     c.ms.length ? h("ul", {class:"o-ms"}, c.ms.map(m => {
+      const ip = c.inst.byMs.get(m.id), prog = ip ? Math.round(ip.pct * 100) : Number(m.progress) || 0;
       const late = m.actual ? daysUntil(m.actual) - daysUntil(m.planned) : (m.planned && daysUntil(m.planned) < 0 ? -daysUntil(m.planned) : 0);
-      const st = m.actual ? (late > 0 ? "late" : "done") : (m.progress ? "now" : late > 5 ? "overdue" : "");
+      const st = m.actual ? (late > 0 ? "late" : "done") : (prog ? "now" : late > 5 ? "overdue" : "");
       return h("li", {class: edit ? "click" : null, onclick: edit ? () => openMilestone(p, m) : null},
         h("span", {class:"dot " + st}),
         h("div", null, h("div", {class:"t"}, m.name), m.note ? h("small", null, m.note) : null,
           !m.actual && late > 5 ? h("small", {class:"bad-t"}, late + " days past plan") : null,
-          m.progress && !m.actual ? h("div", {class:"prog"}, h("i", {style:"width:" + Math.min(100, m.progress) + "%"})) : null),
+          prog && !m.actual ? h("div", {class:"prog"}, h("i", {style:"width:" + Math.min(100, prog) + "%"})) : null,
+          ip && !m.actual ? h("small", {class:"inst-note"}, prog + "% installed · " + instSummary(ip.lines)) : null),
         h("div", {class:"d"}, fmtDate(m.actual || m.planned), h("small", null, m.actual ? (late > 0 ? "plan " + fmtDate(m.planned) : "done") : "planned")));
     })) : h("div", {class:"empty"}, "No milestones yet."),
     edit ? h("div", {class:"o-actions"}, h("button", {class:"btn small", onclick:() => openMilestone(p)}, "+ Milestone")) : null);
@@ -523,7 +552,7 @@ const MAT_ORDER = {backordered:0, to_order:1, partial:2, ordered:3, received:4};
 const qtyFmt = (v, uom) => num(v) + (uom && uom !== "ea" ? " " + uom : "");
 const matCost = m => (Number(m.unit_cost) || 0) * (Number(m.qty) || 0);
 function matPanel(p, c, edit) {
-  const showMoney = role() !== "field";
+  const showMoney = role() !== "field", instOn = featureOn("insts");
   const mats = c.mats.slice().sort((a, b) => (MAT_ORDER[a.status] ?? 9) - (MAT_ORDER[b.status] ?? 9) || (a.sort || 0) - (b.sort || 0) || a.item.localeCompare(b.item));
   O.matSel = O.matSel || new Set();
   for (const id of [...O.matSel]) if (!mats.some(m => m.id === id)) O.matSel.delete(id);
@@ -531,28 +560,34 @@ function matPanel(p, c, edit) {
   const toOrder = mats.filter(m => Number(m.qty_ordered) < Number(m.qty)).length;
   const sel = edit ? m => h("td", {class:"cb", onclick: e => e.stopPropagation()}, h("input", {type:"checkbox", "aria-label":"Select " + m.item, checked:O.matSel.has(m.id),
     onchange: e => { e.target.checked ? O.matSel.add(m.id) : O.matSel.delete(m.id); render(); }})) : () => null;
-  const sub = plural(mats.length, "line") + " · " + toOrder + " to order · " + plural(c.matOpen.length, "line") + " not fully received" + (showMoney && total ? " · " + compact(ordered) + " ordered of " + compact(total) : "");
+  const sub = plural(mats.length, "line") + " · " + toOrder + " to order · " + plural(c.matOpen.length, "line") + " not fully received" + (showMoney && total ? " · " + compact(ordered) + " ordered of " + compact(total) : "")
+    + (instOn && c.inst.lines.length ? " · " + pct(c.inst.pct) + " of planned labor installed" : "");
   return panel("Materials", sub,
     mats.length ? h("div", {class:"tbl-wrap flat"}, h("table", {class:"mat-tbl"},
       h("thead", null, h("tr", null, edit ? h("th", {class:"cb"}, h("input", {type:"checkbox", "aria-label":"Select all", checked: mats.length > 0 && mats.every(m => O.matSel.has(m.id)),
           onchange: e => { mats.forEach(m => e.target.checked ? O.matSel.add(m.id) : O.matSel.delete(m.id)); render(); }})) : null,
-        h("th", null, "Item"), h("th", null, "Distributor · PO"), h("th", {class:"num"}, "Needed"), h("th", {class:"num"}, "Ordered"), h("th", null, "Received"), h("th", null, "Status"), h("th"))),
+        h("th", null, "Item"), h("th", null, "Distributor · PO"), h("th", {class:"num"}, "Needed"), h("th", {class:"num"}, "Ordered"), h("th", null, "Received"), instOn ? h("th", null, "Installed") : null, h("th", null, "Status"), h("th"))),
       h("tbody", null, mats.map(m => { const st = MAT_ST.find(s => s[0] === m.status) || MAT_ST[1];
         const q = Number(m.qty) || 0, o = Number(m.qty_ordered) || 0, r = Number(m.received) || 0;
         return h("tr", {class: edit ? "click" : null, onclick: edit ? () => openMat(p, m) : null}, sel(m),
-          h("td", {class:"wrap"}, h("b", {class:"mat-item"}, m.item), h("div", {class:"muted small"}, [m.part_no, m.manufacturer, showMoney && m.unit_cost ? money(m.unit_cost) + "/" + (m.uom || "ea") : null].filter(Boolean).join(" · "))),
+          h("td", {class:"wrap"}, h("b", {class:"mat-item"}, m.item), h("div", {class:"muted small"}, [m.part_no, m.manufacturer, showMoney && m.unit_cost ? money(m.unit_cost) + "/" + (m.uom || "ea") : null,
+            instOn && Number(m.labor_per_unit) ? num(m.labor_per_unit) + " hrs/" + instUnit(m).replace(/s$/, "") : null, instOn && m.milestone_id ? (byId(O.ms, m.milestone_id) || {}).name : null].filter(Boolean).join(" · "))),
           h("td", null, m.distributor || h("span", {class:"muted"}, "—"), m.po_number ? h("div", {class:"muted small mono"}, m.po_number + (m.ordered_on ? " · " + fmtDate(m.ordered_on) : "")) : null),
           h("td", {class:"num"}, qtyFmt(q, m.uom)),
           h("td", {class:"num" + (o < q ? " warn-t" : "")}, o ? num(o) : "—"),
           h("td", null, h("div", {class:"mat-recv"}, h("span", {class:"mono"}, num(r) + " / " + num(q)), h("span", {class:"minibar inline"}, h("i", {class: r >= q ? "go" : r > 0 ? "" : "warn", style:"width:" + (q ? Math.min(100, r / q * 100) : 0) + "%"})))),
+          instOn ? h("td", null, h("div", {class:"mat-recv"}, h("span", {class:"mono"}, num(Number(m.qty_installed) || 0) + " / " + num(instQty(m)) + (instUnit(m) !== (m.uom || "ea") ? " " + instUnit(m) : "")),
+            h("span", {class:"minibar inline"}, h("i", {class: instDone(m) >= instQty(m) ? "go" : "", style:"width:" + (instQty(m) ? Math.min(100, instDone(m) / instQty(m) * 100) : 0) + "%"})))) : null,
           h("td", null, chip(st[2], st[1]), m.eta && r < q ? h("div", {class:"muted small"}, "ETA " + fmtDate(m.eta)) : null),
-          h("td", {onclick: e => e.stopPropagation()}, o > r || (o === 0 && r < q && m.status === "backordered") ? h("button", {class:"btn small", onclick:() => openReceive(p, m)}, "Receive") : null)); }))))
+          h("td", {class:"nowrap", onclick: e => e.stopPropagation()}, o > r || (o === 0 && r < q && m.status === "backordered") ? h("button", {class:"btn small", onclick:() => openReceive(p, m)}, "Receive") : null,
+            instOn && r > 0 && instDone(m) < instQty(m) ? h("button", {class:"btn small", onclick:() => openInstalls(p, m.id)}, "Install") : null)); }))))
       : h("div", {class:"empty"}, "No materials yet. Import the material list or add lines."),
     h("datalist", {id:"distis"}, DISTIS.map(d => h("option", {value:d}))),
-    edit ? h("div", {class:"o-actions"},
-      O.matSel.size ? h("button", {class:"btn primary small", onclick:() => openOrder(p, [...O.matSel])}, "Order selected (" + O.matSel.size + ")") : null,
-      h("button", {class:"btn small", onclick:() => openImport(p)}, "Import list"),
-      h("button", {class:"btn small", onclick:() => openMat(p)}, "+ Line")) : null);
+    edit || role() === "field" ? h("div", {class:"o-actions"},
+      instOn && mats.length ? h("button", {class:"btn small" + (edit ? "" : " primary"), onclick:() => openInstalls(p)}, "Log installs") : null,
+      edit && O.matSel.size ? h("button", {class:"btn primary small", onclick:() => openOrder(p, [...O.matSel])}, "Order selected (" + O.matSel.size + ")") : null,
+      edit ? h("button", {class:"btn small", onclick:() => openImport(p)}, "Import list") : null,
+      edit ? h("button", {class:"btn small", onclick:() => openMat(p)}, "+ Line") : null) : null);
 }
 function logPanel(p) {
   const logs = O.logs.filter(l => l.project_id === p.id).sort((a, b) => b.log_date.localeCompare(a.log_date) || b.created_at.localeCompare(a.created_at));
@@ -615,10 +650,19 @@ function drawerForm(title, draft, fields, onSave, onDelete) {
   openDrawer({title, body:h("div", {class:"form"}, fields), foot});
 }
 const del = (table, id) => async () => { const ok = await run(sb.from(table).delete().eq("id", id), "Deleted"); if (ok) { await reload(KEY_OF[table]); render(); } return ok; };
+function suggestBox(p, d) {
+  const c = calc(p); if (c.inst.pct == null) return null;
+  const v = Math.round(c.inst.pct * 1000) / 10;
+  return h("div", {class:"inst-suggest", style:"grid-column:1/-1"},
+    h("div", null, h("b", null, "Installed work suggests " + v + "%"),
+      h("div", {class:"muted small"}, num(Math.round(c.inst.earned)) + " of " + num(Math.round(c.inst.plan)) + " planned labor hours installed" + (c.hb && Math.abs(c.inst.plan - c.hb) > c.hb * .1 ? " (the install plan covers " + pct(c.inst.plan / c.hb) + " of the " + num(c.hb) + "-hour budget)" : ""))),
+    h("button", {type:"button", class:"btn small", onclick:() => { d.pct_complete = v; const el = document.getElementById("f-pct_complete"); if (el) el.value = v; }}, "Use " + v + "%"));
+}
 function openProgress(p) {
   const d = {pct_complete:Number(p.pct_complete), phase:p.phase, start_date:p.start_date, end_date:p.end_date, pm_id:p.pm_id, notes:p.notes || ""};
   const pms = activePeople().filter(x => x.ops_role === "pm" || x.ops_role === "lead" || x.id === p.pm_id).map(x => [x.id, x.full_name || x.email]);
   drawerForm("Update " + p.number, d, [
+    suggestBox(p, d),
     fld(d, "pct_complete", "Percent complete (0–100)", "number"),
     fld(d, "phase", "Phase", "select", {options:PHASES.map(x => [x[0], x[1]]), blank:false}),
     fld(d, "start_date", "Start", "date"), fld(d, "end_date", "Substantial completion", "date"),
@@ -645,12 +689,18 @@ function openHours(p) {
     });
 }
 function openMilestone(p, m) {
-  const d = m ? {...m} : {name:"", planned:null, actual:null, progress:null, note:"", sort:(calc(p).ms.length + 1)};
+  const d = m ? {...m, labor_hours:m.labor_hours == null ? null : Number(m.labor_hours)} : {name:"", planned:null, actual:null, progress:null, note:"", labor_hours:null, sort:(calc(p).ms.length + 1)};
+  const ip = m ? calc(p).inst.byMs.get(m.id) : null;
   drawerForm(m ? "Milestone" : "New milestone", d, [
     fld(d, "name", "Milestone", "text", {full:true}), fld(d, "planned", "Planned date", "date"), fld(d, "actual", "Done on (blank = not done)", "date"),
-    fld(d, "progress", "Progress % (while in progress)", "number"), fld(d, "note", "Note", "text", {full:true})],
+    ip ? h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Progress comes from installed material: " + instSummary(ip.lines) + " (" + Math.round(ip.pct * 100) + "%).")
+       : fld(d, "progress", "Progress % (while in progress)", "number"),
+    featureOn("insts") && !ip ? fld(d, "labor_hours", "Labor hours (for work with no material, e.g. testing)", "number") : null,
+    fld(d, "note", "Note", "text", {full:true})].filter(Boolean),
     () => { if (!(d.name || "").trim()) { toast("Name the milestone."); return false; }
-      return saveRow("milestones", {project_id:p.id, name:d.name.trim(), planned:nullify(d.planned), actual:nullify(d.actual), progress:nullify(d.progress), note:nullify(d.note), sort:d.sort || 0}, m && m.id); },
+      const row = {project_id:p.id, name:d.name.trim(), planned:nullify(d.planned), actual:nullify(d.actual), progress:nullify(d.progress), note:nullify(d.note), sort:d.sort || 0};
+      if (featureOn("insts") && !ip) row.labor_hours = nullify(d.labor_hours);
+      return saveRow("milestones", row, m && m.id); },
     m ? del("milestones", m.id) : null);
 }
 function openCost(p, l) {
@@ -683,8 +733,13 @@ function distiInput(d, key, label) {
 }
 function openMat(p, m) {
   const showMoney = role() !== "field";
-  const d = m ? {...m, qty:Number(m.qty), qty_ordered:Number(m.qty_ordered), unit_cost:m.unit_cost == null ? null : Number(m.unit_cost), backordered:m.status === "backordered"}
-              : {item:"", part_no:"", manufacturer:"", qty:1, uom:"ea", unit_cost:null, distributor:"", po_number:"", qty_ordered:0, ordered_on:null, eta:null, note:"", backordered:false};
+  const instOn = featureOn("insts");
+  const d = m ? {...m, qty:Number(m.qty), qty_ordered:Number(m.qty_ordered), unit_cost:m.unit_cost == null ? null : Number(m.unit_cost), backordered:m.status === "backordered",
+                 install_qty:m.install_qty == null ? null : Number(m.install_qty), labor_per_unit:m.labor_per_unit == null ? null : Number(m.labor_per_unit)}
+              : {item:"", part_no:"", manufacturer:"", qty:1, uom:"ea", unit_cost:null, distributor:"", po_number:"", qty_ordered:0, ordered_on:null, eta:null, note:"", backordered:false,
+                 install_unit:"", install_qty:null, labor_per_unit:null, milestone_id:null};
+  const installs = m && instOn ? O.insts.filter(x => x.material_id === m.id).sort((a, b) => b.installed_on.localeCompare(a.installed_on) || (b.created_at || "").localeCompare(a.created_at || "")) : [];
+  const msOpts = O.ms.filter(x => x.project_id === p.id).sort((a, b) => (a.planned || "").localeCompare(b.planned || "") || a.sort - b.sort).map(x => [x.id, x.name]);
   const receipts = m ? O.rcpts.filter(r => r.material_id === m.id).sort((a, b) => b.received_on.localeCompare(a.received_on)) : [];
   const body = h("div", null,
     h("div", {class:"section-h"}, "Item"),
@@ -695,6 +750,20 @@ function openMat(p, m) {
       fld(d, "qty_ordered", "Quantity ordered", "number"), fld(d, "ordered_on", "Ordered on", "date"), fld(d, "eta", "Expected delivery", "date"),
       h("label", {class:"field check"}, h("input", {type:"checkbox", checked:d.backordered, onchange: e => { d.backordered = e.target.checked; }}), h("span", null, "Backordered by the distributor")),
       fld(d, "note", "Note", "text", {full:true})),
+    instOn ? h("div", null, h("div", {class:"section-h"}, "Install tracking"),
+      h("p", {class:"muted small", style:"margin-top:0"}, "How the crew counts this work, and the labor each one takes. Installed labor hours across the job give the suggested percent complete."),
+      h("div", {class:"form"},
+        fld(d, "install_unit", "Counted as (blank = " + (d.uom || "ea") + ")", "text", {placeholder:"e.g. drops, APs, cameras, feet"}),
+        fld(d, "install_qty", "How many to install (blank = quantity needed)", "number"),
+        fld(d, "labor_per_unit", "Labor hours each", "number"),
+        fld(d, "milestone_id", "Counts toward milestone", "select", {options:msOpts, blank:"None"})),
+      m ? h("div", null, installs.length ? h("ul", {class:"rcpt-list"}, installs.map(x => h("li", null,
+        h("div", null, h("b", null, (Number(x.qty) > 0 ? "+" : "") + num(x.qty) + " " + instUnit(m)), " on " + fmtDate(x.installed_on) + " · " + personName(x.installed_by),
+          x.area || x.note ? h("div", {class:"muted small"}, [x.area, x.note].filter(Boolean).join(" · ")) : null),
+        x.installed_by === S.me.id || canEdit(p) ? h("button", {class:"btn small", onclick: async () => {
+          if (await run(sb.from("material_installs").delete().eq("id", x.id), "Install entry removed")) { await Promise.all([reload("insts"), reload("mats")]); render(); closeDrawer(); }
+        }}, "Remove") : null))) : h("div", {class:"muted"}, "Nothing installed yet."),
+        h("div", {style:"margin-top:8px"}, h("button", {class:"btn small", onclick:() => { closeDrawer(); openInstalls(p, m.id); }}, "Log installs"))) : null) : null,
     m ? h("div", null, h("div", {class:"section-h"}, "Deliveries"),
       receipts.length ? h("ul", {class:"rcpt-list"}, receipts.map(r => h("li", null,
         h("div", null, h("b", null, "+" + num(r.qty) + " " + (m.uom || "ea")), " on " + fmtDate(r.received_on) + " · " + personName(r.received_by),
@@ -713,6 +782,9 @@ function openMat(p, m) {
       distributor:nullify((d.distributor || "").trim()), po_number:nullify((d.po_number || "").trim()), qty_ordered:Number(d.qty_ordered) || 0, ordered_on:nullify(d.ordered_on), eta:nullify(d.eta),
       note:nullify((d.note || "").trim()), status: d.backordered ? "backordered" : "ordered"};
     if (showMoney) row.unit_cost = nullify(d.unit_cost);
+    if (instOn) Object.assign(row, {install_unit:nullify((d.install_unit || "").trim()), install_qty:nullify(d.install_qty), labor_per_unit:nullify(d.labor_per_unit), milestone_id:nullify(d.milestone_id)});
+    if (instOn && row.install_qty != null && !(row.install_qty > 0)) { toast("How many to install must be more than zero, or blank."); return; }
+    if (instOn && row.labor_per_unit != null && row.labor_per_unit < 0) { toast("Labor hours can't be negative."); return; }
     if (row.qty_ordered > 0 && !row.ordered_on) row.ordered_on = TODAY;
     const btn = e.currentTarget; btn.disabled = true;
     const ok = m ? await run(sb.from("materials").update(row).eq("id", m.id), "Saved") : await run(sb.from("materials").insert(row), "Added");
@@ -742,6 +814,44 @@ function openOrder(p, ids) {
       if (ok) { closeDrawer(); toast(plural(lines.length, "line") + " ordered from " + d.distributor.trim()); }
     }}, "Mark ordered")]});
 }
+function weekInstalls(p, wk) {
+  if (!featureOn("insts")) return null;
+  const xs = O.insts.filter(x => x.project_id === p.id && x.installed_on >= wk && x.installed_on <= addDays(wk, 6));
+  const by = new Map(); for (const x of xs) by.set(x.material_id, (by.get(x.material_id) || 0) + Number(x.qty));
+  const bits = [...by.entries()].map(([id, q]) => { const m = byId(O.mats, id) || {}; return num(q) + " " + instUnit(m) + (m.install_unit ? "" : " " + (m.item || "")); });
+  return h("div", null, h("span", {class:"k"}, "Installed this week"), h("p", null, bits.length ? bits.join(" · ") : "Nothing logged yet"));
+}
+function openInstalls(p, onlyId) {
+  const all = O.mats.filter(m => m.project_id === p.id);
+  const lines = (onlyId ? all.filter(m => m.id === onlyId) : all.filter(m => instDone(m) < instQty(m) || Number(m.qty_installed) > instQty(m)))
+    .sort((a, b) => (a.sort || 0) - (b.sort || 0) || a.item.localeCompare(b.item));
+  const d = {installed_on:TODAY, area:"", note:""}, q = new Map();
+  const photo = h("input", {type:"file", id:"f-instphoto", accept:"image/*", class:"inp"});
+  const body = h("div", null,
+    h("p", {class:"muted", style:"margin-top:0"}, "Enter what was installed. Leave a line blank if nothing went in. Use a minus number to correct a mistake."),
+    lines.length ? h("ul", {class:"inst-list"}, lines.map(m => {
+      const left = instQty(m) - (Number(m.qty_installed) || 0), r = Number(m.received) || 0;
+      return h("li", null,
+        h("div", null, h("b", null, m.item), h("div", {class:"muted small"}, num(Number(m.qty_installed) || 0) + " of " + num(instQty(m)) + " " + instUnit(m) + " installed"
+          + (left > 0 ? " · " + num(left) + " to go" : "") + (r < Number(m.qty) ? " · " + num(r) + " of " + num(m.qty) + " " + (m.uom || "ea") + " received" : ""))),
+        h("label", {class:"inst-q"}, h("input", {type:"number", step:"any", inputmode:"decimal", class:"inp", "aria-label":"Installed now: " + m.item, placeholder:"0",
+          oninput: e => { const v = e.target.value === "" ? 0 : Number(e.target.value); if (v) q.set(m.id, v); else q.delete(m.id); }}), h("span", {class:"muted small"}, instUnit(m))));
+    })) : h("div", {class:"empty"}, "Everything on the list is installed."),
+    h("div", {class:"form", style:"margin-top:12px"}, fld(d, "installed_on", "Installed on", "date"), fld(d, "area", "Where (floor, section, IDF, site)", "text"),
+      h("div", {class:"field full"}, h("label", {for:"f-instphoto"}, "Photo of the work (optional)"), photo),
+      fld(d, "note", "Note", "text", {full:true})));
+  openDrawer({title:"Log installs · " + p.number, body, foot:[h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel"),
+    h("button", {class:"btn primary", onclick: async e => {
+      if (!q.size) { toast("Enter how many were installed."); return; }
+      for (const [id, v] of q) { const m = byId(O.mats, id); if ((Number(m.qty_installed) || 0) + v < 0) { toast("That would take " + m.item + " below zero installed."); return; } }
+      const rows = [...q].map(([id, v]) => ({material_id:id, project_id:p.id, qty:v, installed_on:d.installed_on || TODAY, installed_by:S.me.id, area:nullify((d.area || "").trim()), note:nullify((d.note || "").trim())}));
+      const btn = e.currentTarget; btn.disabled = true;
+      const ok = await run(sb.from("material_installs").insert(rows));
+      if (ok && photo.files[0]) await uploadOne(p, "field", photo.files[0], "Installed" + (d.area ? " · " + d.area.trim() : "") + " · " + rows.map(r => num(r.qty) + " " + instUnit(byId(O.mats, r.material_id))).join(", "));
+      btn.disabled = false;
+      if (ok) { await Promise.all([reload("insts"), reload("mats"), reload("docs")]); render(); closeDrawer(); toast("Logged " + plural(rows.length, "line") + " installed"); }
+    }}, "Log installs")]});
+}
 function openReceive(p, m) {
   const remaining = Math.max(0, Math.max(Number(m.qty_ordered), Number(m.qty)) - Number(m.received));
   const d = {qty:remaining, received_on:TODAY, packing_slip:"", note:""};
@@ -765,8 +875,9 @@ function openReceive(p, m) {
 }
 // a material list from Excel or CSV
 const MAT_FIELDS = [["item", "Description", /desc|item|material|product|name/i, true], ["part_no", "Part number", /part|sku|model|cat(alog)?\b|mfr ?#|p\/n/i],
-  ["manufacturer", "Manufacturer", /manuf|mfr|brand|make/i], ["qty", "Quantity", /qty|quant|count|amount/i, true], ["uom", "Unit", /^u\/?o\/?m|unit$|^units?$/i],
-  ["unit_cost", "Unit cost", /unit ?(cost|price)|price|cost/i], ["distributor", "Distributor", /dist|vendor|supplier|source/i]];
+  ["manufacturer", "Manufacturer", /manuf|mfr|brand|make/i], ["qty", "Quantity", /qty|quant|count|amount/i, true], ["uom", "Unit", /^u\/?o\/?m$|^units?$/i],
+  ["unit_cost", "Unit cost", /unit ?(cost|price)|price|cost/i], ["distributor", "Distributor", /dist|vendor|supplier|source/i],
+  ["labor_per_unit", "Labor hrs each", /labor|man ?h|hrs|hours/i]];
 function parseCsvText(text) {
   const rows = []; let row = [], cur = "", q = false;
   for (let i = 0; i < text.length; i++) { const ch = text[i];
@@ -831,7 +942,8 @@ function openImport(p) {
       if (!st.good || !st.good.length) { toast(st.rows ? "Match the Description and Quantity columns first." : "Choose a file first."); return; }
       const start = (Math.max(0, ...O.mats.filter(m => m.project_id === p.id).map(m => m.sort || 0)));
       const rows = st.good.map((o, i) => ({project_id:p.id, item:o.item.slice(0, 300), part_no:nullify(o.part_no), manufacturer:nullify(o.manufacturer), qty:toNum(o.qty),
-        uom:o.uom || "ea", unit_cost: isNaN(toNum(o.unit_cost)) || o.unit_cost === "" ? null : toNum(o.unit_cost), distributor:nullify(o.distributor), qty_ordered:0, received:0, status:"to_order", sort:start + i + 1}));
+        uom:o.uom || "ea", unit_cost: isNaN(toNum(o.unit_cost)) || o.unit_cost === "" ? null : toNum(o.unit_cost), distributor:nullify(o.distributor), qty_ordered:0, received:0, status:"to_order", sort:start + i + 1,
+        ...(featureOn("insts") && o.labor_per_unit !== "" && !isNaN(toNum(o.labor_per_unit)) ? {labor_per_unit:toNum(o.labor_per_unit)} : {})}));
       const btn = e.currentTarget; btn.disabled = true;
       const ok = await run(sb.from("materials").insert(rows));
       btn.disabled = false;
@@ -1342,9 +1454,11 @@ function openUpdate(p, wk) {
     h("div", null, h("span", {class:"k"}, "Last week's plan"), h("p", null, prev && prev.next_week || "—")),
     h("div", null, h("span", {class:"k"}, "This week"), h("p", null, [hrs ? num(hrs) + " labor hours" : "Hours not entered yet", plural(logs.length, "daily log"),
       c.lateDays ? c.late[0].name + " " + c.lateDays + " days late" : null, c.coPend ? compact(c.coPend) + " in change orders pending" : null, c.backordered.length ? plural(c.backordered.length, "backorder") : null].filter(Boolean).join(" · "))),
+    weekInstalls(p, wk),
     h("div", null, h("span", {class:"k"}, "Forecast"), h("p", null, "Margin " + pct(c.fcM) + " vs " + pct(c.estM) + " budget · labor " + pct(c.burn) + " used at " + pct(c.done) + " complete")));
   const sel = (key, label) => fld(d, key, label, "select", {options:STATUS.map(s => [s[0], s[1]]), blank:false});
   const body = h("div", null, facts, h("div", {class:"form"},
+    suggestBox(p, d),
     fld(d, "pct_complete", "Percent complete (0–100)", "number"), h("div"),
     sel("schedule_status", "Schedule"), sel("cost_status", "Cost"), sel("safety_status", "Safety"), h("div"),
     fld(d, "accomplished", "Done this week", "textarea", {full:true}),

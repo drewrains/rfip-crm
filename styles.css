@@ -474,3 +474,12 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
   .task-r > :nth-child(n+4){grid-column:2 / -1;justify-self:start}
   .task-r .btn{display:none}
 }
+
+/* ---------- installed work ---------- */
+.inst-suggest{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;background:var(--accent-soft);border-radius:8px;padding:12px 14px}
+.inst-note{display:block;color:var(--muted);margin-top:2px}
+.inst-list{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:8px}
+.inst-list li{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:10px 12px;border-top:1px solid var(--line)}
+.inst-list li:first-child{border-top:0}
+.inst-q{display:flex;align-items:center;gap:6px;flex:none}
+.inst-q .inp{width:96px;text-align:right}
