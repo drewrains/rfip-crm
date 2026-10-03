@@ -1,24 +1,46 @@
 -- =====================================================================
 -- RFIP — team access. Run after ops_schema.sql. Safe to re-run.
 --
--- 1. PMs see every project across departments (to help each other and
---    borrow crews), but still change only the projects they're PM on.
+-- 1. A PM sees only their own projects, plus any project its PM (or the
+--    department lead or an admin) has shared with them. Shared people can
+--    look; changes stay with the project's PM.
 -- 2. Roles can be set up before someone's first sign-in: put their email
 --    in profile_presets and the first Microsoft sign-in gives them that
 --    access. Admins manage the list; the preset is used once.
 -- =====================================================================
 
--- ---------- PMs see all projects ---------------------------------------
+-- ---------- projects shared with another PM ---------------------------
+create table if not exists public.project_members (
+  id         uuid primary key default gen_random_uuid(),
+  project_id uuid not null references public.projects(id) on delete cascade,
+  profile_id uuid not null references public.profiles(id) on delete cascade,
+  added_by   uuid references public.profiles(id) on delete set null default auth.uid(),
+  created_at timestamptz not null default now(),
+  unique (project_id, profile_id)
+);
+
 create or replace function public.ops_can_see(p uuid) returns boolean
 language sql stable security definer set search_path = public as $$
   select case public.my_ops_role()
     when 'admin'  then true
     when 'viewer' then true
-    when 'pm'     then true
     when 'lead'   then exists (select 1 from projects where id = p and (department = public.my_department() or pm_id = auth.uid()))
+                    or exists (select 1 from project_members where project_id = p and profile_id = auth.uid())
+    when 'pm'     then exists (select 1 from projects where id = p and pm_id = auth.uid())
+                    or exists (select 1 from project_members where project_id = p and profile_id = auth.uid())
     when 'field'  then exists (select 1 from crew_roster where project_id = p and profile_id = auth.uid())
     else false end;
 $$;
+
+alter table public.project_members enable row level security;
+drop policy if exists pm_members_read on public.project_members;
+drop policy if exists pm_members_add on public.project_members;
+drop policy if exists pm_members_remove on public.project_members;
+create policy pm_members_read   on public.project_members for select to authenticated using (public.ops_can_see(project_id));
+create policy pm_members_add    on public.project_members for insert to authenticated with check (public.ops_can_edit(project_id));
+create policy pm_members_remove on public.project_members for delete to authenticated using (public.ops_can_edit(project_id));
+grant select, insert, delete on public.project_members to authenticated;
+revoke all on public.project_members from anon;
 
 -- ---------- access set up ahead of the first sign-in --------------------
 create table if not exists public.profile_presets (

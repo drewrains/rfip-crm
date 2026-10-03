@@ -12,9 +12,9 @@ const {h, sb, S, money, fmtDate, daysUntil, todayStr, run, toast, friendly, open
 const TABLES = {projects:"projects", handoffs:"handoffs", depts:"departments", costs:"cost_lines", labor:"labor_weeks", ms:"milestones",
   cos:"change_orders", mats:"materials", logs:"daily_logs", plan:"crew_plan", roster:"crew_roster", closeout:"closeout_items",
   bills:"billings", safety:"safety_events", techs:"techs", asg:"assignments", docs:"documents", wu:"weekly_updates", rcpts:"material_receipts",
-  items:"plan_items", exps:"expenses", clinks:"customer_links", insts:"material_installs"};
+  items:"plan_items", exps:"expenses", clinks:"customer_links", insts:"material_installs", members:"project_members"};
 // added later than the rest; if a database hasn't been given these yet, the rest of operations still works
-const OPTIONAL = new Set(["items", "exps", "clinks", "insts"]);
+const OPTIONAL = new Set(["items", "exps", "clinks", "insts", "members"]);
 const KEY_OF = Object.fromEntries(Object.entries(TABLES).map(([k, t]) => [t, k]));
 const O = {missing:false, detail:null, q:"", dept:"", pm:"", phase:"active", hand:true, mpMode:"week", mpDate:null, mpDept:""};
 try { const m = localStorage.getItem("rfipops.mpMode"); if (m) O.mpMode = m; } catch (e) {}
@@ -369,15 +369,33 @@ function capacityChart(load, avail) {
   return svg("svg", {viewBox:`0 0 ${W} ${H}`, class:"o-chart", role:"img", "aria-label":"Techs booked by week against " + avail + " available"}, g);
 }
 
+// ---------------------------------------------------------------- sharing a project with other PMs
+// A PM sees only their own projects. The project's PM (or the lead or an admin) can add another
+// PM or lead here so they can see it too; changes stay with the project's PM.
+function sharedRow(p, edit) {
+  const mine = O.members.filter(m => m.project_id === p.id);
+  const pick = activePeople().filter(x => (x.ops_role === "pm" || x.ops_role === "lead") && x.id !== p.pm_id && !mine.some(m => m.profile_id === x.id))
+    .sort((a, b) => (a.full_name || a.email).localeCompare(b.full_name || b.email));
+  if (!mine.length && !edit) return "";
+  const sel = h("select", {"aria-label":"Add someone to this project"}, h("option", {value:""}, "Add a PM…"),
+    pick.map(x => h("option", {value:x.id}, (x.full_name || x.email) + (x.department ? " · " + x.department : ""))));
+  return h("div", {class:"o-crm"}, h("span", {class:"k"}, "Shared with"),
+    mine.length ? mine.map(m => h("span", {class:"chip-x"}, h("b", null, personName(m.profile_id)),
+      edit ? h("button", {class:"linkish", "aria-label":"Remove " + personName(m.profile_id), onclick: async () => {
+        if (await run(sb.from("project_members").delete().eq("id", m.id), "Removed")) { await reload("members"); render(); } }}, "×") : null))
+      : h("span", {class:"muted"}, "Only the PM and department lead see this job"),
+    edit && pick.length ? h("span", null, sel, " ", h("button", {class:"btn small", onclick: async () => {
+      if (!sel.value) { toast("Pick someone first."); return; }
+      if (await run(sb.from("project_members").insert({project_id:p.id, profile_id:sel.value}), "Shared")) { await reload("members"); render(); } }}, "Add")) : null);
+}
+
 // ---------------------------------------------------------------- projects list
 function viewProjects() {
-  // PMs see every project; their own are shown first time in
-  if (role() === "pm" && !O.pmInit && O.projects.length) { O.pmInit = true; if (!O.pm && O.projects.some(p => p.pm_id === S.me.id)) O.pm = S.me.id; }
   const wrap = h("div", {class:"o-stack"});
   const pms = [...new Set(O.projects.map(p => p.pm_id).filter(Boolean))];
   wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Projects"),
     h("input", {type:"search", id:"q-ops", placeholder:"Search projects, customers, #", value:O.q, "aria-label":"Search projects", oninput: e => { O.q = e.target.value; render(); }}),
-    deptKeys().length > 1 && role() !== "field" ? h("select", {"aria-label":"Department", id:"o-dept", onchange: e => { O.dept = e.target.value; render(); }},
+    deptKeys().length > 1 && role() !== "pm" && role() !== "field" ? h("select", {"aria-label":"Department", id:"o-dept", onchange: e => { O.dept = e.target.value; render(); }},
       h("option", {value:""}, "All departments"), deptKeys().map(k => h("option", {value:k, selected:O.dept === k}, k))) : null,
     pms.length > 1 ? h("select", {"aria-label":"Project manager", id:"o-pm", onchange: e => { O.pm = e.target.value; render(); }},
       h("option", {value:""}, "All PMs"), pms.map(id => h("option", {value:id, selected:O.pm === id}, personName(id)))) : null,
@@ -431,6 +449,7 @@ function viewProject() {
         h("span", null, fmtDate(p.start_date) + " → ", h("b", null, fmtDate(p.end_date))), phaseChip(p.phase))),
     h("div", {class:"o-head-r"}, p.end_date && p.phase !== "closed" ? h("div", {class:"muted"}, daysUntil(p.end_date) >= 0 ? h("b", {class:"mono"}, String(daysUntil(p.end_date))) : null, daysUntil(p.end_date) >= 0 ? " days to completion" : "Past planned completion") : null,
       edit ? h("button", {class:"btn primary", onclick:() => openProgress(p)}, "Update progress") : null)));
+  if (featureOn("members")) wrap.append(sharedRow(p, edit));
   wrap.append(h("div", {class:"o-crm"}, h("span", {class:"k"}, "From the CRM"),
     h("span", null, "Sold by ", h("b", null, personName(p.sold_by || (deal && deal.owner_id)))),
     deal && deal.close_date ? h("span", null, "Won ", h("b", null, fmtDate(deal.close_date)), " at ", h("b", {class:"mono"}, compact(deal.value))) : null,
@@ -1092,7 +1111,7 @@ function viewBilling() {
   const nowIdx = 5;
   const pms = [...new Set(O.projects.map(p => p.pm_id).filter(Boolean))];
   wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Billing"),
-    h("select", {"aria-label":"Department", id:"b-dept", onchange: e => { O.dept = e.target.value; render(); }}, h("option", {value:""}, "All departments"), deptKeys().map(k => h("option", {value:k, selected:O.dept === k}, k))),
+    role() !== "pm" ? h("select", {"aria-label":"Department", id:"b-dept", onchange: e => { O.dept = e.target.value; render(); }}, h("option", {value:""}, "All departments"), deptKeys().map(k => h("option", {value:k, selected:O.dept === k}, k))) : null,
     pms.length > 1 ? h("select", {"aria-label":"Project manager", id:"b-pm", onchange: e => { O.pm = e.target.value; render(); }}, h("option", {value:""}, "All PMs"), pms.map(id => h("option", {value:id, selected:O.pm === id}, personName(id)))) : null,
     h("label", {class:"o-toggle"}, h("input", {type:"checkbox", id:"b-hand", checked:O.hand, onchange: e => { O.hand = e.target.checked; render(); }}), "Include waiting handoffs")));
   const projs = O.projects.filter(p => p.phase !== "closed" || calc(p).left > 0).filter(p => (!O.dept || p.department === O.dept) && (!O.pm || p.pm_id === O.pm))
@@ -1500,7 +1519,7 @@ function viewUpdates() {
     h("div", {class:"mp-nav"}, h("button", {class:"btn small", "aria-label":"Previous week", onclick:() => { O.wuWeek = addDays(wk, -7); render(); }}, "‹"),
       h("button", {class:"btn small", onclick:() => { O.wuWeek = null; render(); }}, "This week"),
       h("button", {class:"btn small", "aria-label":"Next week", onclick:() => { O.wuWeek = addDays(wk, 7); render(); }}, "›"), h("b", {class:"mp-label"}, "Week of " + fmtDate(wk))),
-    deptKeys().length > 1 ? h("select", {"aria-label":"Department", id:"wu-dept", onchange: e => { O.dept = e.target.value; render(); }},
+    deptKeys().length > 1 && role() !== "pm" ? h("select", {"aria-label":"Department", id:"wu-dept", onchange: e => { O.dept = e.target.value; render(); }},
       h("option", {value:""}, "All departments"), deptKeys().map(k => h("option", {value:k, selected:O.dept === k}, k))) : null));
   wrap.append(h("div", {class:"o-tiles"},
     tile("Submitted", ups.length + " of " + ps.filter(needsUpdate).length, dueLabel(wk)),
@@ -1970,7 +1989,7 @@ return {
     const tk = featureOn("items") ? [["ops-tasks", "My tasks" + (myOpen ? " (" + myOpen + ")" : "")]] : [];
     const ex = featureOn("exps") ? [["ops-expenses", "Expenses" + (waiting ? " (" + waiting + ")" : "")]] : [];
     if (r === "field") return [["ops-projects", "My projects"], ...tk, ...mp, ...ex];
-    if (r === "pm") return [["ops-projects", "Projects"], ...tk, ["ops-updates", "Weekly updates"], ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
+    if (r === "pm") return [["ops-projects", "My projects"], ...tk, ["ops-updates", "Weekly updates"], ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
     return [["ops-overview", "Overview"], ["ops-projects", "Projects"], ...tk, ["ops-updates", "Weekly updates"], ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
   },
   salesViews: () => O.missing ? [] : [["handoffs", "Handoffs"]],

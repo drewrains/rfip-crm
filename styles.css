@@ -499,4 +499,6 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
 .sp-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
 .sp-acts{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .sp-files a.btn,.o-actions a.btn{text-decoration:none}
+.chip-x{display:inline-flex;gap:4px;align-items:center;padding:2px 8px;border:1px solid var(--line);border-radius:99px}
+.chip-x .linkish{font-size:14px;line-height:1}
 .sp-sep{border:0;border-top:1px solid var(--line);margin:16px 0}
