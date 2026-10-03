@@ -1213,9 +1213,52 @@ function openAccount(id) {
         h("button", {class:"btn small", onclick:() => openDeal(null, "d", {stage:"lead", services:[], owner_id:S.me.id, gng:{scores:{}}, account_id:src.id, vertical:src.vertical, source:"Repeat client"})}, "+ Blank deal")),
       h("div", {class:"section-h", style:"margin-top:20px"}, "Contacts"),
       cs.length ? cs.map(c => h("div", {class:"list-row"}, h("button", {class:"linkish", onclick:() => openContact(c.id)}, c.name), h("span", {class:"muted"}, c.title || ""))) : h("div", {class:"muted"}, "None."),
-      h("div", {style:"margin-top:10px"}, h("button", {class:"btn small", onclick:() => openContact(null, {account_id:src.id})}, "+ Contact at this account"))); },
+      h("div", {style:"margin-top:10px"}, h("button", {class:"btn small", onclick:() => openContact(null, {account_id:src.id})}, "+ Contact at this account")),
+      portalBox(src)); },
   src => [["h", "History", () => accountHistory(src)]]);
 }
+// ---------------------------------------------------------------- customer dashboard link
+// One private link per customer account showing every project RFIP runs for them (no money, notes or documents).
+const portalUrl = l => location.origin + location.pathname.replace(/[^/]*$/, "") + "customer.html?a=" + l.token;
+function portalBox(src) {
+  const box = h("div", {class:"portal-box"});
+  if (!(isAdmin() || S.me.ops_role)) return box;
+  const copy = async (url, msg) => { try { await navigator.clipboard.writeText(url); toast(msg || "Link copied"); } catch (e) { toast("Use Copy to grab the link."); } };
+  const act = async (action) => {
+    const {data, error} = await sb.rpc("account_link", {a:src.id, action});
+    if (error) { toast(friendly(error)); return; }
+    if (action !== "off" && data && data.token) await copy(portalUrl(data), action === "new" ? "New link copied. The old one no longer works." : "Link copied. Paste it into an email to the customer.");
+    else toast("Customer dashboard turned off");
+    load();
+  };
+  const draw = l => {
+    const what = "One private link that shows " + (src.name || "this customer") + " every project RFIP is running for them: progress, schedule, milestones and weekly updates. No money, internal notes or documents.";
+    let body;
+    if (!l) body = [h("p", {class:"muted small", style:"margin:0 0 8px"}, what), h("button", {class:"btn small primary", onclick:() => act("on")}, "Turn on and copy the link")];
+    else if (!l.active) body = [h("p", {class:"small", style:"margin:0 0 8px"}, h("b", null, "The dashboard link is off."), " Anyone who had it sees a message to contact RFIP."),
+      h("div", {class:"cl-btns"}, h("button", {class:"btn small", onclick:() => act("on")}, "Turn the same link back on"), h("button", {class:"btn small", onclick:() => act("new")}, "Make a new link"))];
+    else {
+      const url = portalUrl(l);
+      const inp = h("input", {class:"inp mono", readonly:true, value:url, "aria-label":"Customer dashboard link", onclick: e => e.target.select()});
+      body = [h("p", {class:"muted small", style:"margin:0 0 8px"}, what),
+        h("div", {class:"cl-row"}, inp, h("button", {class:"btn small primary", onclick:() => copy(url)}, "Copy"), h("a", {class:"btn small", href:url, target:"_blank", rel:"noopener"}, "Preview")),
+        h("p", {class:"muted small"}, l.views ? "Opened " + plural(l.views, "time") + ", last " + new Date(l.last_viewed_at).toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}) : "Not opened yet"),
+        h("div", {class:"cl-btns"}, h("button", {class:"btn small", onclick:() => act("off")}, "Turn off"),
+          h("button", {class:"btn small", title:"Use this if the link went to the wrong person", onclick:() => act("new")}, "Replace the link"))];
+    }
+    box.replaceChildren(h("div", {class:"section-h", style:"margin-top:20px"}, "Customer dashboard"), ...body);
+  };
+  const load = async () => {
+    const {data, error} = await sb.from("account_links").select("*").eq("account_id", src.id).maybeSingle();
+    if (error && /does not exist|schema cache/i.test(error.message || "")) { box.replaceChildren(); return; }
+    const {data:ok} = await sb.rpc("can_share_account", {a:src.id});
+    if (!ok) { box.replaceChildren(); return; }
+    draw(data);
+  };
+  load();
+  return box;
+}
+
 function accountHistory(src) {
   const box = h("div", null, h("div", {class:"muted"}, "Loading history…"));
   (async () => {

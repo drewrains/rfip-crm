@@ -176,6 +176,8 @@ The same app has an **Operations** section for delivery: a company overview, pro
 - `supabase/docs_updates_schema.sql` adds project documents (storage bucket and rules) and weekly PM updates. Run it after `ops_schema.sql`.
 - `supabase/sharepoint_schema.sql` adds the SharePoint folder link to deals and projects. Run it after `ops_schema.sql`.
 - `supabase/sharepoint_files_schema.sql` lets project documents point at SharePoint files. Run it after `sharepoint_schema.sql` and `docs_updates_schema.sql`.
+- `supabase/team_access_schema.sql` lets a PM share a project with another PM, and lets admins preset someone's access before their first sign-in.
+- `supabase/customer_portal_schema.sql` adds the **customer dashboard**: one private link per customer account (Accounts → open the account → Customer dashboard) that shows the customer every project RFIP runs for them, with progress, schedule, milestones and weekly updates, and a click-through to each project's status page. No money, internal notes or documents. Admins, department leads and the PMs on that customer's projects can turn it on, off or replace it.
 - `supabase/installs_schema.sql` adds install tracking (install unit and quantity, labor hours per unit, milestone link, install log). Run it after `materials_schema.sql`.
 - `supabase/plan_expenses_customer_schema.sql` adds project plans and tasks, expenses with PM and CFO approval, and the customer view link. Run it after the scripts above.
 - `supabase/test_seed.sql` (and `test_seed_part6.sql` for plans, expenses and a customer link) loads demo logins and sample data. **Test database only.**
@@ -200,4 +202,4 @@ Demo logins on the test database all use the password `RfipDemo-2026`:
 
 Other leads and PMs: demo-mcapps, demo-hseabolt, demo-ddell, demo-mhale, demo-treese, demo-acole, demo-rbanks, demo-swhitfield (all `@rfip.com`).
 
-Going live later: run `ops_schema.sql`, `manpower_schema.sql`, `materials_schema.sql`, `docs_updates_schema.sql`, `plan_expenses_customer_schema.sql`, `installs_schema.sql`, `sharepoint_schema.sql` and `sharepoint_files_schema.sql` on the live database first, deploy the `sharepoint` Edge Function there with its secrets (the live project needs the Pro plan for file storage), then merge the `ops-test` branch. Don't run `test_seed.sql` on live.
+Going live later: run `ops_schema.sql`, `manpower_schema.sql`, `materials_schema.sql`, `docs_updates_schema.sql`, `plan_expenses_customer_schema.sql`, `installs_schema.sql`, `sharepoint_schema.sql`, `sharepoint_files_schema.sql`, `team_access_schema.sql` and `customer_portal_schema.sql` on the live database first, deploy the `sharepoint` Edge Function there with its secrets (the live project needs the Pro plan for file storage), then merge the `ops-test` branch. Don't run `test_seed.sql` on live.

@@ -69,12 +69,31 @@ details.older summary{cursor:pointer;color:var(--accent);padding:10px 0}
 .msg{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:32px 24px;text-align:center;margin-top:40px}
 .msg h1{font-size:28px}
 .empty{padding:14px 16px;color:var(--muted)}
+.back{display:inline-block;margin-bottom:12px;font-size:14px;text-decoration:none}
+.back:hover{text-decoration:underline}
+.hero.four{grid-template-columns:repeat(4,minmax(0,1fr))}
+.tools{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin:22px 0 10px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)}
+.seg button{border:0;background:none;padding:7px 12px;font:inherit;font-size:14px;color:var(--muted);cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--accent);color:#fff}
+.tools input{font:inherit;font-size:14px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--fg);min-width:220px;flex:1;max-width:320px}
+.plist{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.pcard{display:grid;grid-template-columns:minmax(0,1fr) 170px 120px;gap:8px 18px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;cursor:pointer;text-align:left;width:100%;font:inherit;color:inherit}
+.pcard:hover,.pcard:focus-visible{border-color:var(--accent);outline:none}
+.pcard .t{font-weight:600}
+.pcard .d{color:var(--muted);font-size:13px;margin-top:2px}
+.pcard .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.pcard .pct{font-family:var(--f-mono);font-size:13px;color:var(--muted);margin-bottom:4px}
+.pcard .when{font-size:13px;color:var(--muted);text-align:right}
+.pcard .when b{display:block;color:var(--fg);font-size:15px}
+.none{padding:24px 16px;text-align:center;color:var(--muted);background:var(--panel);border:1px solid var(--line);border-radius:10px}
+@media (max-width:760px){.hero.four{grid-template-columns:repeat(2,minmax(0,1fr))}.pcard{grid-template-columns:1fr}.pcard .when{text-align:left}}
 @media (max-width:640px){.hero{grid-template-columns:1fr}.ph{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
-<header><div class="wrap bar"><div class="brand">RF<span>IP</span></div><small>Project status</small></div></header>
-<main class="wrap" id="main"><p style="color:var(--muted)">Loading your project…</p></main>
+<header><div class="wrap bar"><div class="brand">RF<span>IP</span></div><small id="sub">Project status</small></div></header>
+<main class="wrap" id="main"><p style="color:var(--muted)">Loading…</p></main>
 <script src="config.js"></script>
 <script>
 (async function () {
@@ -89,62 +108,145 @@ details.older summary{cursor:pointer;color:var(--accent);padding:10px 0}
   const chip = ([t, c]) => `<span class="chip ${c}">${esc(t)}</span>`;
   const fail = (title, text) => { main.innerHTML = `<div class="msg"><h1>${esc(title)}</h1><p>${esc(text)}</p></div>`; document.title = "Project Status · RFIP"; };
 
-  const k = new URLSearchParams(location.search).get("k") || "";
-  if (!/^[0-9a-f]{48}$/.test(k)) return fail("This link isn't complete", "Check that you copied the whole link from the email, or ask your RFIP project manager for a new one.");
   const cfg = window.RFIP_CONFIG || {};
-  let v;
-  try {
-    const r = await fetch(cfg.supabaseUrl + "/rest/v1/rpc/customer_view", {method:"POST",
-      headers:{"apikey":cfg.supabaseAnonKey, "Content-Type":"application/json"}, body:JSON.stringify({k})});
+  const rpc = async (fn, body) => {
+    const r = await fetch(cfg.supabaseUrl + "/rest/v1/rpc/" + fn, {method:"POST",
+      headers:{"apikey":cfg.supabaseAnonKey, "Content-Type":"application/json"}, body:JSON.stringify(body)});
     if (!r.ok) throw new Error(r.status);
-    v = await r.json();
-  } catch (e) { return fail("We couldn't load your project", "Please refresh in a minute. If it keeps happening, contact your RFIP project manager."); }
-  if (!v) return fail("This link is no longer active", "Your RFIP project manager can send you a current link.");
-
-  document.title = v.name + " · RFIP";
-  const pct = Math.max(0, Math.min(100, Math.round(Number(v.pct_complete) || 0)));
-  const latest = (v.updates || [])[0];
-  const days = v.end_date ? Math.round((Date.parse(v.end_date + "T12:00:00Z") - Date.parse(today + "T12:00:00Z")) / 864e5) : null;
-  const plan = v.plan || [], ms = v.milestones || [], ups = v.updates || [];
-
-  const phaseRow = p => {
-    const share = p.items ? Math.round(p.done / p.items * 100) : (p.status === "done" ? 100 : p.status === "in_progress" ? 50 : 0);
-    const st = p.status === "done" ? "Done" : p.status === "in_progress" ? "Underway" : p.status === "blocked" ? "On hold" : "Upcoming";
-    return `<li class="ph${p.status === "done" ? " done" : ""}"><div><div class="t">${esc(p.title)}</div>
-      <div class="d">${esc(st)}${p.start || p.due ? " · " + esc(short(p.start || p.due)) + (p.due && p.start ? " – " + esc(short(p.due)) : "") : ""}${p.items ? " · " + p.done + " of " + p.items + " tasks done" : ""}</div></div>
-      <div class="bar2" role="img" aria-label="${share}% done"><i style="width:${share}%"></i></div></li>`;
+    return r.json();
   };
-  const msRow = m => {
-    const done = !!m.actual;
-    return `<li class="ms${done ? " done" : ""}"><span class="dot" aria-hidden="true"></span><span class="n">${esc(m.name)}</span>
-      <span class="when">${done ? "Done " + esc(short(m.actual)) : m.planned ? "Planned " + esc(short(m.planned)) : ""}</span></li>`;
-  };
-  const updCard = u => `<div class="upd"><h3>Week of ${esc(fmt(u.week_start))} ${SCHED[u.schedule] ? chip(SCHED[u.schedule]) : ""}
-      ${u.pct != null ? `<span class="chip">${Math.round(u.pct)}% complete</span>` : ""}</h3>
-      ${u.done ? `<div class="f"><div class="k">Done this week</div><p>${esc(u.done)}</p></div>` : ""}
-      ${u.next ? `<div class="f"><div class="k">Next week</div><p>${esc(u.next)}</p></div>` : ""}</div>`;
+  const qs = new URLSearchParams(location.search);
+  const k = qs.get("k") || "", a = qs.get("a") || "";
+  const isTok = t => /^[0-9a-f]{48}$/.test(t);
 
-  main.innerHTML = `
-    <div class="eyebrow">Job ${esc(v.number)}${v.department ? " · " + esc(v.department) : ""}</div>
-    <h1>${esc(v.name)}</h1>
-    <div class="meta">${v.customer ? `<span>For <b>${esc(v.customer)}</b></span>` : ""}
-      ${v.pm ? `<span>Project manager <b>${esc(v.pm.name)}</b>${v.pm.email ? ` · <a href="mailto:${esc(v.pm.email)}">${esc(v.pm.email)}</a>` : ""}</span>` : ""}
-      ${chip(PHASE[v.phase] || PHASE.in_progress)}</div>
-    <div class="hero">
-      <div class="tile"><div class="k">Complete</div><div class="v">${pct}%</div><div class="meter" role="img" aria-label="${pct}% complete"><i style="width:${pct}%"></i></div></div>
-      <div class="tile"><div class="k">Schedule</div><div class="v" style="font-size:24px;margin-top:6px">${latest && SCHED[latest.schedule] ? chip(SCHED[latest.schedule]) : chip(["Updated weekly", ""])}</div>
-        <div class="s">${v.start_date ? "Started " + esc(fmt(v.start_date)) : ""}</div></div>
-      <div class="tile"><div class="k">Planned completion</div><div class="v">${v.end_date ? esc(short(v.end_date)) : "—"}</div>
-        <div class="s">${v.phase === "closed" ? "Complete" : days == null ? "" : days >= 0 ? days + " days from today" : "Past the planned date"}</div></div>
-    </div>
-    ${plan.length ? `<section><h2>Project plan <span>${plan.filter(p => p.status === "done").length} of ${plan.length} phases done</span></h2><ul class="rows">${plan.map(phaseRow).join("")}</ul></section>` : ""}
-    ${ms.length ? `<section><h2>Milestones <span>${ms.filter(m => m.actual).length} of ${ms.length} done</span></h2><ul class="rows">${ms.map(msRow).join("")}</ul></section>` : ""}
-    <section><h2>Weekly update ${latest ? `<span>from ${esc(v.pm ? v.pm.name : "your project manager")}</span>` : ""}</h2>
-      ${latest ? `<ul class="rows"><li>${updCard(latest)}</li></ul>` : `<div class="empty">The first weekly update will appear here.</div>`}
-      ${ups.length > 1 ? `<details class="older"><summary>Earlier updates (${ups.length - 1})</summary><ul class="rows">${ups.slice(1).map(u => `<li>${updCard(u)}</li>`).join("")}</ul></details>` : ""}
-    </section>
-    <p class="foot">Updated ${esc(new Date(v.as_of).toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}))}.
-      Questions? ${v.pm && v.pm.email ? `<a href="mailto:${esc(v.pm.email)}">Email ${esc(v.pm.name)}</a> or call` : "Call"} RFIP at <a href="tel:+14052860928">405-286-0928</a>.</p>`;
+  // ---------- one project's status page ----------
+  function renderProject(v, back) {
+    document.title = v.name + " · RFIP";
+    const pct = Math.max(0, Math.min(100, Math.round(Number(v.pct_complete) || 0)));
+    const latest = (v.updates || [])[0];
+    const days = v.end_date ? Math.round((Date.parse(v.end_date + "T12:00:00Z") - Date.parse(today + "T12:00:00Z")) / 864e5) : null;
+    const plan = v.plan || [], ms = v.milestones || [], ups = v.updates || [];
+    const phaseRow = p => {
+      const share = p.items ? Math.round(p.done / p.items * 100) : (p.status === "done" ? 100 : p.status === "in_progress" ? 50 : 0);
+      const st = p.status === "done" ? "Done" : p.status === "in_progress" ? "Underway" : p.status === "blocked" ? "On hold" : "Upcoming";
+      return `<li class="ph${p.status === "done" ? " done" : ""}"><div><div class="t">${esc(p.title)}</div>
+        <div class="d">${esc(st)}${p.start || p.due ? " · " + esc(short(p.start || p.due)) + (p.due && p.start ? " – " + esc(short(p.due)) : "") : ""}${p.items ? " · " + p.done + " of " + p.items + " tasks done" : ""}</div></div>
+        <div class="bar2" role="img" aria-label="${share}% done"><i style="width:${share}%"></i></div></li>`;
+    };
+    const msRow = m => {
+      const done = !!m.actual;
+      return `<li class="ms${done ? " done" : ""}"><span class="dot" aria-hidden="true"></span><span class="n">${esc(m.name)}</span>
+        <span class="when">${done ? "Done " + esc(short(m.actual)) : m.planned ? "Planned " + esc(short(m.planned)) : ""}</span></li>`;
+    };
+    const updCard = u => `<div class="upd"><h3>Week of ${esc(fmt(u.week_start))} ${SCHED[u.schedule] ? chip(SCHED[u.schedule]) : ""}
+        ${u.pct != null ? `<span class="chip">${Math.round(u.pct)}% complete</span>` : ""}</h3>
+        ${u.done ? `<div class="f"><div class="k">Done this week</div><p>${esc(u.done)}</p></div>` : ""}
+        ${u.next ? `<div class="f"><div class="k">Next week</div><p>${esc(u.next)}</p></div>` : ""}</div>`;
+    main.innerHTML = `
+      ${back ? `<a class="back" href="#" id="back">← All ${esc(back)} projects</a>` : ""}
+      <div class="eyebrow">Job ${esc(v.number)}${v.department ? " · " + esc(v.department) : ""}</div>
+      <h1>${esc(v.name)}</h1>
+      <div class="meta">${v.customer ? `<span>For <b>${esc(v.customer)}</b></span>` : ""}
+        ${v.pm ? `<span>Project manager <b>${esc(v.pm.name)}</b>${v.pm.email ? ` · <a href="mailto:${esc(v.pm.email)}">${esc(v.pm.email)}</a>` : ""}</span>` : ""}
+        ${chip(PHASE[v.phase] || PHASE.in_progress)}</div>
+      <div class="hero">
+        <div class="tile"><div class="k">Complete</div><div class="v">${pct}%</div><div class="meter" role="img" aria-label="${pct}% complete"><i style="width:${pct}%"></i></div></div>
+        <div class="tile"><div class="k">Schedule</div><div class="v" style="font-size:24px;margin-top:6px">${latest && SCHED[latest.schedule] ? chip(SCHED[latest.schedule]) : chip(["Updated weekly", ""])}</div>
+          <div class="s">${v.start_date ? "Started " + esc(fmt(v.start_date)) : ""}</div></div>
+        <div class="tile"><div class="k">Planned completion</div><div class="v">${v.end_date ? esc(short(v.end_date)) : "—"}</div>
+          <div class="s">${v.phase === "closed" ? "Complete" : days == null ? "" : days >= 0 ? days + " days from today" : "Past the planned date"}</div></div>
+      </div>
+      ${plan.length ? `<section><h2>Project plan <span>${plan.filter(p => p.status === "done").length} of ${plan.length} phases done</span></h2><ul class="rows">${plan.map(phaseRow).join("")}</ul></section>` : ""}
+      ${ms.length ? `<section><h2>Milestones <span>${ms.filter(m => m.actual).length} of ${ms.length} done</span></h2><ul class="rows">${ms.map(msRow).join("")}</ul></section>` : ""}
+      <section><h2>Weekly update ${latest ? `<span>from ${esc(v.pm ? v.pm.name : "your project manager")}</span>` : ""}</h2>
+        ${latest ? `<ul class="rows"><li>${updCard(latest)}</li></ul>` : `<div class="empty">The first weekly update will appear here.</div>`}
+        ${ups.length > 1 ? `<details class="older"><summary>Earlier updates (${ups.length - 1})</summary><ul class="rows">${ups.slice(1).map(u => `<li>${updCard(u)}</li>`).join("")}</ul></details>` : ""}
+      </section>
+      <p class="foot">Updated ${esc(new Date(v.as_of).toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}))}.
+        Questions? ${v.pm && v.pm.email ? `<a href="mailto:${esc(v.pm.email)}">Email ${esc(v.pm.name)}</a> or call` : "Call"} RFIP at <a href="tel:+14052860928">405-286-0928</a>.</p>`;
+    window.scrollTo(0, 0);
+  }
+
+  // ---------- per-project link ----------
+  if (!a) {
+    if (!isTok(k)) return fail("This link isn't complete", "Check that you copied the whole link from the email, or ask your RFIP project manager for a new one.");
+    let v;
+    try { v = await rpc("customer_view", {k}); } catch (e) { return fail("We couldn't load your project", "Please refresh in a minute. If it keeps happening, contact your RFIP project manager."); }
+    if (!v) return fail("This link is no longer active", "Your RFIP project manager can send you a current link.");
+    return renderProject(v);
+  }
+
+  // ---------- customer dashboard: every project for the account ----------
+  if (!isTok(a)) return fail("This link isn't complete", "Check that you copied the whole link from the email, or ask your RFIP contact for a new one.");
+  let d;
+  try { d = await rpc("customer_portal", {k:a}); } catch (e) { return fail("We couldn't load your projects", "Please refresh in a minute. If it keeps happening, contact RFIP at 405-286-0928."); }
+  if (!d) return fail("This link is no longer active", "Your RFIP contact can send you a current link.");
+  document.getElementById("sub").textContent = "Projects for " + d.customer;
+  const all = d.projects || [];
+  const st = {view: all.some(p => p.phase !== "closed") ? "active" : "all", q:""};
+  const sched = p => p.latest && SCHED[p.latest.schedule] ? p.latest.schedule : null;
+
+  function renderList() {
+    document.title = d.customer + " projects · RFIP";
+    const active = all.filter(p => p.phase !== "closed"), done = all.filter(p => p.phase === "closed");
+    const withUpd = active.filter(sched), onTrack = withUpd.filter(p => sched(p) === "on_track").length;
+    const avg = active.length ? Math.round(active.reduce((s, p) => s + (Number(p.pct_complete) || 0), 0) / active.length) : 0;
+    const soon = active.filter(p => p.end_date && p.end_date >= today && p.end_date <= new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10)).length;
+    const q = st.q.trim().toLowerCase();
+    const shown = (st.view === "active" ? active : st.view === "done" ? done : all)
+      .filter(p => !q || [p.name, p.number, p.department, p.pm && p.pm.name].some(x => (x || "").toLowerCase().includes(q)));
+    const card = p => {
+      const pct = Math.max(0, Math.min(100, Math.round(Number(p.pct_complete) || 0)));
+      const s = sched(p);
+      const nm = p.next_milestone && p.next_milestone.name ? "Next: " + p.next_milestone.name + (p.next_milestone.planned ? " · " + short(p.next_milestone.planned) : "") : "";
+      return `<li><button class="pcard" data-id="${esc(p.id)}" aria-label="Open ${esc(p.name)}">
+        <div><div class="t">${esc(p.name)}</div>
+          <div class="d">Job ${esc(p.number)}${p.department ? " · " + esc(p.department) : ""}${p.pm ? " · PM " + esc(p.pm.name) : ""}</div>
+          <div class="chips">${chip(PHASE[p.phase] || PHASE.in_progress)}${s ? chip(SCHED[s]) : ""}${p.milestones ? `<span class="chip">${p.milestones_done} of ${p.milestones} milestones</span>` : ""}</div>
+          ${nm ? `<div class="d" style="margin-top:6px">${esc(nm)}</div>` : ""}</div>
+        <div><div class="pct">${pct}% complete</div><div class="meter" role="img" aria-label="${pct}% complete"><i style="width:${pct}%"></i></div></div>
+        <div class="when">${p.phase === "closed" ? "Completed" : "Planned finish"}<b>${p.end_date ? esc(short(p.end_date)) : "—"}</b>
+          ${p.latest ? `Updated ${esc(short(p.latest.week_start))}` : ""}</div>
+      </button></li>`;
+    };
+    main.innerHTML = `
+      <div class="eyebrow">Project dashboard</div>
+      <h1>${esc(d.customer)}</h1>
+      <div class="meta"><span>Every project RFIP is running for you, with live progress and weekly updates.</span></div>
+      <div class="hero four">
+        <div class="tile"><div class="k">Active projects</div><div class="v">${active.length}</div><div class="s">${done.length ? done.length + " completed" : ""}</div></div>
+        <div class="tile"><div class="k">Average complete</div><div class="v">${avg}%</div><div class="meter" role="img" aria-label="${avg}% average complete"><i style="width:${avg}%"></i></div></div>
+        <div class="tile"><div class="k">On schedule</div><div class="v">${withUpd.length ? onTrack + " of " + withUpd.length : "—"}</div><div class="s">From the latest weekly updates</div></div>
+        <div class="tile"><div class="k">Finishing in 30 days</div><div class="v">${soon}</div><div class="s">Planned completions</div></div>
+      </div>
+      <div class="tools">
+        <div class="seg" role="group" aria-label="Show">
+          <button data-v="active" aria-pressed="${st.view === "active"}">Active (${active.length})</button>
+          <button data-v="done" aria-pressed="${st.view === "done"}">Completed (${done.length})</button>
+          <button data-v="all" aria-pressed="${st.view === "all"}">All (${all.length})</button>
+        </div>
+        ${all.length > 5 ? `<input type="search" id="q" placeholder="Search by site, job # or PM" aria-label="Search projects" value="${esc(st.q)}">` : ""}
+      </div>
+      ${shown.length ? `<ul class="plist">${shown.map(card).join("")}</ul>` : `<div class="none">${q ? "No projects match that search." : st.view === "done" ? "No completed projects yet." : "No active projects right now."}</div>`}
+      <p class="foot">Updated ${esc(new Date(d.as_of).toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}))}.
+        Questions? Call RFIP at <a href="tel:+14052860928">405-286-0928</a>.</p>`;
+    main.querySelectorAll(".seg button").forEach(b => b.onclick = () => { st.view = b.dataset.v; renderList(); });
+    const qi = document.getElementById("q");
+    if (qi) qi.oninput = e => { st.q = e.target.value; const pos = e.target.selectionStart; renderList(); const n = document.getElementById("q"); n.focus(); n.setSelectionRange(pos, pos); };
+    main.querySelectorAll(".pcard").forEach(b => b.onclick = () => openProject(b.dataset.id));
+  }
+  async function openProject(id, noPush) {
+    main.innerHTML = `<p style="color:var(--muted)">Loading…</p>`;
+    let v;
+    try { v = await rpc("customer_portal_project", {k:a, pid:id}); } catch (e) { v = null; }
+    if (!v) { renderList(); return; }
+    if (!noPush) history.pushState({p:id}, "", "?a=" + a + "&p=" + id);
+    renderProject(v, d.customer);
+    document.getElementById("back").onclick = e => { e.preventDefault(); history.pushState({}, "", "?a=" + a); renderList(); window.scrollTo(0, 0); };
+  }
+  window.onpopstate = () => { const p = new URLSearchParams(location.search).get("p"); if (p) openProject(p, true); else renderList(); };
+  const startP = qs.get("p");
+  if (startP && all.some(p => p.id === startP)) openProject(startP, true); else renderList();
 })();
 </script>
 </body>
