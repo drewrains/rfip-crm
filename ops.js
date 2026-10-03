@@ -371,11 +371,13 @@ function capacityChart(load, avail) {
 
 // ---------------------------------------------------------------- projects list
 function viewProjects() {
+  // PMs see every project; their own are shown first time in
+  if (role() === "pm" && !O.pmInit && O.projects.length) { O.pmInit = true; if (!O.pm && O.projects.some(p => p.pm_id === S.me.id)) O.pm = S.me.id; }
   const wrap = h("div", {class:"o-stack"});
   const pms = [...new Set(O.projects.map(p => p.pm_id).filter(Boolean))];
   wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Projects"),
     h("input", {type:"search", id:"q-ops", placeholder:"Search projects, customers, #", value:O.q, "aria-label":"Search projects", oninput: e => { O.q = e.target.value; render(); }}),
-    deptKeys().length > 1 && role() !== "pm" && role() !== "field" ? h("select", {"aria-label":"Department", id:"o-dept", onchange: e => { O.dept = e.target.value; render(); }},
+    deptKeys().length > 1 && role() !== "field" ? h("select", {"aria-label":"Department", id:"o-dept", onchange: e => { O.dept = e.target.value; render(); }},
       h("option", {value:""}, "All departments"), deptKeys().map(k => h("option", {value:k, selected:O.dept === k}, k))) : null,
     pms.length > 1 ? h("select", {"aria-label":"Project manager", id:"o-pm", onchange: e => { O.pm = e.target.value; render(); }},
       h("option", {value:""}, "All PMs"), pms.map(id => h("option", {value:id, selected:O.pm === id}, personName(id)))) : null,
@@ -1090,7 +1092,7 @@ function viewBilling() {
   const nowIdx = 5;
   const pms = [...new Set(O.projects.map(p => p.pm_id).filter(Boolean))];
   wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Billing"),
-    role() !== "pm" ? h("select", {"aria-label":"Department", id:"b-dept", onchange: e => { O.dept = e.target.value; render(); }}, h("option", {value:""}, "All departments"), deptKeys().map(k => h("option", {value:k, selected:O.dept === k}, k))) : null,
+    h("select", {"aria-label":"Department", id:"b-dept", onchange: e => { O.dept = e.target.value; render(); }}, h("option", {value:""}, "All departments"), deptKeys().map(k => h("option", {value:k, selected:O.dept === k}, k))),
     pms.length > 1 ? h("select", {"aria-label":"Project manager", id:"b-pm", onchange: e => { O.pm = e.target.value; render(); }}, h("option", {value:""}, "All PMs"), pms.map(id => h("option", {value:id, selected:O.pm === id}, personName(id)))) : null,
     h("label", {class:"o-toggle"}, h("input", {type:"checkbox", id:"b-hand", checked:O.hand, onchange: e => { O.hand = e.target.checked; render(); }}), "Include waiting handoffs")));
   const projs = O.projects.filter(p => p.phase !== "closed" || calc(p).left > 0).filter(p => (!O.dept || p.department === O.dept) && (!O.pm || p.pm_id === O.pm))
@@ -1498,7 +1500,7 @@ function viewUpdates() {
     h("div", {class:"mp-nav"}, h("button", {class:"btn small", "aria-label":"Previous week", onclick:() => { O.wuWeek = addDays(wk, -7); render(); }}, "‹"),
       h("button", {class:"btn small", onclick:() => { O.wuWeek = null; render(); }}, "This week"),
       h("button", {class:"btn small", "aria-label":"Next week", onclick:() => { O.wuWeek = addDays(wk, 7); render(); }}, "›"), h("b", {class:"mp-label"}, "Week of " + fmtDate(wk))),
-    deptKeys().length > 1 && role() !== "pm" ? h("select", {"aria-label":"Department", id:"wu-dept", onchange: e => { O.dept = e.target.value; render(); }},
+    deptKeys().length > 1 ? h("select", {"aria-label":"Department", id:"wu-dept", onchange: e => { O.dept = e.target.value; render(); }},
       h("option", {value:""}, "All departments"), deptKeys().map(k => h("option", {value:k, selected:O.dept === k}, k))) : null));
   wrap.append(h("div", {class:"o-tiles"},
     tile("Submitted", ups.length + " of " + ps.filter(needsUpdate).length, dueLabel(wk)),
@@ -1968,7 +1970,7 @@ return {
     const tk = featureOn("items") ? [["ops-tasks", "My tasks" + (myOpen ? " (" + myOpen + ")" : "")]] : [];
     const ex = featureOn("exps") ? [["ops-expenses", "Expenses" + (waiting ? " (" + waiting + ")" : "")]] : [];
     if (r === "field") return [["ops-projects", "My projects"], ...tk, ...mp, ...ex];
-    if (r === "pm") return [["ops-projects", "My projects"], ...tk, ["ops-updates", "Weekly updates"], ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
+    if (r === "pm") return [["ops-projects", "Projects"], ...tk, ["ops-updates", "Weekly updates"], ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
     return [["ops-overview", "Overview"], ["ops-projects", "Projects"], ...tk, ["ops-updates", "Weekly updates"], ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
   },
   salesViews: () => O.missing ? [] : [["handoffs", "Handoffs"]],
