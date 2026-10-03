@@ -571,7 +571,7 @@ function matPanel(p, c, edit) {
         const q = Number(m.qty) || 0, o = Number(m.qty_ordered) || 0, r = Number(m.received) || 0;
         return h("tr", {class: edit ? "click" : null, onclick: edit ? () => openMat(p, m) : null}, sel(m),
           h("td", {class:"wrap"}, h("b", {class:"mat-item"}, m.item), h("div", {class:"muted small"}, [m.part_no, m.manufacturer, showMoney && m.unit_cost ? money(m.unit_cost) + "/" + (m.uom || "ea") : null,
-            instOn && Number(m.labor_per_unit) ? num(m.labor_per_unit) + " hrs/" + instUnit(m).replace(/s$/, "") : null, instOn && m.milestone_id ? (byId(O.ms, m.milestone_id) || {}).name : null].filter(Boolean).join(" · "))),
+            instOn && Number(m.labor_per_unit) ? Number(m.labor_per_unit).toLocaleString("en-US", {maximumFractionDigits:3}) + " hrs/" + instUnit(m).replace(/s$/, "") : null, instOn && m.milestone_id ? (byId(O.ms, m.milestone_id) || {}).name : null].filter(Boolean).join(" · "))),
           h("td", null, m.distributor || h("span", {class:"muted"}, "—"), m.po_number ? h("div", {class:"muted small mono"}, m.po_number + (m.ordered_on ? " · " + fmtDate(m.ordered_on) : "")) : null),
           h("td", {class:"num"}, qtyFmt(q, m.uom)),
           h("td", {class:"num" + (o < q ? " warn-t" : "")}, o ? num(o) : "—"),
