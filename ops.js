@@ -6,7 +6,7 @@
 window.RFIP_OPS_INIT = core => {
 "use strict";
 const {h, sb, S, money, fmtDate, daysUntil, todayStr, run, toast, friendly, openDrawer, closeDrawer, fld, deleteButton,
-  render, go, person, personName, activePeople, isAdmin, byId, acctName, emptyState, plural, nullify} = core;
+  render, go, person, personName, activePeople, isAdmin, byId, acctName, emptyState, plural, nullify, spState, spLoad, spUpload, spDelete} = core;
 
 // ---------------------------------------------------------------- data
 const TABLES = {projects:"projects", handoffs:"handoffs", depts:"departments", costs:"cost_lines", labor:"labor_weeks", ms:"milestones",
@@ -1540,9 +1540,24 @@ async function signedUrls(paths) {
   }
   return paths.map(x => (urlCache.get(x) || {}).url);
 }
+// Files live in the project's SharePoint folder (shared with the deal it came from). Uploads go there;
+// files added in SharePoint or Teams show up here. Older files in the storage bucket still work.
+const spKeyOf = p => "project:" + p.id;
 function docsPanel(p) {
   const folders = FOLDERS.filter(f => canReadFolder(p, f[0]));
-  const docs = O.docs.filter(d => d.project_id === p.id && folders.some(f => f[0] === d.folder)).sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const key = spKeyOf(p), sp = spState ? spState(key) : null;
+  if (spLoad && (!sp || (!sp.loading && Date.now() - sp.at > 60000))) spLoad(key, {project_id:p.id}).then(() => { if (O.detail === p.id) render(); });
+  const spOn = !!(sp && sp.data && sp.data.connected !== false && sp.data.folders);
+  const spItems = new Map();
+  if (spOn) for (const f of sp.data.folders) for (const x of f.files) if (!x.folder) spItems.set(x.id, {...x, fkey:f.key});
+  const known = new Set(O.docs.filter(d => d.sp_item_id).map(d => d.sp_item_id));
+  let docs = O.docs.filter(d => d.project_id === p.id && folders.some(f => f[0] === d.folder))
+    .filter(d => !d.sp_item_id || !spOn || spItems.has(d.sp_item_id))          // deleted in SharePoint → gone here too
+    .map(d => d.sp_item_id ? {...d, _sp: spItems.get(d.sp_item_id) || {url:d.sp_url}} : d);
+  if (spOn) docs = docs.concat([...spItems.values()].filter(x => !known.has(x.id) && folders.some(f => f[0] === x.fkey)).map(x => ({
+    id:"sp-" + x.id, project_id:p.id, folder:x.fkey, name:x.name, path:"sp:" + x.id, sp_item_id:x.id, size_bytes:x.size, mime_type:x.mime,
+    created_at:x.created || x.modified || "", uploaded_by:null, _by:x.by, _sp:x, _spOnly:true})));
+  docs.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
   const cur = O.docFolder && folders.some(f => f[0] === O.docFolder) ? O.docFolder : "";
   const shown = docs.filter(d => !cur || d.folder === cur);
   const box = h("div");
@@ -1550,35 +1565,63 @@ function docsPanel(p) {
     folders.map(f => { const n = docs.filter(d => d.folder === f[0]).length;
       return h("button", {role:"tab", "aria-selected":String(cur === f[0]), class: n ? "" : "empty", onclick:() => { O.docFolder = f[0]; render(); }}, f[1], " ", h("small", null, String(n))); }));
   const imgs = shown.filter(isImg).slice(0, 12), files = shown.filter(d => !isImg(d) || shown.filter(isImg).indexOf(d) >= 12);
-  const link = d => { const a = h("a", {href:"#", target:"_blank", rel:"noopener", "data-path":d.path, class:"doc-name", onclick: async ev => {
+  const who = d => d._spOnly ? (d._by || "SharePoint") : personName(d.uploaded_by);
+  const when = d => d.created_at ? fmtDate(d.created_at.slice(0, 10)) : "";
+  const link = d => { if (d._sp) return h("a", {href:d._sp.url || "#", target:"_blank", rel:"noopener", class:"doc-name"}, d.name);
+    const a = h("a", {href:"#", target:"_blank", rel:"noopener", "data-path":d.path, class:"doc-name", onclick: async ev => {
     if (a.getAttribute("href") === "#") { ev.preventDefault(); const [u] = await signedUrls([d.path]); if (u) { a.href = u; window.open(u, "_blank", "noopener"); } else toast("Couldn't open that file."); } }}, d.name); return a; };
-  const thumbs = imgs.length ? h("div", {class:"doc-thumbs"}, imgs.map(d => h("figure", null, h("a", {href:"#", target:"_blank", rel:"noopener", "data-path":d.path, class:"thumb"}, h("img", {alt:d.name, "data-path":d.path, loading:"lazy"})),
-    h("figcaption", null, d.note || d.name, h("small", null, personName(d.uploaded_by) + " · " + fmtDate(d.created_at.slice(0, 10))))))) : null;
+  const thumbs = imgs.length ? h("div", {class:"doc-thumbs"}, imgs.map(d => h("figure", null,
+    d._sp ? h("a", {href:d._sp.url || "#", target:"_blank", rel:"noopener", class:"thumb"}, d._sp.thumb ? h("img", {alt:d.name, src:d._sp.thumb, loading:"lazy"}) : null)
+      : h("a", {href:"#", target:"_blank", rel:"noopener", "data-path":d.path, class:"thumb"}, h("img", {alt:d.name, "data-path":d.path, loading:"lazy"})),
+    h("figcaption", null, d.note || d.name, h("small", null, who(d) + " · " + when(d)))))) : null;
+  const canDel = d => d._spOnly ? canEdit(p) : (d.uploaded_by === S.me.id || canEdit(p));
   const list = files.length ? h("ul", {class:"doc-list"}, files.map(d => h("li", null, h("span", {class:"doc-ic " + fileIcon(d).toLowerCase()}, fileIcon(d)),
-    h("div", {class:"doc-main"}, link(d), h("small", null, [!cur ? folderName(d.folder) : null, fmtSize(d.size_bytes), personName(d.uploaded_by), fmtDate(d.created_at.slice(0, 10)), d.note].filter(Boolean).join(" · "))),
-    d.uploaded_by === S.me.id || canEdit(p) ? h("button", {class:"btn small", "aria-label":"Delete " + d.name, onclick: async e => {
+    h("div", {class:"doc-main"}, link(d), h("small", null, [!cur ? folderName(d.folder) : null, fmtSize(d.size_bytes), who(d), when(d), d.note].filter(Boolean).join(" · "))),
+    canDel(d) ? h("button", {class:"btn small", "aria-label":"Delete " + d.name, onclick: async e => {
       const b = e.currentTarget; if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Click again to delete"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "Delete"; }, 3000); return; }
+      if (d.sp_item_id) {
+        b.disabled = true; const r = await spDelete({project_id:p.id}, d.sp_item_id);
+        if (r.error) { b.disabled = false; toast(r.error); return; }
+        toast("Moved to the SharePoint recycle bin"); await Promise.all([reload("docs"), spLoad(key, {project_id:p.id}, true)]); render(); return;
+      }
       const {error} = await sb.storage.from(BUCKET).remove([d.path]);
       if (error && !/not found/i.test(error.message || "")) { toast(friendly(error)); return; }
       if (await run(sb.from("documents").delete().eq("id", d.id), "Deleted")) { await reload("docs"); render(); }
     }}, "Delete") : null))) : null;
-  box.append(tabs, thumbs || list ? h("div", null, thumbs, list) : h("div", {class:"empty"}, cur ? "Nothing in " + folderName(cur) + " yet." : "No documents yet."));
-  // fill thumbnail and link addresses once the page is on screen
+  const note = sp && !sp.data && sp.error ? h("p", {class:"bad-t small", style:"margin:0 0 10px"}, "SharePoint: " + sp.error + " ",
+      h("button", {class:"btn small", onclick:() => spLoad(key, {project_id:p.id}, true).then(render)}, "Try again"))
+    : sp && sp.data && sp.error ? h("p", {class:"muted small", style:"margin:0 0 10px"}, "Couldn't refresh from SharePoint just now.")
+    : !sp || (!sp.data && sp.loading) ? h("p", {class:"muted small", style:"margin:0 0 10px"}, "Checking SharePoint for files…") : null;
+  box.append(note || "", tabs, thumbs || list ? h("div", null, thumbs, list) : h("div", {class:"empty"}, cur ? "Nothing in " + folderName(cur) + " yet." : "No documents yet."));
+  // fill thumbnail and link addresses of older (storage bucket) files once the page is on screen
   setTimeout(async () => { const els = [...box.querySelectorAll("[data-path]")]; if (!els.length) return;
     const paths = [...new Set(els.map(e => e.dataset.path))]; const urls = await signedUrls(paths); const m = new Map(paths.map((x, i) => [x, urls[i]]));
     for (const el of els) { const u = m.get(el.dataset.path); if (!u) continue; if (el.tagName === "IMG") el.src = u; else el.href = u; } }, 0);
   const canUp = folders.some(f => canUploadTo(p, f[0]));
-  return panel("Documents", plural(docs.length, "file") + (canUp ? " · photos are resized for the phone" : ""), h("div", {class:"o-pad"}, box),
-    canUp ? h("div", {class:"o-actions"}, h("button", {class:"btn primary small", onclick:() => openUpload(p, cur)}, "Upload files")) : null);
+  const spUrl = (sp && sp.data && sp.data.url) || p.sharepoint_url;
+  return panel("Documents", plural(docs.length, "file") + (spOn ? " · synced with SharePoint" : canUp ? " · photos are resized for the phone" : ""), h("div", {class:"o-pad"}, box),
+    canUp || spUrl ? h("div", {class:"o-actions"},
+      spUrl ? h("a", {class:"btn small", href:spUrl, target:"_blank", rel:"noopener"}, "Open in SharePoint") : null,
+      spOn ? h("button", {class:"btn small", onclick:() => spLoad(key, {project_id:p.id}, true).then(render)}, "Refresh") : null,
+      canUp ? h("button", {class:"btn primary small", onclick:() => openUpload(p, cur)}, "Upload files") : null) : null);
 }
-async function uploadOne(p, folder, file0, note) {
-  const f = await shrinkImage(file0);
+// one file into a project folder: SharePoint when it's connected, the storage bucket otherwise
+async function storeFile(p, folder, f, note, closeoutId) {
+  const r = spUpload ? await spUpload({project_id:p.id}, folder, f, {note:nullify(note), closeout_item_id:nullify(closeoutId)}) : {connected:false};
+  if (r.connected !== false) return r.error ? {error:r.error} : {ok:true, sp:true};
   const safe = f.name.replace(/[^\w.\- ]+/g, "_").replace(/\s+/g, " ").slice(-120);
   const path = p.id + "/" + folder + "/" + Date.now() + "-" + Math.random().toString(36).slice(2, 6) + "-" + safe;
   const {error} = await sb.storage.from(BUCKET).upload(path, f, {contentType:f.type || "application/octet-stream", upsert:false});
-  if (error) { toast("Photo didn't upload: " + friendly(error)); return false; }
-  const {error:e2} = await sb.from("documents").insert({project_id:p.id, folder, name:f.name, path, size_bytes:f.size, mime_type:f.type || null, note:nullify(note), uploaded_by:S.me.id});
-  if (e2) { await sb.storage.from(BUCKET).remove([path]); toast("Photo didn't save: " + friendly(e2)); return false; }
+  if (error) return {error:friendly(error)};
+  const {error:e2} = await sb.from("documents").insert({project_id:p.id, folder, name:f.name, path, size_bytes:f.size, mime_type:f.type || null, note:nullify(note), closeout_item_id:nullify(closeoutId), uploaded_by:S.me.id});
+  if (e2) { await sb.storage.from(BUCKET).remove([path]); return {error:friendly(e2)}; }
+  return {ok:true};
+}
+async function uploadOne(p, folder, file0, note) {
+  const f = await shrinkImage(file0);
+  const r = await storeFile(p, folder, f, note);
+  if (r.error) { toast("Photo didn't upload: " + r.error); return false; }
+  if (r.sp && spLoad) spLoad(spKeyOf(p), {project_id:p.id}, true);
   return true;
 }
 async function shrinkImage(file) {
@@ -1600,7 +1643,7 @@ function openUpload(p, folder) {
   const coBox = h("div", {style:"display:contents"});
   const drawCo = () => coBox.replaceChildren(...(["closeout", "tests"].includes(d.folder) && items.length && canEdit(p) ? [fld(d, "closeout_item_id", "Completes a closeout item (optional)", "select", {options:items, blank:"No", full:true})] : []));
   drawCo();
-  const status = h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Up to 50 MB per file. Photos over 1 MB are resized to 1600 px. For long videos, share a link in the note instead.");
+  const status = h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Files go into the project's SharePoint folder. Up to 50 MB per file; photos over 1 MB are resized to 1600 px. For long videos, share a link in the note instead.");
   const body = h("div", {class:"form"},
     fld(d, "folder", "Folder", "select", {options:allowed.map(f => [f[0], f[1]]), blank:false, full:true, onchange:drawCo}),
     h("div", {class:"field full"}, h("label", {for:"f-files"}, "Files"), input),
@@ -1613,18 +1656,13 @@ function openUpload(p, folder) {
       for (const f0 of files) {
         status.textContent = "Uploading " + (done + 1) + " of " + files.length + "…";
         const f = await shrinkImage(f0);
-        const safe = f.name.replace(/[^\w.\- ]+/g, "_").replace(/\s+/g, " ").slice(-120);
-        const path = p.id + "/" + d.folder + "/" + Date.now() + "-" + Math.random().toString(36).slice(2, 6) + "-" + safe;
-        const {error} = await sb.storage.from(BUCKET).upload(path, f, {contentType:f.type || "application/octet-stream", upsert:false});
-        if (error) { failed.push(f0.name + " (" + friendly(error) + ")"); continue; }
-        const row = {project_id:p.id, folder:d.folder, name:f.name, path, size_bytes:f.size, mime_type:f.type || null, note:nullify((d.note || "").trim()), closeout_item_id:nullify(d.closeout_item_id), uploaded_by:S.me.id};
-        const {error:e2} = await sb.from("documents").insert(row);
-        if (e2) { failed.push(f0.name + " (" + friendly(e2) + ")"); await sb.storage.from(BUCKET).remove([path]); continue; }
+        const r = await storeFile(p, d.folder, f, (d.note || "").trim(), d.closeout_item_id);
+        if (r.error) { failed.push(f0.name + " (" + r.error + ")"); continue; }
         done++;
       }
       if (done && d.closeout_item_id) await run(sb.from("closeout_items").update({status:"done", note:"File: " + files[0].name}).eq("id", d.closeout_item_id));
       btn.disabled = false;
-      await Promise.all([reload("docs"), reload("closeout")]); render();
+      await Promise.all([reload("docs"), reload("closeout"), spLoad ? spLoad(spKeyOf(p), {project_id:p.id}, true) : null]); render();
       if (failed.length) { status.textContent = "Couldn't upload: " + failed.join("; "); toast(done ? "Uploaded " + done + ", " + failed.length + " failed" : "Upload failed"); }
       else { closeDrawer(); toast("Uploaded " + plural(done, "file")); O.docFolder = d.folder; render(); }
     }}, "Upload")]});

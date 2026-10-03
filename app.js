@@ -773,7 +773,7 @@ function openDrawer({title, tabs, body, foot, start}) {
   const esc = e => { if (e.key === "Escape") closeDrawer(); };
   document.addEventListener("keydown", esc);
   drawerClose = () => { document.removeEventListener("keydown", esc); layer.replaceChildren(); drawerClose = null; drawerRefresh = null; openNotes = null; };
-  drawerRefresh = () => { if (tabs && active !== "d" && active !== "g") show(); };
+  drawerRefresh = () => { if (tabs && !["d", "g", "f"].includes(active)) show(); };
   const f = dr.querySelector("input,select,textarea"); if (f) setTimeout(() => f.focus(), 30);
 }
 function closeDrawer() { if (drawerClose) drawerClose(); }
@@ -868,6 +868,123 @@ function sharepointBox(deal) {
       : h("div", {class:"sp-row"}, h("span", {class:"muted"}, "No folder yet."), retry("Create folder")));
   };
   draw(deal); return box;
+}
+
+// ---------------------------------------------------------------- SharePoint files
+// Files live in the deal's (and its project's) SharePoint folder. The app lists them live and
+// uploads straight into them, so files added in SharePoint or Teams show up here and the other way round.
+const SP_CACHE = new Map();   // "deal:<id>" | "project:<id>" -> {at, data, error, loading}
+async function spCall(body, file) {
+  let tok = CUR_TOKEN;
+  if (!tok) { const {data} = await sb.auth.getSession(); tok = data && data.session ? data.session.access_token : null; }
+  const headers = {apikey:cfg.supabaseAnonKey, Authorization:"Bearer " + (tok || cfg.supabaseAnonKey)};
+  const init = file
+    ? {method:"POST", headers:{...headers, "Content-Type":"application/octet-stream", "x-rfip-upload":encodeURIComponent(JSON.stringify(body))}, body:file}
+    : {method:"POST", headers:{...headers, "Content-Type":"application/json"}, body:JSON.stringify(body)};
+  let r; try { r = await fetch(cfg.supabaseUrl + "/functions/v1/sharepoint", init); } catch (e) { return {error:"Couldn't reach SharePoint. Check your connection and try again."}; }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok && !j.error) j.error = "SharePoint didn't answer (" + r.status + ")";
+  return j;
+}
+const spState = key => SP_CACHE.get(key);
+// loads (or reloads) the file list; finished lists are kept for a minute
+function spLoad(key, target, force) {
+  const cur = SP_CACHE.get(key);
+  if (cur && cur.loading) return cur.loading;
+  if (cur && !force && Date.now() - cur.at < 60000) return Promise.resolve(cur);
+  const st = {at:0, data:cur ? cur.data : null, error:null, loading:null};
+  st.loading = spCall({action:"files", ...target}).then(j => {
+    st.at = Date.now(); st.loading = null;
+    if (j.error) st.error = j.error; else st.data = j;
+    return st;
+  });
+  SP_CACHE.set(key, st);
+  return st.loading;
+}
+// sends one file to SharePoint: straight from the browser when it can, through the Edge Function otherwise
+async function spUpload(target, folder, file, extra = {}) {
+  if (!file.size) return {error:file.name + " is empty"};
+  if (file.size > 52428800) return {error:file.name + " is over 50 MB"};
+  const base = {...target, folder};
+  const start = await spCall({action:"upload_start", ...base, name:file.name, size:file.size});
+  if (start.connected === false || start.error) return start;
+  let item = null;
+  try {
+    const chunk = 30 * 327680;   // ~9.4 MB; SharePoint wants pieces in multiples of 320 KB
+    for (let at = 0; at < file.size; at += chunk) {
+      const end = Math.min(file.size, at + chunk);
+      const r = await fetch(start.upload_url, {method:"PUT", headers:{"Content-Range":"bytes " + at + "-" + (end - 1) + "/" + file.size}, body:file.slice(at, end)});
+      if (r.status === 200 || r.status === 201) item = await r.json();
+      else if (r.status !== 202) throw new Error("status " + r.status);
+    }
+  } catch (e) { item = null; }
+  if (!item || !item.id) return await spCall({...base, name:file.name, ...extra}, file);
+  return await spCall({action:"upload_finish", ...base, item_id:item.id, ...extra});
+}
+const spDelete = (target, itemId) => spCall({action:"delete", ...target, item_id:itemId});
+const spIcon = (name, mime) => { const m = (mime || "") + " " + (name || "");
+  return /^image\//.test(mime || "") ? "IMG" : /pdf/i.test(m) ? "PDF" : /sheet|excel|csv|\.xlsx?\b/i.test(m) ? "XLS" : /word|document|\.docx?\b/i.test(m) ? "DOC" : /dwg|dxf|visio|autocad|\.vsdx?\b/i.test(m) ? "CAD" : "FILE"; };
+const spSize = b => !b ? "" : b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB";
+
+// the deal drawer's Files tab: the Sales folders, live from SharePoint
+function dealFilesTab(deal) {
+  const key = "deal:" + deal.id, target = {deal_id:deal.id};
+  const box = h("div", {class:"sp-files"});
+  let cur = "";
+  const draw = () => {
+    if (!box.isConnected && box.dataset.drawn) return;
+    box.dataset.drawn = "1";
+    const st = spState(key);
+    if (!st || (!st.data && !st.error)) { box.replaceChildren(h("div", {class:"empty"}, "Loading files from SharePoint…")); return; }
+    if (st.data && st.data.connected === false) { box.replaceChildren(h("div", {class:"empty"}, "SharePoint isn't connected yet. Files will show here once it is.")); return; }
+    if (!st.data) { box.replaceChildren(h("div", {class:"empty"}, h("p", {class:"bad-t"}, st.error), h("button", {class:"btn small", onclick:() => { spLoad(key, target, true).then(draw); draw(); }}, "Try again"))); return; }
+    const folders = st.data.folders;
+    const all = folders.flatMap(f => f.files.map(x => ({...x, fkey:f.key, flabel:f.label})));
+    const shown = all.filter(x => !cur || x.fkey === cur).sort((a, b) => (b.modified || "").localeCompare(a.modified || ""));
+    const tabs = h("div", {class:"doc-tabs", role:"tablist"},
+      h("button", {role:"tab", "aria-selected":String(!cur), onclick:() => { cur = ""; draw(); }}, "All ", h("small", null, String(all.length))),
+      folders.map(f => h("button", {role:"tab", "aria-selected":String(cur === f.key), class:f.files.length ? "" : "empty", onclick:() => { cur = f.key; draw(); }}, f.label, " ", h("small", null, String(f.files.length)))));
+    const list = shown.length ? h("ul", {class:"doc-list"}, shown.map(x => h("li", null,
+      h("span", {class:"doc-ic " + (x.folder ? "file" : spIcon(x.name, x.mime).toLowerCase())}, x.folder ? "DIR" : spIcon(x.name, x.mime)),
+      h("div", {class:"doc-main"}, h("a", {class:"doc-name", href:x.url, target:"_blank", rel:"noopener"}, x.name),
+        h("small", null, [!cur ? x.flabel : null, spSize(x.size), x.by, x.modified ? fmtDate(x.modified.slice(0, 10)) : null].filter(Boolean).join(" · "))),
+      canManage(deal) && !x.folder ? h("button", {class:"btn small", "aria-label":"Delete " + x.name, onclick: async e => {
+        const b = e.currentTarget; if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Click again to delete"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "Delete"; }, 3000); return; }
+        b.disabled = true; const r = await spDelete(target, x.id);
+        if (r.error) { b.disabled = false; toast(r.error); return; }
+        toast("Moved to the SharePoint recycle bin"); await spLoad(key, target, true); draw();
+      }}, "Delete") : null)))
+      : h("div", {class:"empty"}, cur ? "Nothing in " + (folders.find(f => f.key === cur) || {}).label + " yet." : "No files yet. Upload here, or drop them in the SharePoint folder.");
+    // upload straight into a Sales folder
+    const d = {folder: cur || (folders.find(f => /RFP/.test(f.key)) || folders[0]).key};
+    const input = h("input", {type:"file", multiple:true, class:"inp", id:"sp-files"});
+    const status = h("span", {class:"muted small"});
+    const up = h("div", {class:"form sp-up"},
+      fld(d, "folder", "Upload to", "select", {options:folders.map(f => [f.key, f.label]), blank:false}),
+      h("div", {class:"field"}, h("label", {for:"sp-files"}, "Files (up to 50 MB each)"), input),
+      h("div", {class:"field full sp-row"}, h("button", {class:"btn primary small", onclick: async e => {
+        const files = [...input.files]; if (!files.length) { toast("Choose one or more files."); return; }
+        const btn = e.currentTarget; btn.disabled = true; let done = 0; const failed = [];
+        for (const f of files) {
+          status.textContent = "Uploading " + (done + failed.length + 1) + " of " + files.length + "…";
+          const r = await spUpload(target, d.folder, f);
+          if (r.error || r.connected === false) failed.push(f.name + (r.error ? " (" + r.error + ")" : "")); else done++;
+        }
+        btn.disabled = false;
+        toast(failed.length ? (done ? "Uploaded " + done + ", " + failed.length + " failed" : "Upload failed") : "Uploaded " + plural(done, "file"));
+        cur = d.folder; await spLoad(key, target, true); draw();
+        if (failed.length) status.textContent = "Couldn't upload: " + failed.join("; ");
+      }}, "Upload"), status));
+    box.replaceChildren(
+      h("div", {class:"sp-row", style:"justify-content:space-between;margin-bottom:10px"},
+        h("span", {class:"muted small"}, "Synced with SharePoint" + (st.loading ? " · refreshing…" : "")),
+        h("span", {class:"sp-row"}, h("button", {class:"btn small", onclick:() => { spLoad(key, target, true).then(draw); draw(); }}, "Refresh"),
+          st.data.url ? h("a", {class:"btn small", href:st.data.url + "/Sales", target:"_blank", rel:"noopener"}, "Open in SharePoint") : null)),
+      st.error ? h("p", {class:"bad-t small"}, st.error) : null,
+      tabs, list, h("hr", {class:"sp-sep"}), up);
+  };
+  spLoad(key, target).then(draw); draw();
+  return box;
 }
 
 // Repeat work (moves, adds and changes for the same customer): start a new deal from an old one.
@@ -1049,7 +1166,8 @@ function openDeal(id, startTab, prefill, copiedFrom) {
   if (src) foot.splice(foot.length - 2, 0, h("button", {class:"btn", title:"Start a new deal for repeat work with this customer", onclick:() => copyDeal(src)}, "Copy"));
 
   openDrawer({title: src ? src.name : copiedFrom ? "Copy of " + ((byId(S.deals, copiedFrom) || {}).name || "deal") : "New deal", start:startTab,
-    tabs:[["d","Details",details],["g","Go/no-go",gng],["p","Deal team",people],["n","Notes",notes],["t","Tasks",tasks]], foot});
+    tabs:[["d","Details",details],["g","Go/no-go",gng],["p","Deal team",people],["n","Notes",notes],["t","Tasks",tasks],
+      src && ("sharepoint_status" in src || "sharepoint_url" in src) ? ["f","Files",() => dealFilesTab(byId(S.deals, src.id) || src)] : null].filter(Boolean), foot});
   if (copiedFrom) setTimeout(() => { const n = document.getElementById("f-name"); if (n) { n.focus(); n.select(); } }, 60);
 }
 
@@ -1402,7 +1520,7 @@ function exportPanel() {
 if (window.RFIP_OPS_INIT) {
   OPS = window.RFIP_OPS_INIT({h, sb, S, cfg, money, fmtDate, fmtDateTime, daysUntil, todayStr, run, toast, friendly, status, openDrawer, closeDrawer, refreshDrawer,
     fld, deleteButton, render, renderNow, go, person, personName, activePeople, peopleOptions, isAdmin, byId, acctName, dealName, openDeal, emptyState,
-    plural, nullify, metric, loadTable, STAGE});
+    plural, nullify, metric, loadTable, STAGE, spState, spLoad, spUpload, spDelete});
 }
 
 boot();
