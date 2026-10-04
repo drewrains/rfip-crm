@@ -18,6 +18,7 @@
 //   {action:"create", deal_id}                         create (or re-link) one deal's folder
 //   {action:"backfill"}                                admins: folders for every deal without one, and move any
 //                                                      existing folders into the Customer/Deal layout
+//   {action:"customer", account_id}                    make (or find) a customer's folder and its Customer Info folder
 //   {action:"rename_customer", account_id, old_name}   rename a customer's folder after the account is renamed
 //   {action:"files", deal_id | project_id}             list the files, folder by folder
 //   {action:"upload_start", deal_id | project_id, folder, name, size}
@@ -310,6 +311,17 @@ Deno.serve(async req => {
       const {data: lone} = await admin.from("projects").select("id, number, name, account_id, sharepoint_item_id").is("deal_id", null).not("sharepoint_item_id", "is", null);
       for (const p of lone || []) { try { await standaloneProject(admin, p); } catch (e) { out.error++; out.errors.push(String((e as Error).message || e)); } }
       return json(out);
+    }
+
+    // a customer's folder (and its Customer Info folder), made when the account is saved or first opened
+    if (body.action === "customer") {
+      if (!configured()) return json({connected: false});
+      const {data: acct} = await asUser.from("accounts").select("id, name").eq("id", body.account_id).maybeSingle();
+      if (!acct) throw new Refused("That account isn't available to you", 404);
+      const drive = await driveId();
+      const cust = await customerFolder(drive, acct.name);
+      const info = await child(drive, cust.id, "Customer Info");
+      return json({connected: true, url: cust.webUrl, info_url: info.webUrl});
     }
 
     // an account was renamed in the CRM: rename its customer folder and refresh its deals' links

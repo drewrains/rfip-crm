@@ -1192,6 +1192,7 @@ function simpleDrawer(table, key, id, defaults, title, fields, extra, moreTabs) 
     if (!res) return;
     const i = S[key].findIndex(x => x.id === res.id); if (i >= 0) S[key][i] = res; else S[key].push(res);
     if (table === "accounts" && src && src.name !== res.name) sb.functions.invoke("sharepoint", {body:{action:"rename_customer", account_id:res.id, old_name:src.name}});
+    if (table === "accounts" && !src) sb.functions.invoke("sharepoint", {body:{action:"customer", account_id:res.id}}).then(({data}) => { if (data && data.url) toast("SharePoint folder ready for " + res.name); });
     render(); closeDrawer();
   }}, src ? "Save" : "Add"));
   const dTitle = src ? (src.name || src.title) : "New " + title.toLowerCase();
@@ -1217,9 +1218,25 @@ function openAccount(id) {
       h("div", {class:"section-h", style:"margin-top:20px"}, "Contacts"),
       cs.length ? cs.map(c => h("div", {class:"list-row"}, h("button", {class:"linkish", onclick:() => openContact(c.id)}, c.name), h("span", {class:"muted"}, c.title || ""))) : h("div", {class:"muted"}, "None."),
       h("div", {style:"margin-top:10px"}, h("button", {class:"btn small", onclick:() => openContact(null, {account_id:src.id})}, "+ Contact at this account")),
-      portalBox(src)); },
+      customerFolderBox(src), portalBox(src)); },
   src => [["h", "History", () => accountHistory(src)]]);
 }
+// ---------------------------------------------------------------- customer's SharePoint folder
+// Customers/<Customer>/ with Customer Info; made when the account is saved (or here, for older accounts).
+function customerFolderBox(src) {
+  const box = h("div", {class:"field full sp-box", style:"margin-top:20px"}, h("label", null, "SharePoint folder"), h("div", {class:"sp-row muted"}, "Checking SharePoint…"));
+  (async () => {
+    const {data, error} = await sb.functions.invoke("sharepoint", {body:{action:"customer", account_id:src.id}});
+    const row = data && data.url
+      ? h("div", {class:"sp-row"}, h("a", {class:"btn small primary", href:data.url, target:"_blank", rel:"noopener"}, "Open folder"),
+          h("a", {class:"linkish", href:data.info_url, target:"_blank", rel:"noopener"}, "Customer Info"))
+      : data && data.connected === false ? h("div", {class:"sp-row muted"}, "Will be created once SharePoint is connected.")
+      : h("div", {class:"sp-row"}, h("span", {class:"bad-t small"}, (data && data.error) || (error ? friendly(error) : "Couldn't reach SharePoint.")));
+    box.replaceChildren(h("label", null, "SharePoint folder"), row);
+  })();
+  return box;
+}
+
 // ---------------------------------------------------------------- customer dashboard link
 // One private link per customer account showing every project RFIP runs for them (no money, notes or documents).
 const portalUrl = l => location.origin + location.pathname.replace(/[^/]*$/, "") + "customer.html?a=" + l.token;
