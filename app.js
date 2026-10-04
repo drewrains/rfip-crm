@@ -351,9 +351,20 @@ function openMeeting(target, ctx, m, after) {
   const pick = (email, name) => { const k = email.toLowerCase(); return h("label", {class:"field check"}, h("input", {type:"checkbox", checked:chosen.has(k),
     onchange: e => { e.target.checked ? chosen.set(k, name) : chosen.delete(k); }}), h("span", null, name, h("small", {class:"muted"}, " " + email))); };
   const when = h("div", {style:"display:contents"});
-  const drawWhen = () => when.replaceChildren(
+  // plain-English line showing exactly what will land in Outlook, so an all-day invite is never a surprise
+  const sum = h("div", {class:"meet-sum"});
+  const drawSum = () => {
+    if (!d.start) { sum.replaceChildren("Pick a date."); return; }
+    if (d.all_day) { const day = new Date(d.start.slice(0, 10) + "T12:00:00");
+      sum.replaceChildren("Outlook will show: ", h("b", null, day.toLocaleDateString("en-US", {weekday:"short", month:"short", day:"numeric"}) + " · all day")); return; }
+    const s0 = new Date(d.start); if (isNaN(+s0)) { sum.replaceChildren("Check the start time."); return; }
+    const e0 = new Date(+s0 + Number(d.minutes) * 6e4);
+    sum.replaceChildren("Outlook will show: ", h("b", null, s0.toLocaleString("en-US", {weekday:"short", month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}) + " – " + e0.toLocaleTimeString("en-US", {hour:"numeric", minute:"2-digit"})));
+  };
+  const drawWhen = () => { when.replaceChildren(
     fld(d, "start", d.all_day ? "Date" : "Starts", d.all_day ? "date" : "datetime-local"),
-    d.all_day ? h("div") : fld(d, "minutes", "Length", "select", {blank:false, options:[["30", "30 min"], ["60", "1 hour"], ["90", "1½ hours"], ["120", "2 hours"], ["180", "3 hours"], ["240", "4 hours"], ["480", "All morning / afternoon (8 h)"]]}));
+    d.all_day ? h("div") : fld(d, "minutes", "Length", "select", {blank:false, options:[["30", "30 min"], ["60", "1 hour"], ["90", "1½ hours"], ["120", "2 hours"], ["180", "3 hours"], ["240", "4 hours"], ["480", "All morning / afternoon (8 h)"]]}),
+    sum); drawSum(); };
   if (d.all_day && d.start.length > 10) d.start = d.start.slice(0, 10);
   drawWhen();
   const setAllDay = v => { d.all_day = v; allDay.checked = v; if (v) d.start = d.start.slice(0, 10); else if (d.start.length === 10) d.start += "T09:00"; drawWhen(); };
@@ -371,6 +382,7 @@ function openMeeting(target, ctx, m, after) {
         h("details", {open:!contacts.length}, h("summary", null, "RFIP people (" + team.length + ")"), team.map(p => pick(p.email, p.full_name || p.email))))),
     fld(d, "extra", "Other emails (comma-separated)", "text", {full:true, placeholder:"e.g. gc.super@builder.com"}),
     fld(d, "notes", "Notes for the invite", "textarea", {full:true}));
+  body.addEventListener("input", drawSum); body.addEventListener("change", drawSum);
   openDrawer({title: m ? "Change meeting" : "Schedule a meeting", body, foot:[h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Close"),
     h("button", {class:"btn primary", onclick: async e => {
       const subject = (d.subject || "").trim() || (ctx.subject ? meetKind(d.kind) + " – " + ctx.subject : "");
