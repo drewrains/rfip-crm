@@ -1051,7 +1051,7 @@ function viewHandoffs() {
 function openHandoff(id) {
   const ho = byId(O.handoffs, id); if (!ho) { toast("That handoff isn't available to you."); return; }
   const d = handoffDeal(ho);
-  const draft = {department:ho.department, pm_id:ho.pm_id, packet:JSON.parse(JSON.stringify(ho.packet || {})), reason:""};
+  const draft = {department:ho.department, pm_id:ho.pm_id, packet:JSON.parse(JSON.stringify(ho.packet || {})), reason:"", office:""};
   const ops = isOpsFor(ho), locked = ho.status === "accepted" || ho.status === "cancelled";
   const pms = activePeople().filter(x => (x.ops_role === "pm" || x.ops_role === "lead") && (!draft.department || x.department === draft.department || x.ops_role === "lead")).map(x => [x.id, (x.full_name || x.email) + (x.department ? " · " + x.department : "")]);
   const pk = draft.packet;
@@ -1071,6 +1071,9 @@ function openHandoff(id) {
       fld(draft, "department", "Department", "select", {options:deptKeys(), blank:"Choose a department", readonly:locked}),
       fld(draft, "pm_id", "Project manager", "select", {options:pms, blank:"Assigned by operations", readonly:locked || !ops})),
     ...PACKET.flatMap(([title, fields]) => [h("div", {class:"section-h"}, title), h("div", {class:"form"}, fields.map(field))]),
+    ["packet", "kicked_back"].includes(ho.status) ? h("div", null, h("div", {class:"section-h"}, "Email to newprojects@rfip.com"),
+      h("p", {class:"muted small", style:"margin-top:0"}, "Goes out from your Outlook when you submit, with the subject \u201c" + d.name + (acctName(d.account_id) ? " – " + acctName(d.account_id) : "") + "\u201d and a link to the deal's SharePoint documents. Admin assigns the project number."),
+      h("div", {class:"form"}, fld(draft, "office", "Message", "textarea", {full:true}))) : null,
     !locked ? h("p", {class:"muted small"}, "Required before submitting: " + REQUIRED.map(x => x[1]).join(", ") + ".") : null);
   const saveDraft = async extra => {
     const row = Object.assign({department:nullify(draft.department), packet:pk}, ops ? {pm_id:nullify(draft.pm_id)} : {}, extra || {});
@@ -1086,6 +1089,10 @@ function openHandoff(id) {
       if (!draft.department) { toast("Choose the delivering department."); return; }
       if (await saveDraft({status:"review", kickback_reason:null})) {
         toast("Sent to " + draft.department + " for review"); closeDrawer();
+        if (core.fnCall) core.fnCall("outlook", {action:"new_project", deal_id:d.id, message:draft.office, resubmit:ho.status === "kicked_back"}).then(r => {
+          if (r && r.sent) toast("Also emailed " + r.to + ".");
+          else toast("Couldn't email " + ((r && r.to) || "newprojects@rfip.com") + (r && r.connected === false ? ". Sign out and back in with Microsoft so RFIP can send from your Outlook." : (r && r.error ? ": " + r.error : ".")));
+        });
         const leads = activePeople().filter(x => x.ops_role === "lead" && x.department === draft.department).map(x => x.id);
         tell([...leads, ho.pm_id], "Handoff ready: " + d.name, (S.me.full_name || S.me.email) + " submitted the handoff packet for " + d.name +
           (acctName(d.account_id) ? " (" + acctName(d.account_id) + ")" : "") + " to " + draft.department + ". It's waiting on operations to accept it.", "#deal=" + d.id);
@@ -1109,11 +1116,7 @@ function openHandoff(id) {
         btn.disabled = false;
         if (pid) { await load(); render(); closeDrawer(); if (typeof pid === "string") openProject(pid);
           tell([d.owner_id, ho.submitted_by, draft.pm_id], "Handoff accepted: " + d.name, (S.me.full_name || S.me.email) + " accepted the handoff for " + d.name + ". " +
-            personName(draft.pm_id) + " is the project manager.", typeof pid === "string" ? "#project=" + pid : "#deal=" + d.id);
-          if (typeof pid === "string" && core.fnCall) core.fnCall("outlook", {action:"new_project", project_id:pid}).then(r => {
-            if (r && r.sent) toast("Sent to " + r.to + " for setup.");
-            else toast("Couldn't email " + ((r && r.to) || "newprojects@rfip.com") + (r && r.connected === false ? ": sign out and back in with Microsoft so RFIP can send from your Outlook." : (r && r.error ? ": " + r.error : ".")));
-          }); }
+            personName(draft.pm_id) + " is the project manager.", typeof pid === "string" ? "#project=" + pid : "#deal=" + d.id); }
       }}, "Accept and create project"));
     }
   } else foot.push(h("button", {class:"btn", onclick:() => closeDrawer()}, "Close"));
