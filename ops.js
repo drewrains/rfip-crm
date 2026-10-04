@@ -6,7 +6,8 @@
 window.RFIP_OPS_INIT = core => {
 "use strict";
 const {h, sb, S, money, fmtDate, daysUntil, todayStr, run, toast, friendly, openDrawer, closeDrawer, fld, deleteButton,
-  render, go, person, personName, activePeople, isAdmin, byId, acctName, emptyState, plural, nullify, spState, spLoad, spUpload, spDelete} = core;
+  render, go, person, personName, activePeople, isAdmin, byId, acctName, emptyState, plural, nullify, spState, spLoad, spUpload, spDelete, notify, meetingsBox} = core;
+const tell = (...a) => { if (notify) notify(...a); };
 
 // ---------------------------------------------------------------- data
 const TABLES = {projects:"projects", handoffs:"handoffs", depts:"departments", costs:"cost_lines", labor:"labor_weeks", ms:"milestones",
@@ -487,6 +488,10 @@ function viewProject() {
   wrap.append(h("div", {class:"o-two even"}, opsView && role() !== "field" ? logPanel(p) : null, h("div", {class:"o-stack"}, opsView ? coPanel(p, c, edit, money) : null, rosterPanel(p, c, edit), closeoutPanel(p, c, edit))));
   if (opsView && featureOn("exps")) wrap.append(expensePanel(p));
   if (opsView) wrap.append(docsPanel(p));
+  if (opsView && role() !== "field" && meetingsBox) wrap.append(panel("Meetings", "Outlook invites sent from the person who schedules them",
+    h("div", {class:"o-pad"}, meetingsBox({project_id:p.id}, {subject:p.number + " " + p.name, account_id:p.account_id,
+      people:[p.pm_id, ...O.roster.filter(r => r.project_id === p.id).map(r => r.profile_id)].filter(Boolean),
+      kinds:["kickoff", "field", "meeting", "handoff"]}))));
   if (featureOn("clinks") && (edit || role() === "viewer")) wrap.append(customerPanel(p, edit));
   if (money) wrap.append(projectBilling(p, c, edit));
   return wrap;
@@ -1079,13 +1084,19 @@ function openHandoff(id) {
     if (["packet", "kicked_back"].includes(ho.status)) foot.push(h("button", {class:"btn primary", onclick: async () => {
       const miss = missingOf(pk); if (miss.length) { toast("Still missing: " + miss.join(", ")); return; }
       if (!draft.department) { toast("Choose the delivering department."); return; }
-      if (await saveDraft({status:"review", kickback_reason:null})) { toast("Sent to " + draft.department + " for review"); closeDrawer(); }
+      if (await saveDraft({status:"review", kickback_reason:null})) {
+        toast("Sent to " + draft.department + " for review"); closeDrawer();
+        const leads = activePeople().filter(x => x.ops_role === "lead" && x.department === draft.department).map(x => x.id);
+        tell([...leads, ho.pm_id], "Handoff ready: " + d.name, (S.me.full_name || S.me.email) + " submitted the handoff packet for " + d.name +
+          (acctName(d.account_id) ? " (" + acctName(d.account_id) + ")" : "") + " to " + draft.department + ". It's waiting on operations to accept it.", "#deal=" + d.id);
+      }
     }}, "Submit to operations"));
     if (ops && ho.status !== "kicked_back") {
       const reasonBox = h("div", {class:"o-kick", hidden:true}, h("textarea", {class:"inp", id:"kick-reason", placeholder:"What's missing or unclear?", oninput: e => { draft.reason = e.target.value; }}),
         h("button", {class:"btn danger", onclick: async () => {
           if (!draft.reason.trim()) { toast("Say what's missing first."); return; }
-          if (await saveDraft({status:"kicked_back", kickback_reason:draft.reason.trim()})) { toast("Kicked back to " + personName(d.owner_id)); closeDrawer(); }
+          if (await saveDraft({status:"kicked_back", kickback_reason:draft.reason.trim()})) { toast("Kicked back to " + personName(d.owner_id)); closeDrawer();
+            tell([d.owner_id, ho.submitted_by], "Handoff kicked back: " + d.name, (S.me.full_name || S.me.email) + " sent the handoff for " + d.name + " back. Operations needs:\n\n" + draft.reason.trim(), "#deal=" + d.id); }
         }}, "Send back to sales"));
       body.append(reasonBox);
       foot.push(h("button", {class:"btn", onclick:() => { reasonBox.hidden = false; reasonBox.querySelector("textarea").focus(); reasonBox.scrollIntoView({block:"nearest"}); }}, "Kick back"));
@@ -1096,7 +1107,9 @@ function openHandoff(id) {
         if (!(await saveDraft())) { btn.disabled = false; return; }
         const pid = await run(sb.rpc("accept_handoff", {hid:ho.id}), "Accepted. Project created.");
         btn.disabled = false;
-        if (pid) { await load(); render(); closeDrawer(); if (typeof pid === "string") openProject(pid); }
+        if (pid) { await load(); render(); closeDrawer(); if (typeof pid === "string") openProject(pid);
+          tell([d.owner_id, ho.submitted_by, draft.pm_id], "Handoff accepted: " + d.name, (S.me.full_name || S.me.email) + " accepted the handoff for " + d.name + ". " +
+            personName(draft.pm_id) + " is the project manager.", typeof pid === "string" ? "#project=" + pid : "#deal=" + d.id); }
       }}, "Accept and create project"));
     }
   } else foot.push(h("button", {class:"btn", onclick:() => closeDrawer()}, "Close"));
@@ -1778,7 +1791,11 @@ function openPlanItem(p, it, parentId) {
     const row = ro ? {status:d.status, notes:nullify((d.notes || "").trim())}
       : {project_id:p.id, title:d.title.trim(), parent_id:nullify(d.parent_id), assignee_id:nullify(d.assignee_id), start_date:nullify(d.start_date), due_date:nullify(d.due_date), status:d.status, notes:nullify((d.notes || "").trim())};
     if (!it && !ro) row.sort = Math.max(0, ...itemsOf(p.id).filter(x => (x.parent_id || null) === row.parent_id).map(x => x.sort)) + 1;
-    return saveRow("plan_items", row, it && it.id);
+    const ok = await saveRow("plan_items", row, it && it.id);
+    if (ok && row.assignee_id && row.assignee_id !== S.me.id && (!it || it.assignee_id !== row.assignee_id))
+      tell([row.assignee_id], "New task on " + p.number + ": " + row.title, (S.me.full_name || S.me.email) + " assigned you a task on " + p.number + " " + p.name +
+        (row.due_date ? ", due " + fmtDate(row.due_date) : "") + ":\n\n" + row.title + (row.notes ? "\n\n" + row.notes : ""), "#project=" + p.id);
+    return ok;
   }, it && edit ? del("plan_items", it.id) : null);
 }
 function viewTasks() {
@@ -1860,6 +1877,10 @@ async function decideExpense(e, btn) {
   if (btn) btn.disabled = false;
   if (error) { toast(friendly(error)); return; }
   toast(wasPm ? "Approved. It now counts toward the job cost." : "Approved. It's now with the CFO for final approval.");
+  { const p = byId(O.projects, e.project_id) || {}; const what = fullMoney(e.amount) + " · " + (e.vendor || catName(e.category)) + (p.number ? " on " + p.number : "");
+    if (wasPm) tell([e.submitted_by], "Expense approved: " + what, "Your expense " + what + " has final approval.", p.id ? "#project=" + p.id : "");
+    else tell(activePeople().filter(x => x.finance_approver).map(x => x.id), "Expense to approve: " + what,
+      (S.me.full_name || S.me.email) + " approved " + personName(e.submitted_by) + "'s expense " + what + ". It needs your final approval.", p.id ? "#project=" + p.id : ""); }
   await reload("exps"); render();
 }
 function openSendBack(e) {
@@ -1871,6 +1892,7 @@ function openSendBack(e) {
       const {error} = await sb.rpc("expense_decide", {eid:e.id, decision:"reject", reason:d.reason.trim()});
       if (error) { toast(friendly(error)); return; }
       closeDrawer(); toast("Sent back to " + personName(e.submitted_by)); await reload("exps"); render();
+      tell([e.submitted_by], "Expense sent back: " + fullMoney(e.amount) + " · " + (e.vendor || catName(e.category)), (S.me.full_name || S.me.email) + " sent your expense back:\n\n" + d.reason.trim(), e.project_id ? "#project=" + e.project_id : "");
     }}, "Send back")]});
 }
 function openExpense(p, e) {
@@ -1912,6 +1934,8 @@ function openExpense(p, e) {
     if (!res) { if (uploaded) await sb.storage.from(BUCKET).remove([uploaded]); return; }
     if (uploaded && e && e.receipt_path && e.receipt_path !== uploaded) await sb.storage.from(BUCKET).remove([e.receipt_path]);
     closeDrawer(); await reload("exps"); render();
+    if (p.pm_id) tell([p.pm_id], "Expense to approve: " + fullMoney(amt) + " · " + (row.vendor || catName(row.category)) + " on " + p.number,
+      (S.me.full_name || S.me.email) + (e ? " resubmitted" : " submitted") + " an expense on " + p.number + " " + p.name + ": " + fullMoney(amt) + " at " + (row.vendor || catName(row.category)) + ". It needs your approval.", "#project=" + p.id);
   }}, e ? "Resubmit" : "Submit"));
   openDrawer({title:(e ? "Expense · " : "Log an expense · ") + p.number, body, foot});
 }
@@ -1998,5 +2022,6 @@ return {
   owns: v => v in VIEW_FN,
   render: v => (VIEW_FN[v] || viewOverview)(),
   strip,
+  openProject: id => { openProject(id); render(); },
 };
 };

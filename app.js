@@ -203,7 +203,7 @@ function authErrorFromUrl() {
 }
 $("#msLogin").addEventListener("click", async () => {
   if (!sb) return;
-  const {error} = await sb.auth.signInWithOAuth({provider:"azure", options:{scopes:"email", redirectTo: location.origin + location.pathname}});
+  const {error} = await sb.auth.signInWithOAuth({provider:"azure", options:{scopes:"email offline_access Mail.Send Calendars.ReadWrite", redirectTo: location.origin + location.pathname}});
   if (error) showSignin(friendly(error));
 });
 $("#signOut").addEventListener("click", async () => { await sb.auth.signOut(); location.reload(); });
@@ -251,7 +251,146 @@ async function start(session) {
   await loadAll();
   subscribe();
   render();
+  outlookConnect(session);
+  openFromHash();
 }
+
+// ---------------------------------------------------------------- Outlook (email + calendar as the signed-in person)
+// Right after a Microsoft sign-in, Supabase hands the browser a Microsoft refresh token once; the "outlook"
+// Edge Function keeps it (never the browser) so invites and alert emails go out from this person's mailbox.
+S.outlook = null;   // null = not checked yet, true / false
+async function fnCall(name, body) {
+  let tok = CUR_TOKEN;
+  if (!tok) { const {data} = await sb.auth.getSession(); tok = data && data.session ? data.session.access_token : null; }
+  try {
+    const r = await fetch(cfg.supabaseUrl + "/functions/v1/" + name, {method:"POST",
+      headers:{apikey:cfg.supabaseAnonKey, Authorization:"Bearer " + (tok || cfg.supabaseAnonKey), "Content-Type":"application/json"}, body:JSON.stringify(body)});
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok && !j.error) j.error = "The server didn't answer (" + r.status + ")";
+    return j;
+  } catch (e) { return {error:"Couldn't reach the server. Check your connection."}; }
+}
+async function outlookConnect(session) {
+  if (session && session.provider_refresh_token) {
+    const r = await fnCall("outlook", {action:"save_token", refresh_token:session.provider_refresh_token});
+    if (r.connected) { S.outlook = true; return; }
+    if (r.error) console.warn("Outlook:", r.error);
+  }
+  const st = await fnCall("outlook", {action:"status"});
+  S.outlook = !!st.connected;
+}
+// alert email from me to other RFIP people; quietly skipped if my Outlook isn't connected
+function notify(ids, subject, text, link) {
+  const to = [...new Set((ids || []).filter(x => x && x !== S.me.id))];
+  if (!to.length || S.outlook === false) return;
+  fnCall("outlook", {action:"notify", to, subject, text, link}).then(r => { if (r && r.error) console.warn("Alert email:", r.error); });
+}
+// links in emails and invites: #deal=<id> or #project=<id>
+function openFromHash() {
+  const m = location.hash.match(/^#(deal|project)=([0-9a-f-]{36})$/);
+  if (!m) return;
+  history.replaceState(null, "", location.pathname + location.search);
+  if (m[1] === "deal") { if (byId(S.deals, m[2])) openDeal(m[2]); else toast("That deal isn't available to you."); }
+  else if (OPS && OPS.openProject) { S.section = "ops"; OPS.openProject(m[2]); }
+}
+
+// ---------------------------------------------------------------- meetings (Outlook invites on a deal or project)
+const MEET_KINDS = [["site_walk", "Site walk"], ["pre_bid", "Pre-bid meeting"], ["bid_due", "Bid due"], ["kickoff", "Kickoff"], ["handoff", "Handoff meeting"], ["field", "Field visit"], ["meeting", "Meeting"]];
+const meetKind = k => (MEET_KINDS.find(x => x[0] === k) || [k, "Meeting"])[1];
+const pad2 = n => String(n).padStart(2, "0");
+const localInput = d => d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()) + "T" + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+const fmtWhen = m => {
+  const s = new Date(m.starts_at), e = new Date(m.ends_at);
+  if (m.all_day) return s.toLocaleDateString("en-US", {weekday:"short", month:"short", day:"numeric", timeZone:"UTC"}) + " · all day";
+  return s.toLocaleString("en-US", {weekday:"short", month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}) + " – " + e.toLocaleTimeString("en-US", {hour:"numeric", minute:"2-digit"});
+};
+// target: {deal_id} or {project_id}; ctx: {people:[profile ids], account_id, location, subject, kinds}
+function meetingsBox(target, ctx) {
+  const box = h("div", {class:"meet-box"});
+  const col = target.deal_id ? "deal_id" : "project_id", id = target.deal_id || target.project_id;
+  const load = async () => {
+    const {data, error} = await sb.from("meetings").select("*").eq(col, id).order("starts_at");
+    if (error && /does not exist|schema cache/i.test(error.message || "")) { box.replaceChildren(h("div", {class:"empty"}, "Meetings aren't set up yet (run outlook_schema.sql).")); return; }
+    draw(data || []);
+  };
+  const draw = list => {
+    const now = new Date().toISOString();
+    const up = list.filter(m => m.status === "scheduled" && m.ends_at >= now), past = list.filter(m => !(m.status === "scheduled" && m.ends_at >= now));
+    const row = m => h("li", {class:"meet-row" + (m.status === "cancelled" ? " off" : "")},
+      h("div", {class:"meet-when"}, fmtWhen(m)),
+      h("div", {class:"meet-main"}, h("b", null, m.subject), h("small", null, [meetKind(m.kind), m.location, m.online ? "Teams" : null,
+        plural((m.attendees || []).length, "attendee"), "by " + personName(m.organizer_id), m.status === "cancelled" ? "cancelled" : null].filter(Boolean).join(" · "))),
+      m.status === "scheduled" && m.organizer_id === S.me.id ? h("span", {class:"meet-acts"},
+        h("button", {class:"btn small", onclick:() => openMeeting(target, ctx, m, load)}, "Change"),
+        h("button", {class:"btn small", onclick: async e => {
+          const b = e.currentTarget; if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Click again to cancel"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "Cancel"; }, 3000); return; }
+          b.disabled = true; const r = await fnCall("outlook", {action:"meeting_cancel", id:m.id});
+          if (r.error) { b.disabled = false; toast(r.error); return; }
+          toast("Cancelled. Attendees were told."); load(); }}, "Cancel")) : null);
+    box.replaceChildren(
+      S.outlook === false ? h("p", {class:"warn-t small", style:"margin-top:0"}, "Your Outlook isn't connected yet. Sign out and sign back in with Microsoft, then you can send invites from here.") : null,
+      up.length ? h("ul", {class:"meet-list"}, up.map(row)) : h("div", {class:"empty"}, "Nothing scheduled."),
+      past.length ? h("details", {class:"meet-past"}, h("summary", null, "Past and cancelled (" + past.length + ")"), h("ul", {class:"meet-list"}, past.reverse().map(row))) : null,
+      h("div", {class:"o-actions", style:"padding:10px 0 0"}, h("button", {class:"btn primary small", disabled:S.outlook === false, onclick:() => openMeeting(target, ctx, null, load)}, "+ Schedule")));
+  };
+  box.append(h("div", {class:"empty"}, "Loading meetings…"));
+  load();
+  return box;
+}
+function openMeeting(target, ctx, m, after) {
+  const start0 = m ? new Date(m.starts_at) : (() => { const d = new Date(Date.now() + 864e5); d.setHours(9, 0, 0, 0); return d; })();
+  const mins0 = m ? Math.round((new Date(m.ends_at) - new Date(m.starts_at)) / 6e4) : 60;
+  const kinds = (ctx.kinds || MEET_KINDS.map(k => k[0])).map(k => [k, meetKind(k)]);
+  const d = {kind: m ? m.kind : kinds[0][0], subject: m ? m.subject : "", start: m && m.all_day ? m.starts_at.slice(0, 10) : localInput(start0),
+    minutes: String(mins0 > 0 && mins0 < 24 * 60 ? mins0 : 60), all_day: m ? m.all_day : false, location: m ? (m.location || "") : (ctx.location || ""),
+    notes: m ? (m.notes || "") : "", online: m ? m.online : false, extra: ""};
+  const chosen = new Map((m ? m.attendees : []).map(a => [a.email, a.name]));
+  if (!m) for (const pid of ctx.people || []) { const p = person(pid); if (p && p.email && p.id !== S.me.id) chosen.set(p.email.toLowerCase(), p.full_name || p.email); }
+  const contacts = S.contacts.filter(c => ctx.account_id && c.account_id === ctx.account_id && c.email);
+  const team = activePeople().filter(p => p.email && p.id !== S.me.id).sort((a, b) => (a.full_name || a.email).localeCompare(b.full_name || b.email));
+  const pick = (email, name) => { const k = email.toLowerCase(); return h("label", {class:"field check"}, h("input", {type:"checkbox", checked:chosen.has(k),
+    onchange: e => { e.target.checked ? chosen.set(k, name) : chosen.delete(k); }}), h("span", null, name, h("small", {class:"muted"}, " " + email))); };
+  const when = h("div", {style:"display:contents"});
+  const drawWhen = () => when.replaceChildren(
+    fld(d, "start", d.all_day ? "Date" : "Starts", d.all_day ? "date" : "datetime-local"),
+    d.all_day ? h("div") : fld(d, "minutes", "Length", "select", {blank:false, options:[["30", "30 min"], ["60", "1 hour"], ["90", "1½ hours"], ["120", "2 hours"], ["180", "3 hours"], ["240", "4 hours"], ["480", "All morning / afternoon (8 h)"]]}));
+  if (d.all_day && d.start.length > 10) d.start = d.start.slice(0, 10);
+  drawWhen();
+  const setAllDay = v => { d.all_day = v; allDay.checked = v; if (v) d.start = d.start.slice(0, 10); else if (d.start.length === 10) d.start += "T09:00"; drawWhen(); };
+  const allDay = h("input", {type:"checkbox", checked:d.all_day, onchange: e => setAllDay(e.target.checked)});
+  const body = h("div", {class:"form"},
+    fld(d, "kind", "Type", "select", {options:kinds, blank:false, onchange:() => setAllDay(d.kind === "bid_due") }),
+    fld(d, "subject", "Subject", "text", {placeholder:(ctx.subject || "")}),
+    when,
+    h("label", {class:"field check full"}, allDay, h("span", null, "All day")),
+    fld(d, "location", "Where (site address or room)", "text", {full:true}),
+    m ? null : h("label", {class:"field check full"}, h("input", {type:"checkbox", checked:d.online, onchange: e => { d.online = e.target.checked; }}), h("span", null, "Add a Teams link")),
+    h("div", {class:"field full"}, h("label", null, "Invite"),
+      h("div", {class:"meet-pick"},
+        contacts.length ? h("div", null, h("div", {class:"k"}, "Customer contacts"), contacts.map(c => pick(c.email, c.name))) : null,
+        h("details", {open:!contacts.length}, h("summary", null, "RFIP people (" + team.length + ")"), team.map(p => pick(p.email, p.full_name || p.email))))),
+    fld(d, "extra", "Other emails (comma-separated)", "text", {full:true, placeholder:"e.g. gc.super@builder.com"}),
+    fld(d, "notes", "Notes for the invite", "textarea", {full:true}));
+  openDrawer({title: m ? "Change meeting" : "Schedule a meeting", body, foot:[h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Close"),
+    h("button", {class:"btn primary", onclick: async e => {
+      const subject = (d.subject || "").trim() || (ctx.subject ? meetKind(d.kind) + " – " + ctx.subject : "");
+      if (!subject) { toast("Add a subject."); return; }
+      if (!d.start) { toast("Pick a date."); return; }
+      for (const x of (d.extra || "").split(/[,;\s]+/).filter(Boolean)) { if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(x)) { toast(x + " isn't an email address."); return; } chosen.set(x.toLowerCase(), x); }
+      let start, end;
+      if (d.all_day) { start = d.start.slice(0, 10); end = start; }
+      else { const s0 = new Date(d.start); if (isNaN(+s0)) { toast("Check the start time."); return; } start = s0.toISOString(); end = new Date(+s0 + Number(d.minutes) * 6e4).toISOString(); }
+      const b = e.currentTarget; b.disabled = true; b.textContent = "Sending…";
+      const r = await fnCall("outlook", {action:"meeting_save", id: m ? m.id : undefined, ...target, kind:d.kind, subject, start, end, all_day:d.all_day,
+        time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone, location:(d.location || "").trim(), notes:(d.notes || "").trim(), online:d.online,
+        attendees:[...chosen].map(([email, name]) => ({email, name}))});
+      b.disabled = false; b.textContent = m ? "Send update" : "Send invite";
+      if (r.error) { toast(r.error); if (r.connected === false) S.outlook = false; return; }
+      closeDrawer(); toast(m ? "Updated. Attendees got the change." : "Invite sent from your Outlook" + (chosen.size ? " to " + plural(chosen.size, "person") : "") + ".");
+      if (after) after();
+    }}, m ? "Send update" : "Send invite")]});
+}
+
 
 // ---------------------------------------------------------------- data
 async function fetchAll(table, order) {
@@ -773,7 +912,7 @@ function openDrawer({title, tabs, body, foot, start}) {
   const esc = e => { if (e.key === "Escape") closeDrawer(); };
   document.addEventListener("keydown", esc);
   drawerClose = () => { document.removeEventListener("keydown", esc); layer.replaceChildren(); drawerClose = null; drawerRefresh = null; openNotes = null; };
-  drawerRefresh = () => { if (tabs && !["d", "g", "f"].includes(active)) show(); };
+  drawerRefresh = () => { if (tabs && !["d", "g", "f", "m"].includes(active)) show(); };
   const f = dr.querySelector("input,select,textarea"); if (f) setTimeout(() => f.focus(), 30);
 }
 function closeDrawer() { if (drawerClose) drawerClose(); }
@@ -1169,7 +1308,11 @@ function openDeal(id, startTab, prefill, copiedFrom) {
 
   openDrawer({title: src ? src.name : copiedFrom ? "Copy of " + ((byId(S.deals, copiedFrom) || {}).name || "deal") : "New deal", start:startTab,
     tabs:[["d","Details",details],["g","Go/no-go",gng],["p","Deal team",people],["n","Notes",notes],["t","Tasks",tasks],
-      src && ("sharepoint_status" in src || "sharepoint_url" in src) ? ["f","Files",() => dealFilesTab(byId(S.deals, src.id) || src)] : null].filter(Boolean), foot});
+      src && ("sharepoint_status" in src || "sharepoint_url" in src) ? ["f","Files",() => dealFilesTab(byId(S.deals, src.id) || src)] : null,
+      src ? ["m","Meetings",() => meetingsBox({deal_id:src.id}, {subject:src.name, account_id:src.account_id,
+        people:[src.owner_id, ...S.members.filter(x => x.deal_id === src.id).map(x => x.user_id)],
+        location:[(byId(S.accounts, src.account_id) || {}).city, (byId(S.accounts, src.account_id) || {}).state].filter(Boolean).join(", "),
+        kinds:["site_walk", "pre_bid", "bid_due", "meeting", "handoff"]})] : null].filter(Boolean), foot});
   if (copiedFrom) setTimeout(() => { const n = document.getElementById("f-name"); if (n) { n.focus(); n.select(); } }, 60);
 }
 
@@ -1191,6 +1334,9 @@ function simpleDrawer(table, key, id, defaults, title, fields, extra, moreTabs) 
     btn.disabled = false;
     if (!res) return;
     const i = S[key].findIndex(x => x.id === res.id); if (i >= 0) S[key][i] = res; else S[key].push(res);
+    if (table === "tasks" && res.assignee_id && res.assignee_id !== S.me.id && (!src || src.assignee_id !== res.assignee_id))
+      notify([res.assignee_id], "New task: " + res.title, (S.me.full_name || S.me.email) + " gave you a task" + (res.due ? ", due " + fmtDate(res.due) : "") + ":\n\n" + res.title +
+        (res.deal_id && byId(S.deals, res.deal_id) ? "\nDeal: " + byId(S.deals, res.deal_id).name : "") + (res.notes ? "\n\n" + res.notes : ""), res.deal_id ? "#deal=" + res.deal_id : "");
     if (table === "accounts" && src && src.name !== res.name) sb.functions.invoke("sharepoint", {body:{action:"rename_customer", account_id:res.id, old_name:src.name}});
     if (table === "accounts" && !src) sb.functions.invoke("sharepoint", {body:{action:"customer", account_id:res.id}}).then(({data}) => { if (data && data.url) toast("SharePoint folder ready for " + res.name); });
     render(); closeDrawer();
@@ -1583,7 +1729,7 @@ function exportPanel() {
 if (window.RFIP_OPS_INIT) {
   OPS = window.RFIP_OPS_INIT({h, sb, S, cfg, money, fmtDate, fmtDateTime, daysUntil, todayStr, run, toast, friendly, status, openDrawer, closeDrawer, refreshDrawer,
     fld, deleteButton, render, renderNow, go, person, personName, activePeople, peopleOptions, isAdmin, byId, acctName, dealName, openDeal, emptyState,
-    plural, nullify, metric, loadTable, STAGE, spState, spLoad, spUpload, spDelete});
+    plural, nullify, metric, loadTable, STAGE, spState, spLoad, spUpload, spDelete, notify, meetingsBox});
 }
 
 boot();
