@@ -320,6 +320,9 @@ function meetingsBox(target, ctx) {
       h("div", {class:"meet-when"}, fmtWhen(m)),
       h("div", {class:"meet-main"}, h("b", null, m.subject), h("small", null, [meetKind(m.kind), m.location, m.online ? "Teams" : null,
         plural((m.attendees || []).length, "attendee"), "by " + personName(m.organizer_id), m.status === "cancelled" ? "cancelled" : null].filter(Boolean).join(" · "))),
+      m.status === "scheduled" && (m.join_url || m.web_link) ? h("span", {class:"meet-acts"},
+        m.join_url ? h("a", {class:"btn small primary", href:m.join_url, target:"_blank", rel:"noopener"}, "Join Teams") : null,
+        m.web_link ? h("a", {class:"btn small", href:m.web_link, target:"_blank", rel:"noopener"}, "Outlook") : null) : null,
       m.status === "scheduled" && m.organizer_id === S.me.id ? h("span", {class:"meet-acts"},
         h("button", {class:"btn small", onclick:() => openMeeting(target, ctx, m, load)}, "Change"),
         h("button", {class:"btn small", onclick: async e => {
@@ -344,6 +347,10 @@ function openMeeting(target, ctx, m, after) {
   const d = {kind: m ? m.kind : kinds[0][0], subject: m ? m.subject : "", start: m && m.all_day ? m.starts_at.slice(0, 10) : localInput(start0),
     minutes: String(mins0 > 0 && mins0 < 24 * 60 ? mins0 : 60), all_day: m ? m.all_day : false, location: m ? (m.location || "") : (ctx.location || ""),
     notes: m ? (m.notes || "") : "", online: m ? m.online : false, extra: ""};
+  // Teams is on by default for sit-down meetings, off for things that happen on site (until the person picks for themselves)
+  const IN_PERSON = ["site_walk", "field", "bid_due"];
+  let teamsTouched = !!m;
+  if (!m) d.online = !IN_PERSON.includes(d.kind);
   const chosen = new Map((m ? m.attendees : []).map(a => [a.email, a.name]));
   if (!m) for (const pid of ctx.people || []) { const p = person(pid); if (p && p.email && p.id !== S.me.id) chosen.set(p.email.toLowerCase(), p.full_name || p.email); }
   const contacts = S.contacts.filter(c => ctx.account_id && c.account_id === ctx.account_id && c.email);
@@ -369,13 +376,14 @@ function openMeeting(target, ctx, m, after) {
   drawWhen();
   const setAllDay = v => { d.all_day = v; allDay.checked = v; if (v) d.start = d.start.slice(0, 10); else if (d.start.length === 10) d.start += "T09:00"; drawWhen(); };
   const allDay = h("input", {type:"checkbox", checked:d.all_day, onchange: e => setAllDay(e.target.checked)});
+  const teams = h("input", {type:"checkbox", checked:d.online, onchange: e => { d.online = e.target.checked; teamsTouched = true; }});
   const body = h("div", {class:"form"},
-    fld(d, "kind", "Type", "select", {options:kinds, blank:false, onchange:() => setAllDay(d.kind === "bid_due") }),
+    fld(d, "kind", "Type", "select", {options:kinds, blank:false, onchange:() => { setAllDay(d.kind === "bid_due"); if (!teamsTouched) { d.online = !IN_PERSON.includes(d.kind); teams.checked = d.online; } } }),
     fld(d, "subject", "Subject", "text", {placeholder:(ctx.subject || "")}),
     when,
     h("label", {class:"field check full"}, allDay, h("span", null, "All day")),
     fld(d, "location", "Where (site address or room)", "text", {full:true}),
-    m ? null : h("label", {class:"field check full"}, h("input", {type:"checkbox", checked:d.online, onchange: e => { d.online = e.target.checked; }}), h("span", null, "Add a Teams link")),
+    m && m.online ? h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "This meeting has a Teams link.") : h("label", {class:"field check full"}, teams, h("span", null, m ? "Add a Teams link" : "Teams meeting (adds a join link)")),
     h("div", {class:"field full"}, h("label", null, "Invite"),
       h("div", {class:"meet-pick"},
         contacts.length ? h("div", null, h("div", {class:"k"}, "Customer contacts"), contacts.map(c => pick(c.email, c.name))) : null,

@@ -61,3 +61,6 @@ revoke all on public.meetings from anon;
 
 revoke execute on function public.can_see_meeting(uuid, uuid) from public, anon;
 grant execute on function public.can_see_meeting(uuid, uuid) to authenticated;
+
+-- Teams join link for online meetings (also in outlook_teams.sql)
+alter table public.meetings add column if not exists join_url text;

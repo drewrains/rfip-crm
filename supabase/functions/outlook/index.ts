@@ -137,7 +137,7 @@ Deno.serve(async req => {
         showAs: kind === "bid_due" ? "free" : "busy",
         categories: ["RFIP"],
       };
-      if (body.online && !row?.ms_event_id) { event.isOnlineMeeting = true; event.onlineMeetingProvider = "teamsForBusiness"; }
+      if (body.online && !row?.online) { event.isOnlineMeeting = true; event.onlineMeetingProvider = "teamsForBusiness"; }
       const access = await tokenFor(admin, me.id);
       const r = row?.ms_event_id
         ? await graphAs(access, `/me/events/${encodeURIComponent(row.ms_event_id)}`, {method: "PATCH", body: JSON.stringify(event)})
@@ -146,9 +146,12 @@ Deno.serve(async req => {
       const rec = {deal_id: dealId, project_id: projectId, kind, subject, starts_at: allDay ? String(body.start).slice(0, 10) + "T12:00:00Z" : start.toISOString(),
         ends_at: allDay ? String(body.end).slice(0, 10) + "T12:00:00Z" : end.toISOString(), all_day: allDay, location: body.location || null,
         notes: body.notes || null, online: !!(r.body.isOnlineMeeting || row?.online), attendees, organizer_id: me.id,
-        ms_event_id: r.body.id, web_link: r.body.webLink || null, status: "scheduled", updated_at: new Date().toISOString()};
-      const saved = row ? await admin.from("meetings").update(rec).eq("id", row.id).select().single()
-                        : await admin.from("meetings").insert(rec).select().single();
+        ms_event_id: r.body.id, web_link: r.body.webLink || null, status: "scheduled", updated_at: new Date().toISOString(),
+        join_url: r.body.onlineMeeting?.joinUrl || row?.join_url || null};
+      const put = (x: any) => row ? admin.from("meetings").update(x).eq("id", row.id).select().single() : admin.from("meetings").insert(x).select().single();
+      let saved = await put(rec);
+      // the join_url column comes from outlook_teams.sql; until that runs, save without it
+      if (saved.error && /join_url/.test(saved.error.message || "")) { const {join_url: _, ...rest} = rec; saved = await put(rest); }
       if (saved.error) throw new Error("The invite went out but the app couldn't record it (" + saved.error.message + ")");
       return json({meeting: saved.data, join_url: r.body.onlineMeeting?.joinUrl || null});
     }
