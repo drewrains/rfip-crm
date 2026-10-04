@@ -204,3 +204,9 @@ Demo logins on the test database all use the password `RfipDemo-2026`:
 Other leads and PMs: demo-mcapps, demo-hseabolt, demo-ddell, demo-mhale, demo-treese, demo-acole, demo-rbanks, demo-swhitfield (all `@rfip.com`).
 
 Going live later: run `ops_schema.sql`, `manpower_schema.sql`, `materials_schema.sql`, `docs_updates_schema.sql`, `plan_expenses_customer_schema.sql`, `installs_schema.sql`, `sharepoint_schema.sql`, `sharepoint_files_schema.sql`, `team_access_schema.sql` and `customer_portal_schema.sql` on the live database first, deploy the `sharepoint` Edge Function there with its secrets (the live project needs the Pro plan for file storage), then merge the `ops-test` branch. Don't run `test_seed.sql` on live.
+
+## Parked (decide later)
+
+- **Project numbers.** Today `accept_handoff` makes a placeholder number (YY-NNN). The real number comes from admin and QuickBooks.
+  Plan: when sales submits a handoff, the email to newprojects@rfip.com kicks off setup in QuickBooks. Then either admin types the number into RFIP, or the QuickBooks connection pulls it in automatically.
+  Either way the SharePoint folder gets renamed to match. Needs Gabe for the QuickBooks side.
