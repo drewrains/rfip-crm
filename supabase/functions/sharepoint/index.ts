@@ -1,7 +1,7 @@
 // RFIP — SharePoint folders and files for deals and projects.
 //
-// Every deal gets a folder in the SharePoint site (Sales + Operations sub-folders); its project
-// shares it. Files live only in SharePoint: the app lists them live and uploads straight into
+// Layout: Customers/<Customer>/Customer Info, and Customers/<Customer>/<Deal>/Sales + Operations.
+// Every deal gets a folder under its customer; its project shares it. Files live only in SharePoint: the app lists them live and uploads straight into
 // them, so anything added in SharePoint or Teams shows up in the app and vice versa.
 //
 // Secrets (Supabase → Edge Functions → Secrets):
@@ -10,13 +10,15 @@
 //   MS_CLIENT_SECRET  A client secret value for that app
 //   SP_SITE_URL       e.g. https://rfip.sharepoint.com/sites/SalesCRM
 //   SP_LIBRARY        document library name (optional, default "Documents")
-//   SP_ROOT_FOLDER    folder inside the library for deals (optional, default "Deals")
+//   SP_ROOT_FOLDER    top folder inside the library (optional, default "Customers")
 //
 // Calls (POST, signed-in user's token). Every call checks the caller's rights in the database first;
 // the app's Microsoft identity can reach the whole site, so nothing here trusts the browser.
 //   {action:"status"}                                  is SharePoint connected?
 //   {action:"create", deal_id}                         create (or re-link) one deal's folder
-//   {action:"backfill"}                                admins: folders for every deal without one
+//   {action:"backfill"}                                admins: folders for every deal without one, and move any
+//                                                      existing folders into the Customer/Deal layout
+//   {action:"rename_customer", account_id, old_name}   rename a customer's folder after the account is renamed
 //   {action:"files", deal_id | project_id}             list the files, folder by folder
 //   {action:"upload_start", deal_id | project_id, folder, name, size}
 //                                                      returns a SharePoint upload address the browser sends the file to
@@ -107,8 +109,36 @@ async function sub(drive: string, rootId: string, parent: string, name: string) 
   return await child(drive, p.id, name);
 }
 
+const NO_CUSTOMER = "No Customer";
+async function rootFolder(drive: string) {
+  const root = (await graph(`/drives/${drive}/root`)).body;
+  return await child(drive, root.id, safe(env("SP_ROOT_FOLDER") || "Customers"));
+}
+// Customers/<Customer>/ with its Customer Info folder
+async function customerFolder(drive: string, name: string | null) {
+  const base = await rootFolder(drive);
+  const cust = await child(drive, base.id, safe(name || NO_CUSTOMER));
+  if (name) await child(drive, cust.id, "Customer Info");
+  return cust;
+}
+// moves (and renames) an existing folder so it sits where it should; files and history come along
+async function place(drive: string, itemId: string, parentId: string, name: string) {
+  const cur = await graph(`/drives/${drive}/items/${itemId}`);
+  if (!cur.ok) return null;                                   // gone from SharePoint; make a new one
+  if (cur.body.parentReference?.id === parentId && cur.body.name === name) return cur.body;
+  let target = name;
+  for (let i = 2; i < 20; i++) {
+    const r = await graph(`/drives/${drive}/items/${itemId}`, {method: "PATCH",
+      body: JSON.stringify({name: target, parentReference: {id: parentId}})});
+    if (r.ok) return r.body;
+    if (r.status !== 409) throw new Error(`Couldn't move folder "${cur.body.name}" (${r.body.error?.message || r.status})`);
+    target = `${name} (${i})`;
+  }
+  throw new Error(`Couldn't move folder "${cur.body.name}"`);
+}
+
 async function createFor(admin: any, dealId: string) {
-  const {data: d, error} = await admin.from("deals").select("id, name, created_at, account_id, accounts(name)").eq("id", dealId).single();
+  const {data: d, error} = await admin.from("deals").select("id, name, created_at, account_id, sharepoint_item_id, accounts(name)").eq("id", dealId).single();
   if (error || !d) throw new Error("Deal not found");
   if (!configured()) {
     await admin.from("deals").update({sharepoint_status: "waiting", sharepoint_error: null}).eq("id", dealId);
@@ -116,11 +146,10 @@ async function createFor(admin: any, dealId: string) {
   }
   try {
     const drive = await driveId();
-    const root = (await graph(`/drives/${drive}/root`)).body;
-    const base = await child(drive, root.id, safe(env("SP_ROOT_FOLDER") || "Deals"));
-    const year = await child(drive, base.id, String(new Date(d.created_at).getFullYear()));
-    const name = safe((d.accounts?.name ? d.accounts.name + " – " : "") + d.name);
-    const folder = await child(drive, year.id, name);
+    const cust = await customerFolder(drive, d.accounts?.name || null);
+    const name = safe(d.name);
+    let folder = d.sharepoint_item_id ? await place(drive, d.sharepoint_item_id, cust.id, name) : null;
+    if (!folder) folder = await child(drive, cust.id, name);
     await makeTree(drive, folder.id);
     await admin.from("deals").update({sharepoint_url: folder.webUrl, sharepoint_item_id: folder.id, sharepoint_status: "ready", sharepoint_error: null}).eq("id", dealId);
     await admin.from("projects").update({sharepoint_url: folder.webUrl, sharepoint_item_id: folder.id}).eq("deal_id", dealId);
@@ -130,6 +159,18 @@ async function createFor(admin: any, dealId: string) {
     await admin.from("deals").update({sharepoint_status: "error", sharepoint_error: msg}).eq("id", dealId);
     return {status: "error", error: msg};
   }
+}
+// a project that didn't come from a deal gets its own folder under its customer
+async function standaloneProject(admin: any, p: any) {
+  const drive = await driveId();
+  const {data: acct} = p.account_id ? await admin.from("accounts").select("name").eq("id", p.account_id).maybeSingle() : {data: null};
+  const cust = await customerFolder(drive, acct?.name || null);
+  const name = safe((p.number ? p.number + " – " : "") + (p.name || "Project"));
+  let folder = p.sharepoint_item_id ? await place(drive, p.sharepoint_item_id, cust.id, name) : null;
+  if (!folder) folder = await child(drive, cust.id, name);
+  await makeTree(drive, folder.id);
+  await admin.from("projects").update({sharepoint_item_id: folder.id, sharepoint_url: folder.webUrl}).eq("id", p.id);
+  return folder;
 }
 
 // ---------- whose folder, and may this person use it ----------
@@ -143,7 +184,7 @@ async function dealRoot(admin: any, dealId: string): Promise<Target> {
   return {kind: "deal", id: dealId, rootId: r.item_id, rootUrl: r.url};
 }
 async function projectRoot(admin: any, projectId: string): Promise<Target> {
-  const {data: p} = await admin.from("projects").select("id, number, name, deal_id, created_at, sharepoint_item_id, sharepoint_url").eq("id", projectId).single();
+  const {data: p} = await admin.from("projects").select("id, number, name, deal_id, account_id, created_at, sharepoint_item_id, sharepoint_url").eq("id", projectId).single();
   if (!p) throw new Refused("Project not found", 404);
   if (p.sharepoint_item_id) return {kind: "project", id: projectId, rootId: p.sharepoint_item_id, rootUrl: p.sharepoint_url};
   if (p.deal_id) {
@@ -151,14 +192,7 @@ async function projectRoot(admin: any, projectId: string): Promise<Target> {
     await admin.from("projects").update({sharepoint_item_id: d.rootId, sharepoint_url: d.rootUrl}).eq("id", projectId);
     return {kind: "project", id: projectId, rootId: d.rootId, rootUrl: d.rootUrl};
   }
-  // a project that didn't come from a deal gets its own folder
-  const drive = await driveId();
-  const root = (await graph(`/drives/${drive}/root`)).body;
-  const base = await child(drive, root.id, "Projects");
-  const year = await child(drive, base.id, String(new Date(p.created_at || Date.now()).getFullYear()));
-  const folder = await child(drive, year.id, safe((p.number ? p.number + " – " : "") + (p.name || "Project")));
-  await makeTree(drive, folder.id);
-  await admin.from("projects").update({sharepoint_item_id: folder.id, sharepoint_url: folder.webUrl}).eq("id", projectId);
+  const folder = await standaloneProject(admin, p);
   return {kind: "project", id: projectId, rootId: folder.id, rootUrl: folder.webUrl};
 }
 // the folders this person may read (or write) for this deal or project: [key, label, parent, sub-folder]
@@ -270,10 +304,26 @@ Deno.serve(async req => {
       const {data: isAdmin} = await asUser.rpc("is_admin");
       if (!isAdmin) return json({error: "Admins only"}, 403);
       if (!configured()) return json({error: "SharePoint isn't connected yet"}, 400);
-      const {data: deals} = await admin.from("deals").select("id").or("sharepoint_status.is.null,sharepoint_status.neq.ready").limit(200);
+      const {data: deals} = await admin.from("deals").select("id").limit(1000);
       const out = {ready: 0, error: 0, errors: [] as string[]};
       for (const d of deals || []) { const r: any = await createFor(admin, d.id); if (r.status === "ready") out.ready++; else { out.error++; if (r.error) out.errors.push(r.error); } }
+      const {data: lone} = await admin.from("projects").select("id, number, name, account_id, sharepoint_item_id").is("deal_id", null).not("sharepoint_item_id", "is", null);
+      for (const p of lone || []) { try { await standaloneProject(admin, p); } catch (e) { out.error++; out.errors.push(String((e as Error).message || e)); } }
       return json(out);
+    }
+
+    // an account was renamed in the CRM: rename its customer folder and refresh its deals' links
+    if (body.action === "rename_customer") {
+      if (!configured()) return json({connected: false});
+      const {data: acct} = await asUser.from("accounts").select("id, name").eq("id", body.account_id).maybeSingle();
+      if (!acct || !body.old_name || safe(body.old_name) === safe(acct.name)) return json({renamed: false});
+      const drive = await driveId();
+      const base = await rootFolder(drive);
+      const old = await graph(`/drives/${drive}/items/${base.id}:/${encodeURIComponent(safe(body.old_name))}`);
+      if (old.ok && old.body.folder) await place(drive, old.body.id, base.id, safe(acct.name));
+      const {data: deals} = await admin.from("deals").select("id").eq("account_id", acct.id).not("sharepoint_item_id", "is", null);
+      for (const d of deals || []) await createFor(admin, d.id);
+      return json({renamed: true});
     }
 
     if (["files", "upload_start", "upload_finish", "delete"].includes(body.action) && !configured()) return json({connected: false});

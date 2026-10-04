@@ -1160,7 +1160,9 @@ function openDeal(id, startTab, prefill, copiedFrom) {
         {deal_id:copiedFrom, author_id:S.me.id, body:"Copied to " + res.name + "."}]);
     }
     render(); closeDrawer();
-    if (!src && "sharepoint_status" in res) sharepointFolder(res.id, true).then(() => render());
+    // new deal: make its folder; renamed or moved to another customer: move the folder to match
+    if ("sharepoint_status" in res && (!src || (src.sharepoint_item_id && (src.name !== res.name || src.account_id !== res.account_id))))
+      sharepointFolder(res.id, true).then(() => render());
     if (!src) setTimeout(() => openDeal(res.id, "p"), 200);
   }}, src ? "Save" : copiedFrom ? "Create copy" : "Create deal"));
   if (src) foot.splice(foot.length - 2, 0, h("button", {class:"btn", title:"Start a new deal for repeat work with this customer", onclick:() => copyDeal(src)}, "Copy"));
@@ -1189,6 +1191,7 @@ function simpleDrawer(table, key, id, defaults, title, fields, extra, moreTabs) 
     btn.disabled = false;
     if (!res) return;
     const i = S[key].findIndex(x => x.id === res.id); if (i >= 0) S[key][i] = res; else S[key].push(res);
+    if (table === "accounts" && src && src.name !== res.name) sb.functions.invoke("sharepoint", {body:{action:"rename_customer", account_id:res.id, old_name:src.name}});
     render(); closeDrawer();
   }}, src ? "Save" : "Add"));
   const dTitle = src ? (src.name || src.title) : "New " + title.toLowerCase();
@@ -1322,7 +1325,7 @@ function viewTeam() {
   const wrap = h("div");
   const spMissing = S.deals.filter(d => "sharepoint_status" in d && d.sharepoint_status !== "ready").length;
   wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Team"),
-      isAdmin() && spMissing ? h("button", {class:"btn small", title:"Creates the Sales and Operations folders in SharePoint for every deal that doesn't have one yet", onclick: async e => {
+      isAdmin() && spMissing ? h("button", {class:"btn small", title:"Creates SharePoint folders for every deal that doesn't have one yet and moves existing ones into Customer › Deal folders", onclick: async e => {
         const btn = e.currentTarget; btn.disabled = true; btn.textContent = "Creating folders…";
         const {data, error} = await sb.functions.invoke("sharepoint", {body:{action:"backfill"}});
         btn.disabled = false; btn.textContent = "Create missing SharePoint folders (" + spMissing + ")";
