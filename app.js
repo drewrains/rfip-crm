@@ -1749,7 +1749,7 @@ function exportPanel() {
 if (window.RFIP_OPS_INIT) {
   OPS = window.RFIP_OPS_INIT({h, sb, S, cfg, money, fmtDate, fmtDateTime, daysUntil, todayStr, run, toast, friendly, status, openDrawer, closeDrawer, refreshDrawer,
     fld, deleteButton, render, renderNow, go, person, personName, activePeople, peopleOptions, isAdmin, byId, acctName, dealName, openDeal, emptyState,
-    plural, nullify, metric, loadTable, STAGE, spState, spLoad, spUpload, spDelete, notify, meetingsBox});
+    plural, nullify, metric, loadTable, STAGE, spState, spLoad, spUpload, spDelete, notify, meetingsBox, fnCall});
 }
 
 boot();

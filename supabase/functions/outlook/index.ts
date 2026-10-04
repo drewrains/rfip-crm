@@ -15,6 +15,7 @@
 //          location, notes, online, attendees:[{email, name}]}   create or update an Outlook event + invite
 //   {action:"meeting_cancel", id, comment?}  cancel the event and tell attendees (organizer or admin)
 //   {action:"notify", to:[profile ids], subject, text, link?}    alert email to RFIP people
+//   {action:"new_project", project_id}       new-project setup email to NEW_PROJECTS_EMAIL (default newprojects@rfip.com)
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const env = (k: string) => (Deno.env.get(k) || "").trim();
@@ -194,6 +195,53 @@ Deno.serve(async req => {
         toRecipients: to.map((p: any) => ({emailAddress: {address: p.email, name: p.full_name || p.email}}))}})});
       if (!r.ok) throw new Error("Outlook didn't send it (" + (r.body.error?.message || r.status) + ")");
       return json({sent: to.length});
+    }
+
+    if (body.action === "new_project") {
+      // a won deal just became a project: tell the office mailbox so it can be set up internally
+      const pid = String(body.project_id || "");
+      const {data: ok} = await asUser.rpc("ops_can_see", {p: pid});
+      if (!ok) throw new Refused("That project isn't available to you");
+      const {data: p} = await admin.from("projects").select("*, accounts(name)").eq("id", pid).maybeSingle();
+      if (!p) throw new Refused("That project is gone", 404);
+      const {data: ho} = await admin.from("handoffs").select("packet, submitted_by").eq("project_id", pid).maybeSingle();
+      const {data: deal} = p.deal_id ? await admin.from("deals").select("name, owner_id").eq("id", p.deal_id).maybeSingle() : {data: null};
+      const ids = [p.pm_id, deal?.owner_id, p.sold_by, ho?.submitted_by].filter(Boolean);
+      const {data: ppl} = ids.length ? await admin.from("profiles").select("id, full_name, email").in("id", ids) : {data: []};
+      const nm = (id: string) => { const x = (ppl || []).find((q: any) => q.id === id); return x ? (x.full_name || x.email) : ""; };
+      const pk: any = ho?.packet || {};
+      const usd = (v: any) => v == null || v === "" ? "" : Number(v).toLocaleString("en-US", {style: "currency", currency: "USD", maximumFractionDigits: 0});
+      const yes = (v: any) => v ? "Yes" : "No";
+      const rows: [string, string][] = [
+        ["Project", [p.number, p.name].filter(Boolean).join(" ")], ["Customer", p.accounts?.name || ""], ["Department", p.department || ""],
+        ["Project manager", nm(p.pm_id)], ["Sold by", nm(deal?.owner_id || p.sold_by)], ["Contract value", usd(p.contract_value ?? pk.contract_value)],
+        ["Signed contract / PO", yes(pk.contract_signed)], ["Schedule of values", yes(pk.sov_attached)],
+        ["Retainage", p.retainage_pct != null ? p.retainage_pct + "%" : (pk.retainage_pct != null && pk.retainage_pct !== "" ? pk.retainage_pct + "%" : "")],
+        ["Pay app due", (p.pay_app_day || pk.pay_app_day) ? "Day " + (p.pay_app_day || pk.pay_app_day) + " of the month" : ""],
+        ["Billing terms", pk.billing_terms || ""], ["Bonds and insurance", pk.bonds_insurance || ""],
+        ["Planned start", p.start_date || pk.start_date || ""], ["Substantial completion", p.end_date || pk.end_date || ""],
+        ["Customer PM", pk.customer_pm || ""], ["Site contact", pk.site_contact || ""], ["Billing contact", pk.billing_contact || ""], ["GC or prime", pk.gc_name || ""],
+        ["Labor hours", pk.labor_hours != null ? String(pk.labor_hours) : ""], ["Material", usd(pk.material)], ["Subcontract", usd(pk.subcontract)], ["Equipment", usd(pk.equipment)],
+        ["Scope", pk.scope || ""], ["Exclusions", pk.exclusions || ""],
+      ];
+      const link = appLink(req, "#project=" + pid);
+      const td = "padding:5px 12px 5px 0;vertical-align:top;border-bottom:1px solid #e6e9ee";
+      const html = `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#16202b">
+        <p>${esc(me.full_name || me.email)} accepted the handoff, so this won deal is now a project and needs internal setup.</p>
+        <table style="border-collapse:collapse;font-size:14px">${rows.filter(r => r[1]).map(([k, v]) =>
+          `<tr><td style="${td};color:#5b6876;white-space:nowrap">${esc(k)}</td><td style="${td}">${esc(v).replace(/\n/g, "<br>")}</td></tr>`).join("")}</table>
+        <p>${link ? `<a href="${esc(link)}" style="background:#c8102e;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;display:inline-block">Open in RFIP</a>` : ""}
+        ${p.sharepoint_url ? ` &nbsp;<a href="${esc(p.sharepoint_url)}">Project files</a>` : ""}</p>
+        <p style="color:#5b6876;font-size:12px">Sent from RFIP by ${esc(me.full_name || me.email)}.</p></div>`;
+      const to = env("NEW_PROJECTS_EMAIL") || "newprojects@rfip.com";
+      const {data: hasToken} = await admin.from("ms_tokens").select("profile_id").eq("profile_id", me.id).maybeSingle();
+      if (!hasToken) return json({sent: 0, connected: false, to});
+      const access = await tokenFor(admin, me.id);
+      const r = await graphAs(access, "/me/sendMail", {method: "POST", body: JSON.stringify({saveToSentItems: true, message: {
+        subject: "New project: " + [p.number, p.name].filter(Boolean).join(" ") + (p.accounts?.name ? " – " + p.accounts.name : ""),
+        body: {contentType: "HTML", content: html}, toRecipients: [{emailAddress: {address: to}}]}})});
+      if (!r.ok) throw new Error("Outlook didn't send it (" + (r.body.error?.message || r.status) + ")");
+      return json({sent: 1, to});
     }
 
     return json({error: "Unknown action"}, 400);

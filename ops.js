@@ -1109,7 +1109,11 @@ function openHandoff(id) {
         btn.disabled = false;
         if (pid) { await load(); render(); closeDrawer(); if (typeof pid === "string") openProject(pid);
           tell([d.owner_id, ho.submitted_by, draft.pm_id], "Handoff accepted: " + d.name, (S.me.full_name || S.me.email) + " accepted the handoff for " + d.name + ". " +
-            personName(draft.pm_id) + " is the project manager.", typeof pid === "string" ? "#project=" + pid : "#deal=" + d.id); }
+            personName(draft.pm_id) + " is the project manager.", typeof pid === "string" ? "#project=" + pid : "#deal=" + d.id);
+          if (typeof pid === "string" && core.fnCall) core.fnCall("outlook", {action:"new_project", project_id:pid}).then(r => {
+            if (r && r.sent) toast("Sent to " + r.to + " for setup.");
+            else toast("Couldn't email " + ((r && r.to) || "newprojects@rfip.com") + (r && r.connected === false ? ": sign out and back in with Microsoft so RFIP can send from your Outlook." : (r && r.error ? ": " + r.error : ".")));
+          }); }
       }}, "Accept and create project"));
     }
   } else foot.push(h("button", {class:"btn", onclick:() => closeDrawer()}, "Close"));
