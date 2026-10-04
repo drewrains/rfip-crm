@@ -143,6 +143,11 @@ Deno.serve(async req => {
         ? await graphAs(access, `/me/events/${encodeURIComponent(row.ms_event_id)}`, {method: "PATCH", body: JSON.stringify(event)})
         : await graphAs(access, "/me/events", {method: "POST", body: JSON.stringify(event)});
       if (!r.ok) throw new Error("Outlook didn't take the meeting (" + (r.body.error?.message || r.status) + ")");
+      // an update doesn't always echo the Teams link back, so look it up when it's missing
+      if ((r.body.isOnlineMeeting || row?.online) && !r.body.onlineMeeting?.joinUrl && r.body.id) {
+        const g = await graphAs(access, `/me/events/${encodeURIComponent(r.body.id)}?$select=onlineMeeting`);
+        if (g.ok && g.body.onlineMeeting) r.body.onlineMeeting = g.body.onlineMeeting;
+      }
       const rec = {deal_id: dealId, project_id: projectId, kind, subject, starts_at: allDay ? String(body.start).slice(0, 10) + "T12:00:00Z" : start.toISOString(),
         ends_at: allDay ? String(body.end).slice(0, 10) + "T12:00:00Z" : end.toISOString(), all_day: allDay, location: body.location || null,
         notes: body.notes || null, online: !!(r.body.isOnlineMeeting || row?.online), attendees, organizer_id: me.id,
