@@ -403,7 +403,10 @@ create policy contacts_update on public.contacts for update to authenticated usi
 create policy contacts_delete on public.contacts for delete to authenticated using (public.is_admin() or (public.is_active_user() and created_by = auth.uid()));
 
 -- deals: owner, shared-with people, and admins
-create policy deals_read   on public.deals for select to authenticated using (public.can_see_deal(id));
+-- checks the row's own columns (not can_see_deal(id)) so a rep can read back a deal they just created
+create policy deals_read   on public.deals for select to authenticated using (
+  public.is_admin() or (public.is_active_user() and (owner_id = auth.uid() or public.reports_to_me(owner_id)
+    or exists (select 1 from public.deal_members m where m.deal_id = deals.id and (m.user_id = auth.uid() or public.reports_to_me(m.user_id))))));
 create policy deals_insert on public.deals for insert to authenticated
   with check (public.is_admin() or (public.is_active_user() and (owner_id = auth.uid() or public.reports_to_me(owner_id))));
 create policy deals_update on public.deals for update to authenticated
