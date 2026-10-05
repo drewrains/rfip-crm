@@ -198,7 +198,7 @@ function authErrorFromUrl() {
   const d = p.get("error_description") || p.get("error");
   if (!d) return null;
   history.replaceState(null, "", location.pathname);
-  if (/database error saving new user|limited to rfip/i.test(d)) return "Sign-in is limited to RFIP Microsoft accounts.";
+  if (/database error saving new user|limited to rfip|not set up/i.test(d)) return "You're not set up in RFIP yet. Ask an admin to add you, then sign in again.";
   return "Sign-in didn't complete: " + d.replace(/\+/g, " ");
 }
 $("#msLogin").addEventListener("click", async () => {
