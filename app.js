@@ -206,6 +206,51 @@ $("#msLogin").addEventListener("click", async () => {
   const {error} = await sb.auth.signInWithOAuth({provider:"azure", options:{scopes:"email offline_access Mail.Send Calendars.ReadWrite", redirectTo: location.origin + location.pathname}});
   if (error) showSignin(friendly(error));
 });
+// ---------------------------------------------------------------- beta feedback
+// "Feedback" in the top bar: saved to the feedback table (admins see it on the Team page) and emailed to cfg.feedbackTo.
+const FB_KINDS = [["problem", "Something's broken or wrong"], ["idea", "Idea or change request"], ["question", "Question"]];
+$("#feedbackBtn").addEventListener("click", () => {
+  const where = (VIEW_LABEL() || S.view || "") + (location.hash ? " " + location.hash : "");
+  const d = {kind:"problem", message:""};
+  openDrawer({title:"Send feedback", body:h("div", {class:"form"},
+      fld(d, "kind", "What is it?", "select", {options:FB_KINDS, blank:false}),
+      fld(d, "message", "Tell us what happened or what you'd like", "textarea", {full:true, placeholder:"What you clicked, what you expected, what happened instead"}),
+      h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "We'll include the page you're on" + (where ? " (" + where + ")" : "") + ". Thanks for helping shape RFIP.")),
+    foot:[h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel"), h("button", {class:"btn primary", onclick: async e => {
+      const msg = (d.message || "").trim(); if (!msg) { toast("Add a note first."); return; }
+      const b = e.currentTarget; b.disabled = true;
+      const res = await run(sb.from("feedback").insert({kind:d.kind, message:msg, page:where.slice(0, 300), browser:navigator.userAgent.slice(0, 300), author_id:S.me.id}).select().single());
+      b.disabled = false;
+      if (!res) return;
+      closeDrawer(); toast("Thanks, it's in.");
+      const to = S.profiles.filter(p => (cfg.feedbackTo || []).includes((p.email || "").toLowerCase())).map(p => p.id);
+      notify(to, "RFIP feedback: " + (FB_KINDS.find(k => k[0] === d.kind) || [0, "Feedback"])[1], (S.me.full_name || S.me.email) + " sent feedback from " + (where || "the app") + ":\n\n" + msg, "");
+    }}, "Send")]});
+});
+const VIEW_LABEL = () => { const t = document.querySelector("#tabs [aria-current=page], #tabs .on, #tabs [aria-selected=true]"); return t ? t.textContent.trim() : ""; };
+const FB_ST = [["new", "New"], ["doing", "Working on it"], ["done", "Done"], ["wont", "Not doing"]];
+function feedbackPanel() {
+  const box = h("div", {class:"panel", style:"margin-top:16px"}, h("div", {class:"empty"}, "Loading feedback…"));
+  (async () => {
+    const {data, error} = await sb.from("feedback").select("*").order("created_at", {ascending:false}).limit(200);
+    if (error) { box.replaceChildren(h("div", {class:"empty"}, /does not exist|schema cache/i.test(error.message || "") ? "Feedback isn't set up yet (run beta_prep.sql)." : friendly(error))); return; }
+    const open = (data || []).filter(f => f.status === "new" || f.status === "doing").length;
+    box.replaceChildren(h("div", {class:"section-h", style:"margin-top:0"}, "Beta feedback · " + plural(open, "open item")),
+      data && data.length ? h("div", {class:"tbl-wrap flat"}, h("table", null,
+        h("thead", null, h("tr", null, h("th", null, "When"), h("th", null, "From"), h("th", null, "Type"), h("th", null, "Feedback"), h("th", null, "Page"), h("th", null, "Status"))),
+        h("tbody", null, data.map(f => h("tr", null,
+          h("td", {class:"mono", style:"white-space:nowrap"}, fmtDate(f.created_at.slice(0, 10))),
+          h("td", null, personName(f.author_id)),
+          h("td", null, (FB_KINDS.find(k => k[0] === f.kind) || [0, f.kind])[1].split(" ")[0]),
+          h("td", {style:"white-space:pre-wrap;min-width:260px"}, f.message),
+          h("td", {class:"muted small"}, f.page || ""),
+          h("td", null, h("select", {class:"inp", "aria-label":"Status", onchange: async e => {
+            const v = e.target.value; const {error:er} = await sb.from("feedback").update({status:v, updated_at:new Date().toISOString()}).eq("id", f.id);
+            if (er) toast(friendly(er)); else toast("Updated");
+          }}, FB_ST.map(([v, t]) => h("option", {value:v, selected:f.status === v}, t))))))))) : h("div", {class:"empty"}, "No feedback yet."));
+  })();
+  return box;
+}
 $("#signOut").addEventListener("click", async () => { await sb.auth.signOut(); location.reload(); });
 
 async function boot() {
@@ -239,7 +284,7 @@ async function start(session) {
   S.me = me;
   if (me.sales_access === false) S.section = "ops";
   $("#meName").textContent = me.full_name || me.email;
-  $("#changePw").hidden = !(session.user.app_metadata && (session.user.app_metadata.providers || [session.user.app_metadata.provider]).includes("email"));
+  $("#changePw").hidden = cfg.passwordLogin === false || !(session.user.app_metadata && (session.user.app_metadata.providers || [session.user.app_metadata.provider]).includes("email"));
   $("#signin").hidden = true; $("#app").hidden = false;
   // make sure the stored session is in place before the rest of the data loads
   for (let i = 0; i < 10; i++) {
@@ -1086,8 +1131,10 @@ const spIcon = (name, mime) => { const m = (mime || "") + " " + (name || "");
 const spSize = b => !b ? "" : b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB";
 
 // the deal drawer's Files tab: the Sales folders, live from SharePoint
-function dealFilesTab(deal) {
-  const key = "deal:" + deal.id, target = {deal_id:deal.id};
+const dealFilesTab = deal => spFilesBox("deal:" + deal.id, {deal_id:deal.id}, canManage(deal), "/Sales");
+// an account's Files tab: its Customer Info folder (W-9s, MSAs, COIs, site lists)
+const accountFilesTab = acct => spFilesBox("account:" + acct.id, {account_id:acct.id}, isAdmin() || acct.created_by === S.me.id, "");
+function spFilesBox(key, target, canDelete, openSuffix) {
   const box = h("div", {class:"sp-files"});
   let cur = "";
   const draw = () => {
@@ -1100,14 +1147,14 @@ function dealFilesTab(deal) {
     const folders = st.data.folders;
     const all = folders.flatMap(f => f.files.map(x => ({...x, fkey:f.key, flabel:f.label})));
     const shown = all.filter(x => !cur || x.fkey === cur).sort((a, b) => (b.modified || "").localeCompare(a.modified || ""));
-    const tabs = h("div", {class:"doc-tabs", role:"tablist"},
+    const tabs = folders.length < 2 ? null : h("div", {class:"doc-tabs", role:"tablist"},
       h("button", {role:"tab", "aria-selected":String(!cur), onclick:() => { cur = ""; draw(); }}, "All ", h("small", null, String(all.length))),
       folders.map(f => h("button", {role:"tab", "aria-selected":String(cur === f.key), class:f.files.length ? "" : "empty", onclick:() => { cur = f.key; draw(); }}, f.label, " ", h("small", null, String(f.files.length)))));
     const list = shown.length ? h("ul", {class:"doc-list"}, shown.map(x => h("li", null,
       h("span", {class:"doc-ic " + (x.folder ? "file" : spIcon(x.name, x.mime).toLowerCase())}, x.folder ? "DIR" : spIcon(x.name, x.mime)),
       h("div", {class:"doc-main"}, h("a", {class:"doc-name", href:x.url, target:"_blank", rel:"noopener"}, x.name),
         h("small", null, [!cur ? x.flabel : null, spSize(x.size), x.by, x.modified ? fmtDate(x.modified.slice(0, 10)) : null].filter(Boolean).join(" · "))),
-      canManage(deal) && !x.folder ? h("button", {class:"btn small", "aria-label":"Delete " + x.name, onclick: async e => {
+      canDelete && !x.folder ? h("button", {class:"btn small", "aria-label":"Delete " + x.name, onclick: async e => {
         const b = e.currentTarget; if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Click again to delete"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "Delete"; }, 3000); return; }
         b.disabled = true; const r = await spDelete(target, x.id);
         if (r.error) { b.disabled = false; toast(r.error); return; }
@@ -1119,7 +1166,7 @@ function dealFilesTab(deal) {
     const input = h("input", {type:"file", multiple:true, class:"inp", id:"sp-files"});
     const status = h("span", {class:"muted small"});
     const up = h("div", {class:"form sp-up"},
-      fld(d, "folder", "Upload to", "select", {options:folders.map(f => [f.key, f.label]), blank:false}),
+      folders.length > 1 ? fld(d, "folder", "Upload to", "select", {options:folders.map(f => [f.key, f.label]), blank:false}) : null,
       h("div", {class:"field"}, h("label", {for:"sp-files"}, "Files (up to 50 MB each)"), input),
       h("div", {class:"field full sp-acts"}, h("button", {class:"btn primary small", onclick: async e => {
         const files = [...input.files]; if (!files.length) { toast("Choose one or more files."); return; }
@@ -1138,7 +1185,7 @@ function dealFilesTab(deal) {
       h("div", {class:"sp-head"},
         h("span", {class:"muted small"}, "Synced with SharePoint" + (st.loading ? " · refreshing…" : "")),
         h("span", {class:"sp-acts"}, h("button", {class:"btn small", onclick:() => { spLoad(key, target, true).then(draw); draw(); }}, "Refresh"),
-          st.data.url ? h("a", {class:"btn small", href:st.data.url + "/Sales", target:"_blank", rel:"noopener"}, "Open in SharePoint") : null)),
+          (folders.length === 1 ? folders[0].url : st.data.url) ? h("a", {class:"btn small", href:folders.length === 1 ? folders[0].url : st.data.url + openSuffix, target:"_blank", rel:"noopener"}, "Open in SharePoint") : null)),
       st.error ? h("p", {class:"bad-t small"}, st.error) : null,
       tabs, list, h("hr", {class:"sp-sep"}), up].filter(Boolean));
   };
@@ -1385,7 +1432,7 @@ function openAccount(id) {
       cs.length ? cs.map(c => h("div", {class:"list-row"}, h("button", {class:"linkish", onclick:() => openContact(c.id)}, c.name), h("span", {class:"muted"}, c.title || ""))) : h("div", {class:"muted"}, "None."),
       h("div", {style:"margin-top:10px"}, h("button", {class:"btn small", onclick:() => openContact(null, {account_id:src.id})}, "+ Contact at this account")),
       customerFolderBox(src), portalBox(src)); },
-  src => [["h", "History", () => accountHistory(src)]]);
+  src => [["f", "Files", () => accountFilesTab(byId(S.accounts, src.id) || src)], ["h", "History", () => accountHistory(src)]]);
 }
 // ---------------------------------------------------------------- customer's SharePoint folder
 // Customers/<Customer>/ with Customer Info; made when the account is saved (or here, for older accounts).
@@ -1551,6 +1598,7 @@ function viewTeam() {
         }}, "Save")));
     })))));
   wrap.append(targetsPanel());
+  if (isAdmin()) wrap.append(feedbackPanel());
   return wrap;
 }
 function targetsPanel() {

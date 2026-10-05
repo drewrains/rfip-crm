@@ -18,9 +18,12 @@
   const isLive = LIVE_HOSTS.includes(location.hostname);
   window.RFIP_CONFIG = Object.assign({}, isLive ? live : test, {
     environment: isLive ? "live" : "test",
-    // Turn on once Microsoft sign-in is set up in Entra ID and Supabase (README step 2–3).
-    microsoftLogin: false,
-    // Allow email + password sign-in for accounts an admin creates in Supabase.
-    passwordLogin: true,
+    // Everyone signs in with their RFIP Microsoft account, so Microsoft's two-factor protects RFIP too.
+    microsoftLogin: true,
+    // Email + password sign-in is off. To turn it back on (e.g. if Microsoft is down), set this to true
+    // and turn the Email provider back on in Supabase → Authentication → Sign In / Providers.
+    passwordLogin: false,
+    // Who gets the "Feedback" button's emails during the beta.
+    feedbackTo: ["drains@rfip.com"],
   });
 })();

@@ -20,7 +20,7 @@
 //                                                      existing folders into the Customer/Deal layout
 //   {action:"customer", account_id}                    make (or find) a customer's folder and its Customer Info folder
 //   {action:"rename_customer", account_id, old_name}   rename a customer's folder after the account is renamed
-//   {action:"files", deal_id | project_id}             list the files, folder by folder
+//   {action:"files", deal_id | project_id | account_id}  list the files, folder by folder (an account has just Customer Info)
 //   {action:"upload_start", deal_id | project_id, folder, name, size}
 //                                                      returns a SharePoint upload address the browser sends the file to
 //   {action:"upload_finish", deal_id | project_id, folder, item_id, note?, closeout_item_id?}
@@ -104,8 +104,9 @@ async function makeTree(drive: string, folderId: string) {
 }
 // a sub-folder like "Sales/05 Proposal" under a deal folder, made if someone deleted it in SharePoint
 async function sub(drive: string, rootId: string, parent: string, name: string) {
-  const got = await graph(`/drives/${drive}/items/${rootId}:/${enc(parent + "/" + name)}`);
+  const got = await graph(`/drives/${drive}/items/${rootId}:/${enc(parent ? parent + "/" + name : name)}`);
   if (got.ok && got.body.folder) return got.body;
+  if (!parent) return await child(drive, rootId, name);
   const p = await child(drive, rootId, parent);
   return await child(drive, p.id, name);
 }
@@ -175,7 +176,14 @@ async function standaloneProject(admin: any, p: any) {
 }
 
 // ---------- whose folder, and may this person use it ----------
-type Target = {kind: "deal" | "project", id: string, rootId: string, rootUrl: string};
+type Target = {kind: "deal" | "project" | "account", id: string, rootId: string, rootUrl: string};
+// a customer account's folder: Customers/<Customer>/ (files go in its Customer Info folder)
+async function accountRoot(asUser: any, accountId: string): Promise<Target> {
+  const {data: a} = await asUser.from("accounts").select("id, name").eq("id", accountId).maybeSingle();
+  if (!a) throw new Refused("That account isn't available to you", 404);
+  const cust = await customerFolder(await driveId(), a.name);
+  return {kind: "account", id: accountId, rootId: cust.id, rootUrl: cust.webUrl};
+}
 async function dealRoot(admin: any, dealId: string): Promise<Target> {
   const {data: d} = await admin.from("deals").select("id, sharepoint_item_id, sharepoint_url, sharepoint_status").eq("id", dealId).single();
   if (!d) throw new Refused("Deal not found", 404);
@@ -198,6 +206,11 @@ async function projectRoot(admin: any, projectId: string): Promise<Target> {
 }
 // the folders this person may read (or write) for this deal or project: [key, label, parent, sub-folder]
 async function allowedFolders(asUser: any, t: {kind: string, id: string}, action: "read" | "write") {
+  if (t.kind === "account") {
+    const {data: a} = await asUser.from("accounts").select("id").eq("id", t.id).maybeSingle();
+    if (!a) throw new Refused("That account isn't available to you");
+    return [["info", "Customer Info", "", "Customer Info"]];
+  }
   if (t.kind === "deal") {
     const {data: ok} = await asUser.rpc("can_see_deal", {d: t.id});
     if (!ok) throw new Refused("That deal isn't available to you");
@@ -234,12 +247,14 @@ async function listFiles(admin: any, asUser: any, t: Target) {
   return {connected: true, url: t.rootUrl, folders: out};
 }
 // checks the person may write to that folder before anything is created, then finds (or makes) it
+const kindOf = (b: any) => b.project_id ? "project" : b.account_id ? "account" : "deal";
+const idOf = (b: any) => b.project_id || b.account_id || b.deal_id;
 async function writeTarget(admin: any, asUser: any, b: any) {
-  const kind = b.project_id ? "project" : "deal", id = b.project_id || b.deal_id;
-  if (!id) throw new Refused("deal_id or project_id is required", 400);
+  const kind = kindOf(b), id = idOf(b);
+  if (!id) throw new Refused("deal_id, project_id or account_id is required", 400);
   const f = (await allowedFolders(asUser, {kind, id}, "write")).find(x => x[0] === b.folder);
   if (!f) throw new Refused("You can't upload to that folder");
-  const t = kind === "project" ? await projectRoot(admin, id) : await dealRoot(admin, id);
+  const t = kind === "project" ? await projectRoot(admin, id) : kind === "account" ? await accountRoot(asUser, id) : await dealRoot(admin, id);
   return {t, folder: await sub(await driveId(), t.rootId, f[2], f[3])};
 }
 async function uploadSession(drive: string, folderId: string, name: string) {
@@ -271,7 +286,8 @@ Deno.serve(async req => {
   const {data: u} = await asUser.auth.getUser(auth.replace(/^Bearer\s+/i, ""));
   if (!u?.user) return json({error: "Sign in first"}, 401);
   const admin = createClient(env("SUPABASE_URL"), env("SUPABASE_SERVICE_ROLE_KEY"), {auth: {persistSession: false}});
-  const target = (b: any) => b.project_id ? projectRoot(admin, b.project_id) : b.deal_id ? dealRoot(admin, b.deal_id) : Promise.reject(new Refused("deal_id or project_id is required", 400));
+  const target = (b: any) => b.project_id ? projectRoot(admin, b.project_id) : b.account_id ? accountRoot(asUser, b.account_id)
+    : b.deal_id ? dealRoot(admin, b.deal_id) : Promise.reject(new Refused("deal_id, project_id or account_id is required", 400));
 
   try {
     // fallback upload: the file itself is the body, the details ride in a header
@@ -342,6 +358,7 @@ Deno.serve(async req => {
 
     if (body.action === "files") {
       if (body.project_id) await allowedFolders(asUser, {kind: "project", id: body.project_id}, "read"); // check before creating anything
+      else if (body.account_id) await allowedFolders(asUser, {kind: "account", id: body.account_id}, "read");
       else if (body.deal_id) await allowedFolders(asUser, {kind: "deal", id: body.deal_id}, "read");
       return json(await listFiles(admin, asUser, await target(body)));
     }
@@ -359,7 +376,7 @@ Deno.serve(async req => {
 
     if (body.action === "delete") {
       if (!body.item_id) throw new Refused("item_id is required", 400);
-      const folders = await allowedFolders(asUser, {kind: body.project_id ? "project" : "deal", id: body.project_id || body.deal_id}, "read");
+      const folders = await allowedFolders(asUser, {kind: kindOf(body), id: idOf(body)}, "read");
       const t = await target(body);
       const drive = await driveId();
       const got = await graph(`/drives/${drive}/items/${body.item_id}`);
@@ -368,7 +385,11 @@ Deno.serve(async req => {
       const subs = await Promise.all(folders.map(f => sub(drive, t.rootId, f[2], f[3])));
       const inFolder = subs.some(x => x.id === got.body.parentReference?.id);
       if (!inFolder) throw new Refused("That file isn't in one of this record's folders");
-      if (t.kind === "deal") {
+      if (t.kind === "account") {
+        const {data: a} = await admin.from("accounts").select("created_by").eq("id", t.id).maybeSingle();
+        const {data: adm} = await asUser.rpc("is_admin");
+        if (!adm && !(a && a.created_by === u.user.id)) throw new Refused("Only an admin or the person who added this account can delete its files");
+      } else if (t.kind === "deal") {
         const {data: ok} = await asUser.rpc("can_manage_deal", {d: t.id});
         if (!ok) throw new Refused("Only the deal's account manager or an admin can delete its files");
       } else {
