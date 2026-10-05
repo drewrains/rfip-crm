@@ -520,3 +520,15 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
 .meet-pick summary{cursor:pointer;font-size:13px;color:var(--muted)}
 .meet-pick .field.check{margin:2px 0}
 @media (max-width:640px){.meet-row{grid-template-columns:1fr}}
+
+/* file preview inside RFIP */
+.viewer{position:fixed;inset:0;z-index:300;background:rgba(15,20,28,.62);display:flex;align-items:center;justify-content:center;padding:24px}
+.viewer-box{background:var(--panel);color:var(--fg);border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.35);width:min(1200px,100%);height:min(900px,100%);display:flex;flex-direction:column;overflow:hidden}
+.viewer-head{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line)}
+.viewer-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.viewer-acts{display:flex;gap:8px}
+.viewer-stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:var(--sunk)}
+.viewer-frame{width:100%;height:100%;border:0;background:#fff}
+.viewer-img{max-width:100%;max-height:100%;object-fit:contain}
+.viewer-msg{text-align:center;padding:24px;color:var(--muted)}
+@media (max-width:640px){.viewer{padding:0}.viewer-box{border-radius:0;height:100%}.viewer-acts .btn{padding:4px 8px}}

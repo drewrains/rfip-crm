@@ -1608,11 +1608,12 @@ function docsPanel(p) {
   const imgs = shown.filter(isImg).slice(0, 12), files = shown.filter(d => !isImg(d) || shown.filter(isImg).indexOf(d) >= 12);
   const who = d => d._spOnly ? (d._by || "SharePoint") : personName(d.uploaded_by);
   const when = d => d.created_at ? fmtDate(d.created_at.slice(0, 10)) : "";
-  const link = d => { if (d._sp) return h("a", {href:d._sp.url || "#", target:"_blank", rel:"noopener", class:"doc-name"}, d.name);
+  const view = d => e => { if (!core.previewFile || e.metaKey || e.ctrlKey || e.shiftKey) return; e.preventDefault(); core.previewFile({project_id:p.id}, {id:d.sp_item_id, name:d.name, url:d._sp.url}); };
+  const link = d => { if (d._sp) return h("a", {href:d._sp.url || "#", target:"_blank", rel:"noopener", class:"doc-name", onclick:view(d)}, d.name);
     const a = h("a", {href:"#", target:"_blank", rel:"noopener", "data-path":d.path, class:"doc-name", onclick: async ev => {
     if (a.getAttribute("href") === "#") { ev.preventDefault(); const [u] = await signedUrls([d.path]); if (u) { a.href = u; window.open(u, "_blank", "noopener"); } else toast("Couldn't open that file."); } }}, d.name); return a; };
   const thumbs = imgs.length ? h("div", {class:"doc-thumbs"}, imgs.map(d => h("figure", null,
-    d._sp ? h("a", {href:d._sp.url || "#", target:"_blank", rel:"noopener", class:"thumb"}, d._sp.thumb ? h("img", {alt:d.name, src:d._sp.thumb, loading:"lazy"}) : null)
+    d._sp ? h("a", {href:d._sp.url || "#", target:"_blank", rel:"noopener", class:"thumb", onclick:view(d)}, d._sp.thumb ? h("img", {alt:d.name, src:d._sp.thumb, loading:"lazy"}) : null)
       : h("a", {href:"#", target:"_blank", rel:"noopener", "data-path":d.path, class:"thumb"}, h("img", {alt:d.name, "data-path":d.path, loading:"lazy"})),
     h("figcaption", null, d.note || d.name, h("small", null, who(d) + " · " + when(d)))))) : null;
   const canDel = d => d._spOnly ? canEdit(p) : (d.uploaded_by === S.me.id || canEdit(p));

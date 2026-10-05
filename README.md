@@ -210,7 +210,4 @@ Going live later: run `ops_schema.sql`, `manpower_schema.sql`, `materials_schema
 - **Project numbers.** Today `accept_handoff` makes a placeholder number (YY-NNN). The real number comes from admin and QuickBooks.
   Plan: when sales submits a handoff, the email to newprojects@rfip.com kicks off setup in QuickBooks. Then either admin types the number into RFIP, or the QuickBooks connection pulls it in automatically.
   Either way the SharePoint folder gets renamed to match. Needs Gabe for the QuickBooks side.
-- **In-app file preview.** Agreed with Drew 10/4; build it when he's back on his MacBook.
-  - Clicking a file opens a viewer inside RFIP, using Graph's driveItem preview, fetched server-side after a can-see check.
-  - The viewer has Download and Open in SharePoint buttons, plus thumbnails in the file list.
-  - Covers most of the "files open through RFIP only" go-live item. Only people who edit files need SharePoint site access.
+- ~~In-app file preview~~: built 10/4. Clicking a file opens it inside RFIP (server checks access, SharePoint preview or the image itself).

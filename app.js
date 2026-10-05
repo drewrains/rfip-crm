@@ -1126,6 +1126,37 @@ async function spUpload(target, folder, file, extra = {}) {
   return await spCall({action:"upload_finish", ...base, item_id:item.id, ...extra});
 }
 const spDelete = (target, itemId) => spCall({action:"delete", ...target, item_id:itemId});
+// view a SharePoint file inside RFIP: the server checks the person may see it, then hands back a short-lived
+// preview page (Office, PDF and most files) or, for photos, the image itself
+function previewFile(target, file) {
+  document.querySelector(".viewer") && document.querySelector(".viewer").remove();
+  const prevFocus = document.activeElement;
+  const close = () => { wrap.remove(); document.removeEventListener("keydown", onKey); if (prevFocus && prevFocus.focus) prevFocus.focus(); };
+  const onKey = e => { if (e.key === "Escape") close(); };
+  const acts = h("span", {class:"viewer-acts"});
+  const stage = h("div", {class:"viewer-stage"}, h("div", {class:"viewer-msg"}, "Opening " + file.name + "…"));
+  const closeBtn = h("button", {class:"btn small", "aria-label":"Close preview", onclick:close}, "Close");
+  const wrap = h("div", {class:"viewer", role:"dialog", "aria-modal":"true", "aria-label":"Preview of " + file.name, onclick: e => { if (e.target === wrap) close(); }},
+    h("div", {class:"viewer-box"},
+      h("div", {class:"viewer-head"}, h("b", {class:"viewer-name", title:file.name}, file.name), acts, closeBtn),
+      stage));
+  document.body.append(wrap); document.addEventListener("keydown", onKey); closeBtn.focus();
+  (async () => {
+    const r = await spCall({action:"preview", ...target, item_id:file.id});
+    if (!wrap.isConnected) return;
+    if (r.error || r.connected === false) {
+      stage.replaceChildren(h("div", {class:"viewer-msg"}, h("p", {class:"bad-t"}, r.error || "SharePoint isn't connected."),
+        file.url ? h("a", {class:"btn small", href:file.url, target:"_blank", rel:"noopener"}, "Open in SharePoint") : null));
+      return;
+    }
+    acts.replaceChildren(
+      r.download ? h("a", {class:"btn small primary", href:r.download, download:r.name || file.name, rel:"noopener"}, "Download") : null,
+      r.url ? h("a", {class:"btn small", href:r.url, target:"_blank", rel:"noopener"}, "Open in SharePoint") : null);
+    if (/^image\//.test(r.mime || "") && r.download) stage.replaceChildren(h("img", {class:"viewer-img", src:r.download, alt:r.name}));
+    else if (r.preview) stage.replaceChildren(h("iframe", {class:"viewer-frame", src:r.preview, title:"Preview of " + r.name, allow:"fullscreen"}));
+    else stage.replaceChildren(h("div", {class:"viewer-msg"}, h("p", null, "This kind of file can't be previewed here."), h("p", {class:"muted small"}, "Use Download or Open in SharePoint.")));
+  })();
+}
 const spIcon = (name, mime) => { const m = (mime || "") + " " + (name || "");
   return /^image\//.test(mime || "") ? "IMG" : /pdf/i.test(m) ? "PDF" : /sheet|excel|csv|\.xlsx?\b/i.test(m) ? "XLS" : /word|document|\.docx?\b/i.test(m) ? "DOC" : /dwg|dxf|visio|autocad|\.vsdx?\b/i.test(m) ? "CAD" : "FILE"; };
 const spSize = b => !b ? "" : b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB";
@@ -1152,7 +1183,8 @@ function spFilesBox(key, target, canDelete, openSuffix) {
       folders.map(f => h("button", {role:"tab", "aria-selected":String(cur === f.key), class:f.files.length ? "" : "empty", onclick:() => { cur = f.key; draw(); }}, f.label, " ", h("small", null, String(f.files.length)))));
     const list = shown.length ? h("ul", {class:"doc-list"}, shown.map(x => h("li", null,
       h("span", {class:"doc-ic " + (x.folder ? "file" : spIcon(x.name, x.mime).toLowerCase())}, x.folder ? "DIR" : spIcon(x.name, x.mime)),
-      h("div", {class:"doc-main"}, h("a", {class:"doc-name", href:x.url, target:"_blank", rel:"noopener"}, x.name),
+      h("div", {class:"doc-main"}, h("a", {class:"doc-name", href:x.url, target:"_blank", rel:"noopener",
+          onclick: x.folder ? null : e => { if (e.metaKey || e.ctrlKey || e.shiftKey) return; e.preventDefault(); previewFile(target, x); }}, x.name),
         h("small", null, [!cur ? x.flabel : null, spSize(x.size), x.by, x.modified ? fmtDate(x.modified.slice(0, 10)) : null].filter(Boolean).join(" · "))),
       canDelete && !x.folder ? h("button", {class:"btn small", "aria-label":"Delete " + x.name, onclick: async e => {
         const b = e.currentTarget; if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Click again to delete"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "Delete"; }, 3000); return; }
@@ -1797,7 +1829,7 @@ function exportPanel() {
 if (window.RFIP_OPS_INIT) {
   OPS = window.RFIP_OPS_INIT({h, sb, S, cfg, money, fmtDate, fmtDateTime, daysUntil, todayStr, run, toast, friendly, status, openDrawer, closeDrawer, refreshDrawer,
     fld, deleteButton, render, renderNow, go, person, personName, activePeople, peopleOptions, isAdmin, byId, acctName, dealName, openDeal, emptyState,
-    plural, nullify, metric, loadTable, STAGE, spState, spLoad, spUpload, spDelete, notify, meetingsBox, fnCall});
+    plural, nullify, metric, loadTable, STAGE, spState, spLoad, spUpload, spDelete, notify, meetingsBox, fnCall, previewFile});
 }
 
 boot();

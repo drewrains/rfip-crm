@@ -28,6 +28,7 @@
 //   raw body + header x-rfip-upload: {deal_id|project_id, folder, name, note?, closeout_item_id?}
 //                                                      fallback: the file goes through this function
 //   {action:"delete", deal_id | project_id, item_id}   moves the file to the SharePoint recycle bin
+//   {action:"preview", deal_id | project_id | account_id, item_id}  short-lived preview page + download link for viewing in RFIP
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const SALES = ["01 RFP and Bid Docs", "02 Site Walk and Photos", "03 Drawings and Specs", "04 Estimate and Pricing", "05 Proposal",
@@ -354,7 +355,28 @@ Deno.serve(async req => {
       return json({renamed: true});
     }
 
-    if (["files", "upload_start", "upload_finish", "delete"].includes(body.action) && !configured()) return json({connected: false});
+    if (["files", "upload_start", "upload_finish", "delete", "preview"].includes(body.action) && !configured()) return json({connected: false});
+
+    // view a file inside RFIP: checks the person may see the folder it sits in, then asks SharePoint for a
+    // short-lived preview page and download link, so nobody needs their own SharePoint access just to look
+    if (body.action === "preview") {
+      if (!body.item_id) throw new Refused("item_id is required", 400);
+      const folders = await allowedFolders(asUser, {kind: kindOf(body), id: idOf(body)}, "read");
+      const t = await target(body);
+      const drive = await driveId();
+      const got = await graph(`/drives/${drive}/items/${encodeURIComponent(body.item_id)}`);
+      if (!got.ok) throw new Refused("That file is gone from SharePoint", 404);
+      const subs = await Promise.all(folders.map(f => sub(drive, t.rootId, f[2], f[3])));
+      if (!subs.some(x => x.id === got.body.parentReference?.id)) throw new Refused("That file isn't in a folder you can see");
+      const mime = got.body.file?.mimeType || "";
+      let preview: string | null = null;
+      if (!/^image\//.test(mime)) {
+        const pv = await graph(`/drives/${drive}/items/${encodeURIComponent(body.item_id)}/preview`, {method: "POST", body: JSON.stringify({})});
+        if (pv.ok) preview = pv.body.getUrl || null;
+      }
+      return json({connected: true, name: got.body.name, mime, size: got.body.size ?? null, url: got.body.webUrl,
+        download: got.body["@microsoft.graph.downloadUrl"] || null, preview});
+    }
 
     if (body.action === "files") {
       if (body.project_id) await allowedFolders(asUser, {kind: "project", id: body.project_id}, "read"); // check before creating anything
