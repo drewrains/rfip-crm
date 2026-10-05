@@ -167,9 +167,11 @@ if (configured) fetch(cfg.supabaseUrl + "/auth/v1/settings", {headers:{apikey:cf
     if (MS_ON && !$("#signin").hidden) $("#msBlock").hidden = false; }).catch(() => {});
 function showSignin(err) {
   $("#app").hidden = true; $("#signin").hidden = false;
-  $("#pwForm").hidden = cfg.passwordLogin === false;
+  // the password form is a backup door: shown only on <site>/?password when passwordLogin is "link"
+  const pwOn = cfg.passwordLogin === true || (cfg.passwordLogin === "link" && /[?&]password\b/.test(location.search));
+  $("#pwForm").hidden = !pwOn;
   $("#msBlock").hidden = !(cfg.microsoftLogin || MS_ON);
-  if (cfg.passwordLogin === false) { const o = document.querySelector("#msBlock .or"); if (o) o.hidden = true; }
+  { const o = document.querySelector("#msBlock .or"); if (o) o.hidden = !pwOn; }
   const e = $("#signinError"); e.textContent = err || ""; e.hidden = !err;
 }
 $("#pwForm").addEventListener("submit", async ev => {
@@ -284,7 +286,7 @@ async function start(session) {
   S.me = me;
   if (me.sales_access === false) S.section = "ops";
   $("#meName").textContent = me.full_name || me.email;
-  $("#changePw").hidden = cfg.passwordLogin === false || !(session.user.app_metadata && (session.user.app_metadata.providers || [session.user.app_metadata.provider]).includes("email"));
+  $("#changePw").hidden = !cfg.passwordLogin || !(session.user.app_metadata && (session.user.app_metadata.providers || [session.user.app_metadata.provider]).includes("email"));
   $("#signin").hidden = true; $("#app").hidden = false;
   // make sure the stored session is in place before the rest of the data loads
   for (let i = 0; i < 10; i++) {

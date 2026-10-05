@@ -20,9 +20,9 @@
     environment: isLive ? "live" : "test",
     // Everyone signs in with their RFIP Microsoft account, so Microsoft's two-factor protects RFIP too.
     microsoftLogin: true,
-    // Email + password sign-in is off. To turn it back on (e.g. if Microsoft is down), set this to true
-    // and turn the Email provider back on in Supabase → Authentication → Sign In / Providers.
-    passwordLogin: false,
+    // Email + password is a backup for admins only: the form shows only at <site>/?password.
+    // Only accounts that still have a password can use it (see supabase/password_backup.sql).
+    passwordLogin: "link",
     // Who gets the "Feedback" button's emails during the beta.
     feedbackTo: ["drains@rfip.com"],
   });
