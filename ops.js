@@ -6,7 +6,7 @@
 window.RFIP_OPS_INIT = core => {
 "use strict";
 const {h, sb, S, money, fmtDate, daysUntil, todayStr, run, toast, friendly, openDrawer, closeDrawer, fld, deleteButton,
-  render, go, person, personName, activePeople, isAdmin, byId, acctName, emptyState, plural, nullify, spState, spLoad, spUpload, spDelete, notify, meetingsBox} = core;
+  render, go, person, personName, activePeople, isAdmin, byId, acctName, emptyState, plural, nullify, spState, spLoad, spUpload, spDelete, notify, meetingsBox, readSheet: readBook, normDate} = core;
 const tell = (...a) => { if (notify) notify(...a); };
 
 // ---------------------------------------------------------------- data
@@ -1763,6 +1763,7 @@ function planPanel(p, edit) {
     })))) : h("div", {class:"empty"}, edit ? "No plan yet. Start with the standard phases, or add your own, then put tasks and sub-tasks under each and assign them." : "No plan yet.");
   return panel("Project plan", items.length ? plural(items.length, "item") + " · " + done + " done" + (late ? " · " + late + " overdue" : "") : "Phases, tasks and sub-tasks", body,
     edit ? h("div", {class:"o-actions"}, !items.length ? h("button", {class:"btn small", onclick:() => addStarterPlan(p)}, "Start from the standard phases") : null,
+      readBook ? h("button", {class:"btn small", onclick:() => openPlanImport(p)}, "Import from Excel") : null,
       h("button", {class:"btn primary small", onclick:() => openPlanItem(p, null, null)}, "+ Phase or task")) : null);
 }
 const STARTER = {
@@ -1778,6 +1779,105 @@ async function addStarterPlan(p) {
   const rows = names.map((title, k) => ({project_id:p.id, title, sort:k + 1, status:"not_started",
     start_date:addDays(s, Math.round(span * k / names.length)), due_date:addDays(s, Math.max(0, Math.round(span * (k + 1) / names.length) - 1))}));
   if (await run(sb.from("plan_items").insert(rows), "Added " + names.length + " phases")) { await reload("items"); render(); }
+}
+// ---------------------------------------------------------------- project plan import (Excel or CSV)
+// One row per item. Columns: Phase | Task | Sub-task | Assigned to | Start | Due | Status | Notes.
+// A row's level is its deepest filled name column; phase and task names carry down so they
+// don't need repeating. Phases already on the plan with the same name are reused.
+const PLAN_COLS = {phase:["phase"], task:["task"], sub:["sub-task","subtask","sub task"], who:["assigned to","assigned","assignee","owner","who"],
+  start:["start"], due:["due","finish","end"], status:["status"], notes:["notes","note","comments"]};
+function planCols(head) {
+  const lh = head.map(x => (x || "").toLowerCase().trim()), used = new Set(), m = {};
+  for (const k of ["sub", "phase", "task", "who", "start", "due", "status", "notes"])
+    for (const key of PLAN_COLS[k]) { const i = lh.findIndex((x, j) => !used.has(j) && (x === key || x.startsWith(key))); if (i >= 0) { m[k] = i; used.add(i); break; } }
+  return m;
+}
+function planStatus(v) { v = (v || "").toLowerCase();
+  if (/done|complete|finished|closed/.test(v)) return "done"; if (/block|hold|stuck|wait/.test(v)) return "blocked";
+  if (/progress|started|working|underway|active/.test(v)) return "in_progress"; return "not_started"; }
+function parsePlanRows(rows, p) {
+  const head = rows[0] || [], m = planCols(head), get = (r, k) => m[k] != null ? (r[m[k]] || "").trim() : "";
+  if (m.phase == null && m.task == null) return {error:"Couldn't find a Phase or Task column. Use the RFIP project plan template, or name the columns Phase, Task, Sub-task, Assigned to, Start, Due, Status, Notes."};
+  const people = opsPeople(), findWho = v => { const x = v.toLowerCase(); if (!x) return null;
+    const hit = people.find(q => (q.email || "").toLowerCase() === x || (q.full_name || "").toLowerCase() === x); return hit ? hit.id : undefined; };
+  const nodes = [], unmatched = new Set(); let ph = null, tk = null, bad = 0;
+  const node = (level, title, parent) => { const n = {level, title, parent, row:null}; nodes.push(n); return n; };
+  const phaseFor = t => nodes.find(n => n.level === 0 && n.title.toLowerCase() === t.toLowerCase()) || node(0, t, null);
+  for (const r of rows.slice(1)) {
+    const P = get(r, "phase"), T = get(r, "task"), U = get(r, "sub");
+    if (!P && !T && !U) { bad++; continue; }
+    if (P && (!ph || ph.title.toLowerCase() !== P.toLowerCase())) { ph = phaseFor(P); tk = null; }
+    let n;
+    if (U) { if (T && (!tk || tk.title.toLowerCase() !== T.toLowerCase())) tk = node(1, T, ph); n = node(tk ? 2 : 1, U, tk || ph); }
+    else if (T) { tk = node(1, T, ph); n = tk; }
+    else n = ph;
+    const w = get(r, "who"), wid = findWho(w); if (wid === undefined) unmatched.add(w);
+    const sd = normDate(get(r, "start")), dd = normDate(get(r, "due"));
+    n.row = {assignee_id:wid || null, start_date:sd, due_date:dd && sd && dd < sd ? sd : dd, status:planStatus(get(r, "status")), notes:get(r, "notes") || null};
+  }
+  return {nodes, unmatched:[...unmatched], skipped:bad, cols:m};
+}
+async function runPlanImport(p, parsed) {
+  const have = itemsOf(p.id);
+  const sortNext = parentId => Math.max(0, ...have.filter(x => (x.parent_id || null) === parentId).map(x => x.sort), ...parsed.nodes.filter(n => n.id && (n.parent ? n.parent.id : null) === parentId).map(n => n.sort || 0)) + 1;
+  let made = 0;
+  for (const level of [0, 1, 2]) {
+    const batch = [];
+    for (const n of parsed.nodes.filter(x => x.level === level)) {
+      if (level === 0) { const old = have.find(x => !x.parent_id && x.title.toLowerCase() === n.title.toLowerCase()); if (old) { n.id = old.id; continue; } }
+      const parent_id = n.parent ? n.parent.id || null : null;
+      n.sort = sortNext(parent_id); n.id = "pending";
+      batch.push({n, row:Object.assign({project_id:p.id, title:n.title, parent_id, status:"not_started", sort:n.sort}, n.row || {})});
+    }
+    for (let i = 0; i < batch.length; i += 200) {
+      const part = batch.slice(i, i + 200);
+      const {data, error} = await sb.from("plan_items").insert(part.map(x => x.row)).select("id");
+      if (error) throw error;
+      data.forEach((d, j) => { part[j].n.id = d.id; }); made += data.length;
+    }
+  }
+  const byWho = new Map();
+  for (const n of parsed.nodes) if (n.row && n.row.assignee_id && n.row.assignee_id !== S.me.id && n.row.status !== "done")
+    byWho.set(n.row.assignee_id, (byWho.get(n.row.assignee_id) || []).concat(n));
+  for (const [who, list] of byWho)
+    tell([who], plural(list.length, "new task") + " on " + p.number, (S.me.full_name || S.me.email) + " assigned you " + plural(list.length, "task") + " on " + p.number + " " + p.name + ":\n\n" +
+      list.map(n => "• " + n.title + (n.row.due_date ? " (due " + fmtDate(n.row.due_date) + ")" : "")).join("\n"), "#project=" + p.id);
+  return made;
+}
+function openPlanImport(p) {
+  const st = {parsed:null, busy:false, name:""};
+  const body = h("div");
+  const draw = () => {
+    const kids = [h("p", {class:"muted small", style:"margin:0 0 10px"}, "Upload the RFIP project plan template (or any sheet with Phase, Task, Sub-task, Assigned to, Start, Due, Status and Notes columns). Tasks are added to this plan; phases with the same name as ones already here are reused."),
+      h("input", {type:"file", accept:".xlsx,.xls,.csv,text/csv", "aria-label":"Plan spreadsheet", onchange: async e => {
+        const f = e.target.files[0]; if (!f) return; st.name = f.name;
+        try { const rows = await readBook(f, ["Project plan", "Plan"]); st.parsed = parsePlanRows(rows, p); }
+        catch (err) { st.parsed = {error:err.message || "Couldn't read that file."}; }
+        draw(); }})];
+    const x = st.parsed;
+    if (x && x.error) kids.push(h("p", {class:"bad-t", style:"margin-top:10px"}, x.error));
+    else if (x) {
+      const c = [0, 1, 2].map(l => x.nodes.filter(n => n.level === l).length);
+      const reuse = x.nodes.filter(n => n.level === 0 && itemsOf(p.id).some(i => !i.parent_id && i.title.toLowerCase() === n.title.toLowerCase())).length;
+      kids.push(h("div", {class:"panel", style:"margin-top:12px"},
+        h("b", null, st.name), h("ul", {style:"margin:6px 0 0;padding-left:18px"},
+          h("li", null, plural(c[0], "phase") + (reuse ? " (" + reuse + " already on the plan, reused)" : "")),
+          h("li", null, plural(c[1], "task") + (c[2] ? " and " + plural(c[2], "sub-task") : "")),
+          h("li", null, plural(x.nodes.filter(n => n.row && n.row.assignee_id).length, "item") + " assigned"),
+          x.unmatched.length ? h("li", {class:"bad-t"}, "Not matched, left unassigned: " + x.unmatched.join(", ") + ". Names must match someone with an operations role in RFIP (full name or email).") : null,
+          x.skipped ? h("li", {class:"muted"}, plural(x.skipped, "blank row") + " skipped") : null)));
+    }
+    body.replaceChildren(...kids);
+  };
+  draw();
+  openDrawer({title:"Import plan · " + p.number, body, foot:[
+    h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel"),
+    h("button", {class:"btn primary", onclick: async e => {
+      const x = st.parsed; if (!x || x.error || !x.nodes.length) { toast("Pick a plan spreadsheet first."); return; }
+      const btn = e.currentTarget; btn.disabled = true;
+      try { const n = await runPlanImport(p, x); toast("Added " + plural(n, "plan item")); closeDrawer(); await reload("items"); render(); }
+      catch (err) { toast("Import stopped: " + friendly(err)); await reload("items"); render(); }
+      btn.disabled = false; }}, "Import")]});
 }
 function openPlanItem(p, it, parentId) {
   const edit = canPlan(p), ro = !edit;

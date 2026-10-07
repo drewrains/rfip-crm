@@ -1707,6 +1707,27 @@ function parseCSV(text) {
   if (f !== "" || row.length) { row.push(f); rows.push(row); }
   return rows.filter(r => r.some(x => x.trim() !== ""));
 }
+// Excel (.xlsx/.xls) and CSV reader. The Excel library loads only when someone imports a spreadsheet.
+let XLSX_P = null;
+function loadXLSX() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  if (!XLSX_P) XLSX_P = new Promise((ok, bad) => { const sc = document.createElement("script");
+    sc.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+    sc.onload = () => ok(window.XLSX); sc.onerror = () => { XLSX_P = null; bad(new Error("Couldn't load the Excel reader. Check your connection, or save the sheet as CSV and try again.")); };
+    document.head.append(sc); });
+  return XLSX_P;
+}
+// rows of text cells; for a workbook, the first sheet named in `prefer`, else the first that isn't the instructions or lists tab
+async function readSheet(file, prefer) {
+  if (/\.csv$/i.test(file.name) || file.type === "text/csv") return parseCSV(await file.text());
+  const X = await loadXLSX();
+  const wb = X.read(await file.arrayBuffer(), {type:"array", cellDates:true});
+  const want = (prefer || []).map(x => x.toLowerCase());
+  const name = wb.SheetNames.find(n => want.includes(n.toLowerCase())) || wb.SheetNames.find(n => !/^(how to use|lists|instructions)$/i.test(n.trim())) || wb.SheetNames[0];
+  const rows = X.utils.sheet_to_json(wb.Sheets[name], {header:1, raw:false, dateNF:"yyyy-mm-dd", defval:"", blankrows:false});
+  return rows.map(r => r.map(c => c == null ? "" : String(c))).filter(r => r.some(x => x.trim() !== ""));
+}
+const SHEET_FOR = {deals:["Deals"], accounts:["Customers", "Accounts"], contacts:["Contacts"]};
 const IMPORT_TARGETS = {
   deals:[["name","Deal name",["deal","opportunity","project","name","pursuit"]],["account","Account / company",["account","company","customer","client"]],["stage","Stage",["stage","status"]],["value","Value",["value","amount","price","contract","bid amount","total"]],["owner","Account manager (name or email)",["account manager","owner","rep","salesperson","assigned"]],["se","Sales engineer (name or email)",["sales engineer","engineer","se"]],["bid_due","Bid due",["bid due","due","proposal due","due date"]],["close_date","Close date",["close","award"]],["rfp_no","RFP #",["rfp","bid #","bid no","solicitation"]],["vertical","Vertical",["vertical","market","industry"]],["description","Scope / notes",["scope","description","notes"]],["outcome_reason","Win/loss reason",["reason","loss reason","lost reason"]]],
   accounts:[["name","Account name",["account","company","name","organization"]],["type","Type",["type","category"]],["vertical","Vertical",["vertical","industry","market"]],["city","City",["city"]],["state","State",["state"]],["website","Website",["website","url","web"]],["notes","Notes",["notes"]]],
@@ -1731,16 +1752,18 @@ function normDate(s) { s = (s || "").trim(); if (!s) return null; if (/^\d{4}-\d
   const n = Number(s); if (n > 20000 && n < 80000) return new Date(Date.UTC(1899, 11, 30) + n * 864e5).toISOString().slice(0, 10);
   return null; }
 function importPanel() {
-  const st = {type:"deals", rows:null, headers:null, map:{}, busy:false};
+  const st = {type:"deals", rows:null, headers:null, map:{}, busy:false, file:null};
+  const readIt = async () => { if (!st.file) return;
+    try { const rows = await readSheet(st.file, SHEET_FOR[st.type]); if (rows.length < 2) { toast("That sheet has no data rows."); st.rows = null; st.headers = null; draw(); return; }
+      st.headers = rows[0]; st.rows = rows.slice(1); st.map = guessMap(st.type, st.headers); draw(); }
+    catch (err) { toast(err.message || "Couldn't read that file."); } };
   const box = h("div");
   const draw = () => {
     const kids = [h("div", {class:"form"},
-      h("div", {class:"field"}, h("label", {for:"imp-type"}, "Import"), h("select", {id:"imp-type", onchange: e => { st.type = e.target.value; if (st.headers) st.map = guessMap(st.type, st.headers); draw(); }},
+      h("div", {class:"field"}, h("label", {for:"imp-type"}, "Import"), h("select", {id:"imp-type", onchange: e => { st.type = e.target.value; if (st.file && !/\.csv$/i.test(st.file.name)) readIt(); else { if (st.headers) st.map = guessMap(st.type, st.headers); draw(); } }},
         [["deals","Deals"],["accounts","Accounts"],["contacts","Contacts"]].map(([v, t]) => h("option", {value:v, selected:st.type === v}, t)))),
-      h("div", {class:"field"}, h("label", {for:"imp-file"}, "CSV file"), h("input", {id:"imp-file", type:"file", accept:".csv,text/csv", onchange: e => {
-        const f = e.target.files[0]; if (!f) return; const r = new FileReader();
-        r.onload = () => { const rows = parseCSV(String(r.result)); if (rows.length < 2) { toast("That file has no data rows."); return; } st.headers = rows[0]; st.rows = rows.slice(1); st.map = guessMap(st.type, st.headers); draw(); };
-        r.readAsText(f); }})))];
+      h("div", {class:"field"}, h("label", {for:"imp-file"}, "Excel or CSV file"), h("input", {id:"imp-file", type:"file", accept:".xlsx,.xls,.csv,text/csv", onchange: e => {
+        const f = e.target.files[0]; if (!f) return; st.file = f; readIt(); }})))];
     if (st.rows) {
       kids.push(h("div", {class:"section-h", style:"margin-top:14px"}, "Match columns · " + st.rows.length + " rows"));
       kids.push(h("div", {class:"form"}, IMPORT_TARGETS[st.type].map(([key, label]) => h("div", {class:"field"}, h("label", {for:"map-" + key}, label),
@@ -1754,7 +1777,7 @@ function importPanel() {
   };
   draw();
   return h("div", {class:"panel"}, h("h3", null, "Import from Excel or your old CRM"),
-    h("p", {class:"hint"}, "Save the sheet or export as CSV, pick it here, and check the column matches. Accounts named in deal or contact rows are created if they don't exist."), box);
+    h("p", {class:"hint"}, "Pick an Excel file (the RFIP import template works as is: it reads the Customers, Deals or Contacts tab to match what you're importing) or a CSV, then check the column matches. Accounts named in deal or contact rows are created if they don't exist."), box);
 }
 async function ensureAccounts(names) {
   const have = new Map(S.accounts.map(a => [a.name.trim().toLowerCase(), a.id]));
@@ -1838,7 +1861,7 @@ function exportPanel() {
 if (window.RFIP_OPS_INIT) {
   OPS = window.RFIP_OPS_INIT({h, sb, S, cfg, money, fmtDate, fmtDateTime, daysUntil, todayStr, run, toast, friendly, status, openDrawer, closeDrawer, refreshDrawer,
     fld, deleteButton, render, renderNow, go, person, personName, activePeople, peopleOptions, isAdmin, byId, acctName, dealName, openDeal, emptyState,
-    plural, nullify, metric, loadTable, STAGE, spState, spLoad, spUpload, spDelete, notify, meetingsBox, fnCall, previewFile});
+    plural, nullify, metric, loadTable, STAGE, readSheet, normDate, spState, spLoad, spUpload, spDelete, notify, meetingsBox, fnCall, previewFile});
 }
 
 boot();
