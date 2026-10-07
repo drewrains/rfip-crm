@@ -54,6 +54,8 @@ function changed(table) {
 const role = () => !S.me ? null : S.me.role === "admin" ? "admin" : (S.me.ops_role || null);
 const seesAll = () => ["admin", "viewer"].includes(role());
 const canEdit = p => { const r = role(); return r === "admin" || p.pm_id === S.me.id || (r === "lead" && p.department === S.me.department); };
+// the project plan can also be built by anyone the project is shared with
+const canPlan = p => canEdit(p) || (O.members || []).some(m => m.project_id === p.id && m.profile_id === S.me.id);
 const isOpsFor = ho => { const r = role(); return r === "admin" || ho.pm_id === S.me.id || (r === "lead" && (!ho.department || ho.department === S.me.department)); };
 const deptKeys = () => O.depts.slice().sort((a, b) => a.sort - b.sort).map(d => d.key);
 const dept = k => O.depts.find(d => d.key === k) || {};
@@ -384,7 +386,7 @@ function sharedRow(p, edit) {
     mine.length ? mine.map(m => h("span", {class:"chip-x"}, h("b", null, personName(m.profile_id)),
       edit ? h("button", {class:"linkish", "aria-label":"Remove " + personName(m.profile_id), onclick: async () => {
         if (await run(sb.from("project_members").delete().eq("id", m.id), "Removed")) { await reload("members"); render(); } }}, "×") : null))
-      : h("span", {class:"muted"}, "Only the PM and department lead see this job"),
+      : h("span", {class:"muted"}, "Only the PM and department lead see this job. People you share it with can see it and build the project plan."),
     edit && pick.length ? h("span", null, sel, " ", h("button", {class:"btn small", onclick: async () => {
       if (!sel.value) { toast("Pick someone first."); return; }
       if (await run(sb.from("project_members").insert({project_id:p.id, profile_id:sel.value}), "Shared")) { await reload("members"); render(); } }}, "Add")) : null);
@@ -469,7 +471,7 @@ function viewProject() {
     money ? tile("Ready to bill", compact(c.ready), "Billed " + compact(c.billed) + " · " + compact(c.retH) + " retainage held") : null));
 
   if (opsView && role() !== "field" || O.wu.some(u => u.project_id === p.id)) wrap.append(updatePanel(p, c, edit));
-  if (opsView && featureOn("items")) wrap.append(planPanel(p, edit));
+  if (opsView && featureOn("items")) wrap.append(planPanel(p, canPlan(p)));
   if (role() === "field") wrap.append(logPanel(p));
   if (opsView) {
     const over = Math.round(c.projH - c.hb);
@@ -1729,7 +1731,7 @@ function planTree(pid) {
 }
 const descendants = (id, kids) => { const out = [], st = [...(kids.get(id) || [])]; while (st.length) { const x = st.pop(); out.push(x); st.push(...(kids.get(x.id) || [])); } return out; };
 const parentPath = i => { const out = []; let cur = i.parent_id ? byId(O.items, i.parent_id) : null, n = 0; while (cur && n++ < 12) { out.unshift(cur.title); cur = cur.parent_id ? byId(O.items, cur.parent_id) : null; } return out.join(" › "); };
-const canTick = (i, p) => (p && canEdit(p)) || i.assignee_id === S.me.id;
+const canTick = (i, p) => (p && canPlan(p)) || i.assignee_id === S.me.id;
 async function setItemStatus(i, status) {
   if (await run(sb.from("plan_items").update({status}).eq("id", i.id), status === "done" ? "Marked done" : "Reopened")) { await reload("items"); render(); }
   else render();
@@ -1778,7 +1780,7 @@ async function addStarterPlan(p) {
   if (await run(sb.from("plan_items").insert(rows), "Added " + names.length + " phases")) { await reload("items"); render(); }
 }
 function openPlanItem(p, it, parentId) {
-  const edit = canEdit(p), ro = !edit;
+  const edit = canPlan(p), ro = !edit;
   const d = it ? {...it} : {title:"", parent_id:parentId || null, assignee_id:null, start_date:null, due_date:null, status:"not_started", notes:""};
   const tree = planTree(p.id);
   const bad = it ? new Set([it.id, ...descendants(it.id, tree.kids).map(x => x.id)]) : new Set();
@@ -1792,7 +1794,7 @@ function openPlanItem(p, it, parentId) {
     fld(d, "status", "Status", "select", {options:PLAN_ST.map(x => [x[0], x[1]]), blank:false}),
     fld(d, "start_date", "Start", "date", {readonly:ro}), fld(d, "due_date", "Due", "date", {readonly:ro}),
     fld(d, "notes", "Notes", "textarea", {full:true}),
-    ro ? h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "You can update the status and notes. " + personName(p.pm_id) + " (the PM) changes the rest of the plan.") : null].filter(Boolean);
+    ro ? h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "You can update the status and notes. " + personName(p.pm_id) + " (the PM) or someone the project is shared with changes the rest of the plan.") : null].filter(Boolean);
   drawerForm((it ? "" : "New ") + (d.parent_id ? "task" : "phase or task").replace(/^./, m => m.toUpperCase()) + " · " + p.number, d, fields, async () => {
     if (!(d.title || "").trim()) { toast("Give it a name."); return false; }
     if (d.start_date && d.due_date && d.due_date < d.start_date) { toast("The due date is before the start."); return false; }

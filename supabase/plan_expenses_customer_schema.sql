@@ -61,6 +61,15 @@ create index if not exists plan_items_proj_idx on public.plan_items(project_id, 
 create index if not exists plan_items_assignee_idx on public.plan_items(assignee_id) where status <> 'done';
 create index if not exists plan_items_parent_idx on public.plan_items(parent_id);
 
+-- who can build the plan: the PM, the department lead, admins, and anyone the project is shared with
+create or replace function public.ops_can_plan(p uuid) returns boolean
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if public.ops_can_edit(p) then return true; end if;
+  if to_regclass('public.project_members') is null then return false; end if;
+  return exists (select 1 from project_members where project_id = p and profile_id = auth.uid());
+end $$;
+
 create or replace function public.guard_plan_item() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
@@ -78,11 +87,11 @@ begin
       raise exception 'An item can''t sit under one of its own sub-tasks.';
     end if;
     -- the person it's assigned to (without edit rights on the project) can only move it along and add notes
-    if not public.ops_can_edit(old.project_id) and (
+    if not public.ops_can_plan(old.project_id) and (
          new.title is distinct from old.title or new.assignee_id is distinct from old.assignee_id
       or new.start_date is distinct from old.start_date or new.due_date is distinct from old.due_date
       or new.parent_id is distinct from old.parent_id or new.sort is distinct from old.sort) then
-      raise exception 'Only the PM, the department lead or an admin can change the plan. You can update the status and notes.';
+      raise exception 'Only the PM, the department lead, people the project is shared with or an admin can change the plan. You can update the status and notes.';
     end if;
   end if;
   new.completed_at := case when new.status = 'done' then coalesce(case when tg_op = 'UPDATE' then old.completed_at end, now()) end;
@@ -100,11 +109,11 @@ do $$ declare r record; begin
   end loop;
 end $$;
 create policy plan_read   on public.plan_items for select to authenticated using (public.ops_can_see(project_id) or assignee_id = auth.uid());
-create policy plan_insert on public.plan_items for insert to authenticated with check (public.ops_can_edit(project_id));
+create policy plan_insert on public.plan_items for insert to authenticated with check (public.ops_can_plan(project_id));
 create policy plan_update on public.plan_items for update to authenticated
-  using (public.ops_can_edit(project_id) or assignee_id = auth.uid())
-  with check (public.ops_can_edit(project_id) or assignee_id = auth.uid());
-create policy plan_delete on public.plan_items for delete to authenticated using (public.ops_can_edit(project_id));
+  using (public.ops_can_plan(project_id) or assignee_id = auth.uid())
+  with check (public.ops_can_plan(project_id) or assignee_id = auth.uid());
+create policy plan_delete on public.plan_items for delete to authenticated using (public.ops_can_plan(project_id));
 grant select, insert, update, delete on public.plan_items to authenticated;
 revoke all on public.plan_items from anon;
 
