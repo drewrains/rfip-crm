@@ -181,6 +181,7 @@ The same app has an **Operations** section for delivery: a company overview, pro
 - `supabase/outlook_schema.sql` adds **Outlook email and calendar**. Invites and alert emails go out from the person doing the work, through their own Microsoft sign-in. Needs the delegated Microsoft Graph permissions **Mail.Send**, **Calendars.ReadWrite** and **offline_access** on the RFIP app registration (with admin consent), and the `outlook` Edge Function (it uses the same MS_TENANT_ID, MS_CLIENT_ID and MS_CLIENT_SECRET secrets). Each person signs out and back in with Microsoft once to connect. Deals get a **Meetings** tab and projects a **Meetings** panel (site walks, pre-bids, bid due, kickoffs, field visits, with an optional Teams link); changes and cancellations update everyone's calendar. Alert emails go out for tasks assigned to someone, handoffs submitted, kicked back or accepted, and expenses submitted, approved or sent back.
 - `supabase/installs_schema.sql` adds install tracking (install unit and quantity, labor hours per unit, milestone link, install log). Run it after `materials_schema.sql`.
 - `supabase/plan_expenses_customer_schema.sql` adds project plans and tasks, expenses with PM and CFO approval, and the customer view link. Run it after the scripts above.
+- `supabase/deal_assigner.sql` and `deal_assigner_2.sql` add the **Assigns account managers** access (Team page): enter deals for anyone and change the account manager on any deal without admin rights. Run them after `plan_expenses_customer_schema.sql`. `fix_deal_insert.sql` is already folded into `schema.sql`.
 - `supabase/test_seed.sql` (and `test_seed_part6.sql` for plans, expenses and a customer link) loads demo logins and sample data. **Test database only.**
 
 ## Test environment
@@ -203,7 +204,7 @@ Demo logins on the test database all use the password `RfipDemo-2026`:
 
 Other leads and PMs: demo-mcapps, demo-hseabolt, demo-ddell, demo-mhale, demo-treese, demo-acole, demo-rbanks, demo-swhitfield (all `@rfip.com`).
 
-Going live later: run `ops_schema.sql`, `manpower_schema.sql`, `materials_schema.sql`, `docs_updates_schema.sql`, `plan_expenses_customer_schema.sql`, `installs_schema.sql`, `sharepoint_schema.sql`, `sharepoint_files_schema.sql`, `team_access_schema.sql` and `customer_portal_schema.sql` on the live database first, deploy the `sharepoint` Edge Function there with its secrets (the live project needs the Pro plan for file storage), then merge the `ops-test` branch. Don't run `test_seed.sql` on live.
+Going live later: run `ops_schema.sql`, `manpower_schema.sql`, `materials_schema.sql`, `docs_updates_schema.sql`, `plan_expenses_customer_schema.sql`, `installs_schema.sql`, `sharepoint_schema.sql`, `sharepoint_files_schema.sql`, `team_access_schema.sql`, `customer_portal_schema.sql`, `deal_assigner.sql` and `deal_assigner_2.sql` on the live database first, deploy the `sharepoint` Edge Function there with its secrets (the live project needs the Pro plan for file storage), then merge the `ops-test` branch. Don't run `test_seed.sql` on live.
 
 ## Parked (decide later)
 
