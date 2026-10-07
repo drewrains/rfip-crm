@@ -12,11 +12,12 @@ language sql stable security definer set search_path = public as $$
   select coalesce((select deal_assigner from profiles where id = auth.uid() and active), false);
 $$;
 
--- only admins can grant it (same guard as the other access settings)
+-- only admins can grant it (same guard as the other access settings).
+-- auth.uid() is null when run from the SQL Editor, so the database owner can still make these changes there.
 create or replace function public.guard_profile_ops() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
-  if not public.is_admin() and (new.ops_role is distinct from old.ops_role or new.department is distinct from old.department
+  if auth.uid() is not null and not public.is_admin() and (new.ops_role is distinct from old.ops_role or new.department is distinct from old.department
      or new.sales_access is distinct from old.sales_access or new.finance_approver is distinct from old.finance_approver
      or new.deal_assigner is distinct from old.deal_assigner) then
     raise exception 'Only an admin can change operations access.';
