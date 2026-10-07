@@ -121,6 +121,8 @@ function reportsOf(id) {
 const isManager = () => !!S.me && reportsOf(S.me.id).length > 0;
 const myTeam = () => isAdmin() ? activePeople() : [S.me, ...reportsOf(S.me.id)].filter(Boolean);
 const canManage = d => isAdmin() || (d && d.owner_id === S.me.id);
+// admins and people marked "Assigns account managers" on the Team page can put any deal in anyone's name
+const canAssign = () => isAdmin() || !!(S.me && S.me.deal_assigner);
 const membersOf = dealId => S.members.filter(m => m.deal_id === dealId).map(m => m.user_id);
 const membersWithRole = (dealId, role) => S.members.filter(m => m.deal_id === dealId && (m.role || "support") === role).map(m => m.user_id);
 const seNames = dealId => membersWithRole(dealId, "sales_engineer").map(personName).join(", ");
@@ -1263,7 +1265,7 @@ function openDeal(id, startTab, prefill, copiedFrom) {
       fld(draft, "account_id", "Account", "select", {options:acctOptions(), blank:"Choose an account", onchange:drawContacts}),
       contactBox,
       fld(draft, "stage", "Stage", "select", {options:STAGES.map(s => [s.id, s.name]), blank:false, onchange:() => drawOutcome()}),
-      fld(draft, "owner_id", "Account manager", "select", {options:peopleOptions(), blank:false, readonly: src ? !manage : !isAdmin()}),
+      fld(draft, "owner_id", "Account manager", "select", {options:peopleOptions(), blank:false, readonly: src ? !(manage || canAssign()) : !canAssign()}),
       fld(draft, "value", "Value (USD)", "number"),
       fld(draft, "probability", "Probability % (blank = stage default)", "number"),
       fld(draft, "bid_due", "Bid / proposal due", "date"),
@@ -1585,6 +1587,7 @@ $("#newDeal").addEventListener("click", () => openDeal());
 // ---------------------------------------------------------------- team (admins)
 const OPS_COLS = () => !!(OPS && S.profiles.length && "ops_role" in S.profiles[0]);
 const FIN_COL = () => !!(S.profiles.length && "finance_approver" in S.profiles[0]);
+const DA_COL = () => !!(S.profiles.length && "deal_assigner" in S.profiles[0]);
 function viewTeam() {
   const wrap = h("div");
   const spMissing = S.deals.filter(d => "sharepoint_status" in d && d.sharepoint_status !== "ready").length;
@@ -1602,10 +1605,12 @@ function viewTeam() {
   wrap.append(h("div", {class:"tbl-wrap"}, h("table", null,
     h("thead", null, h("tr", null, h("th", null, "Name"), h("th", null, "Email"), h("th", null, "Access level"), h("th", null, "Job role"), h("th", null, "Reports to"),
       OPS_COLS() ? [h("th", null, "Operations role"), h("th", null, "Department"), h("th", null, "Sales side"), FIN_COL() ? h("th", {title:"Gives final approval on project expenses after the PM"}, "Expense final approval") : null] : null,
+      DA_COL() ? h("th", {title:"Can enter deals for anyone and change the account manager on any deal, without admin rights"}, "Assigns account managers") : null,
       h("th", null, "Access"), h("th", {class:"num"}, "Deals owned"), h("th"))),
     h("tbody", null, list.map(p => {
       const d = {full_name:p.full_name, role:p.role, active:p.active, manager_id:p.manager_id || null, job_role:p.job_role || null};
       if (OPS_COLS()) Object.assign(d, {ops_role:p.ops_role || null, department:p.department || null, sales_access:p.sales_access !== false}, FIN_COL() ? {finance_approver:!!p.finance_approver} : {});
+      if (DA_COL()) d.deal_assigner = !!p.deal_assigner;
       const owned = S.deals.filter(x => x.owner_id === p.id).length;
       return h("tr", null,
         h("td", null, h("input", {class:"inp", id:"tn-" + p.id, value:p.full_name || "", "aria-label":"Name", oninput: e => { d.full_name = e.target.value; }})),
@@ -1624,6 +1629,8 @@ function viewTeam() {
             h("option", {value:"on", selected:p.sales_access !== false}, "Yes"), h("option", {value:"off", selected:p.sales_access === false}, "No"))),
           FIN_COL() ? h("td", null, h("select", {class:"inp", "aria-label":"Expense final approval", onchange: e => { d.finance_approver = e.target.value === "on"; }},
             h("option", {value:"off", selected:!p.finance_approver}, "No"), h("option", {value:"on", selected:!!p.finance_approver}, "Yes (CFO)"))) : null] : null,
+        DA_COL() ? h("td", null, h("select", {class:"inp", "aria-label":"Assigns account managers", onchange: e => { d.deal_assigner = e.target.value === "on"; }},
+          h("option", {value:"off", selected:!p.deal_assigner}, "No"), h("option", {value:"on", selected:!!p.deal_assigner}, "Yes"))) : null,
         h("td", null, h("select", {class:"inp", "aria-label":"Access", onchange: e => { d.active = e.target.value === "on"; }}, h("option", {value:"on", selected:p.active}, "Active"), h("option", {value:"off", selected:!p.active}, "Turned off"))),
         h("td", {class:"num"}, owned ? h("button", {class:"linkish", onclick:() => { S.view = "deals"; S.stageFilter = "all"; S.ownerFilter = p.id; renderNow(); }}, String(owned)) : "0"),
         h("td", null, h("button", {class:"btn small", onclick: async () => {
@@ -1739,7 +1746,7 @@ function importPanel() {
       kids.push(h("div", {class:"form"}, IMPORT_TARGETS[st.type].map(([key, label]) => h("div", {class:"field"}, h("label", {for:"map-" + key}, label),
         h("select", {id:"map-" + key, onchange: e => { if (e.target.value === "") delete st.map[key]; else st.map[key] = Number(e.target.value); }},
           h("option", {value:""}, "— skip —"), st.headers.map((hd, i) => h("option", {value:String(i), selected:st.map[key] === i}, hd || ("Column " + (i + 1)))))))));
-      if (st.type === "deals") kids.push(h("p", {class:"muted", style:"font-size:12px"}, "Owners are matched by name or email to people who have signed in. Unmatched rows are assigned to you" + (isAdmin() ? "; reassign them later." : ".")));
+      if (st.type === "deals") kids.push(h("p", {class:"muted", style:"font-size:12px"}, "Owners are matched by name or email to people who have signed in. " + (canAssign() ? "Unmatched rows are assigned to you; reassign them later." : "Every row is assigned to you (only admins and people who assign account managers can import deals for others).")));
       kids.push(h("div", {style:"margin-top:12px;display:flex;justify-content:flex-end;gap:8px;align-items:center"}, h("span", {class:"muted", id:"imp-prog", style:"font-size:13px"}),
         h("button", {class:"btn primary", disabled:st.busy, onclick:() => runImport(st, draw)}, "Import " + st.rows.length + " " + st.type)));
     }
@@ -1784,7 +1791,7 @@ async function runImport(st, draw) {
           const p = S.profiles.find(p => p.active && ((p.email || "").toLowerCase() === v || (p.full_name || "").toLowerCase() === v)); return p ? p.id : null; };
         const findOwner = v => { v = (v || "").toLowerCase().trim(); if (!v) return S.me.id;
           const p = S.profiles.find(p => p.active && ((p.email || "").toLowerCase() === v || (p.full_name || "").toLowerCase() === v));
-          return p ? (isAdmin() || p.id === S.me.id ? p.id : S.me.id) : S.me.id; };
+          return p ? (canAssign() || p.id === S.me.id ? p.id : S.me.id) : S.me.id; };
         for (const r of st.rows) { const name = get(r, "name"); if (!name) { skipped++; continue; }
           const v = Number(get(r, "value").replace(/[$,\s]/g, ""));
           const stg = normStage(get(r, "stage"));
