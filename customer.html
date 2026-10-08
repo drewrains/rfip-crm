@@ -245,7 +245,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
         <div class="tile"><div class="k">On schedule</div><div class="v">${withUpd.length ? onTrack + " of " + withUpd.length : "—"}</div><div class="s">From the latest weekly updates</div></div>
         <div class="tile"><div class="k">Finishing in 30 days</div><div class="v">${soon}</div><div class="s">Planned completions</div></div>
       </div>
-      ${reqs ? `<div class="reqbar"><p><b>Need new work, a service call or a quote?</b> Send it to RFIP here and track it on this page.</p>
+      ${reqs ? `<div class="reqbar"><p><b>Problem on a project, a change, or new work?</b> Send it to RFIP here and track it on this page.</p>
         <span style="display:flex;gap:8px;flex-wrap:wrap">${reqs.length ? `<button class="btn" id="myreqs">Your requests${openReqs() ? " (" + openReqs() + " open)" : ""}</button>` : ""}<button class="btn primary" id="newreq">Submit a request</button></span></div>` : ""}
       <div class="tools">
         <div class="seg" role="group" aria-label="Show">
@@ -268,21 +268,23 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
 
   // ---------- requests: submit new work and follow its status ----------
   const RST = {new:["Received", "acc"], reviewing:["Under review", "acc"], quoted:["Quote sent", "warn"], scheduled:["Scheduled", "go"], done:["Complete", "go"], declined:["Closed", ""]};
-  const KINDS = [["new_work", "New project or install"], ["service", "Service call or repair"], ["survey", "Site survey or quote"], ["other", "Something else"]];
+  const KINDS = [["issue", "Problem or issue on a current project"], ["change", "Change or addition to a current project"], ["new_work", "New project or install"],
+    ["service", "Service call or repair"], ["survey", "Site survey or quote"], ["other", "Question or something else"]];
+  const ON_PROJECT = ["issue", "change"];
   const WORK = [["", "Not sure"], ["DataComm", "Structured cabling / low voltage"], ["Security", "Security: cameras, access control"], ["Network", "Network & Wi-Fi"], ["DAS", "Cellular coverage (DAS)"], ["Tower", "Tower work"]];
   const openReqs = () => (reqs || []).filter(r => !["done", "declined"].includes(r.status)).length;
   const back = () => `<a class="back" href="#" id="back">← All ${esc(d.customer)} projects</a>`;
   const wireBack = () => { const b = document.getElementById("back"); if (b) b.onclick = e => { e.preventDefault(); go(""); }; };
-  function go(v, noPush) {
+  function go(v, noPush, pre) {
     if (!noPush) history.pushState({v}, "", "?a=" + a + (v ? "&v=" + v : ""));
-    if (v === "new") renderForm(); else if (v === "requests") renderRequests(); else renderList();
+    if (v === "new") renderForm(pre); else if (v === "requests") renderRequests(); else renderList();
     window.scrollTo(0, 0);
   }
   function renderRequests() {
     document.title = "Requests · " + d.customer + " · RFIP";
     const list = reqs || [];
     const row = r => `<li class="rq"><div><div class="t">R-${esc(r.ref)} · ${esc(r.title)}</div>
-        <div class="d">${esc((KINDS.find(x => x[0] === r.kind) || KINDS[3])[1])}${r.site ? " · " + esc(r.site) : ""} · Sent ${esc(short(r.created_at.slice(0, 10)))} by ${esc(r.requester_name)}${r.needed_by ? " · Needed by " + esc(short(r.needed_by)) : ""}${r.project ? " · Job " + esc(r.project.number) : ""}</div></div>
+        <div class="d">${esc((KINDS.find(x => x[0] === r.kind) || KINDS[5])[1])}${r.site ? " · " + esc(r.site) : ""} · Sent ${esc(short(r.created_at.slice(0, 10)))} by ${esc(r.requester_name)}${r.needed_by ? " · Needed by " + esc(short(r.needed_by)) : ""}${r.project ? " · Job " + esc(r.project.number) : ""}</div></div>
         <div>${r.urgent && !["done", "declined"].includes(r.status) ? chip(["Urgent", "bad"]) + " " : ""}${chip(RST[r.status] || RST.new)}</div>
         ${r.customer_note ? `<div class="note"><b>From RFIP · ${esc(short(r.updated_at.slice(0, 10)))}</b>${esc(r.customer_note)}</div>` : ""}</li>`;
     const open = list.filter(r => !["done", "declined"].includes(r.status)), closed = list.filter(r => ["done", "declined"].includes(r.status));
@@ -295,7 +297,8 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
       <p class="foot">Questions about a request? Call RFIP at <a href="tel:+14052860928">405-286-0928</a> and give the R- number.</p>`;
     wireBack(); document.getElementById("newreq").onclick = () => go("new");
   }
-  function renderForm() {
+  function renderForm(pre) {
+    pre = pre || {};
     document.title = "New request · " + d.customer + " · RFIP";
     let me = {}; try { me = JSON.parse(localStorage.getItem("rfip.requester") || "{}") || {}; } catch (e) {}
     const active = all.filter(p => p.phase !== "closed");
@@ -305,15 +308,15 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
       <div class="meta"><span>For ${esc(d.customer)}. It goes straight to the right RFIP team, and you can follow it under <b>Your requests</b>.</span></div>
       <form class="req" id="f" novalidate>
         <h2>What do you need?</h2>
-        <div><label for="kind">Type of request</label><select id="kind" name="kind">${KINDS.map(([v, t]) => opt(v, t)).join("")}</select></div>
+        <div><label for="kind">Type of request</label><select id="kind" name="kind">${KINDS.filter(([v]) => active.length || !ON_PROJECT.includes(v)).map(([v, t]) => opt(v, t, v === (pre.kind || (active.length ? "issue" : "new_work")))).join("")}</select></div>
         <div><label for="department">Kind of work</label><select id="department" name="department">${WORK.map(([v, t]) => opt(v, t)).join("")}</select></div>
-        <div class="full"><label for="title">Short summary *</label><input id="title" name="title" maxlength="200" required placeholder="e.g. Cabling and cameras for the new Tulsa store"></div>
-        <div class="full"><label for="details">Details <small>scope, quantities, access notes, contacts on site</small></label><textarea id="details" name="details" maxlength="5000"></textarea></div>
+        <div class="full"><label for="title">Short summary *</label><input id="title" name="title" maxlength="200" required placeholder="e.g. Two cameras offline at the front lot"></div>
+        <div class="full"><label for="details">Details <small>what's happening, where, since when, who to contact on site</small></label><textarea id="details" name="details" maxlength="5000"></textarea></div>
         <h2>Where and when</h2>
         <div><label for="site">Site or store <small>name or number</small></label><input id="site" name="site" maxlength="200"></div>
         <div><label for="address">Site address</label><input id="address" name="address" maxlength="300" autocomplete="street-address"></div>
         <div><label for="needed_by">Needed by <small>optional</small></label><input id="needed_by" name="needed_by" type="date" min="${today}"></div>
-        ${active.length ? `<div><label for="project_id">Related to a current project? <small>optional</small></label><select id="project_id" name="project_id">${opt("", "No, it's new")}${active.map(p => opt(p.id, p.number + " · " + p.name)).join("")}</select></div>` : "<div></div>"}
+        ${active.length ? `<div id="projwrap"><label for="project_id">Which project? <small id="projhint">optional</small></label><select id="project_id" name="project_id">${opt("", "Not about a current project")}${active.map(p => opt(p.id, p.number + " · " + p.name, p.id === pre.project_id)).join("")}</select></div>` : "<div></div>"}
         <label class="check full"><input type="checkbox" name="urgent" id="urgent"> <span><b>Urgent</b> — something is down or affecting business today</span></label>
         <h2>Your contact info</h2>
         <div><label for="requester_name">Your name *</label><input id="requester_name" name="requester_name" maxlength="120" required autocomplete="name" value="${esc(me.n || "")}"></div>
@@ -325,13 +328,16 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
     wireBack();
     document.getElementById("cancel").onclick = () => go("");
     const f = document.getElementById("f"), err = document.getElementById("err");
+    const kindSel = document.getElementById("kind"), hint = document.getElementById("projhint");
+    const syncKind = () => { if (hint) hint.textContent = ON_PROJECT.includes(kindSel.value) ? "required" : "optional"; };
+    kindSel.onchange = syncKind; syncKind();
     f.oninput = () => { err.hidden = true; };
     f.onsubmit = async e => {
       e.preventDefault();
       const fd = new FormData(f), r = Object.fromEntries(fd.entries());
       r.urgent = !!fd.get("urgent");
-      const miss = !r.title.trim() ? "title" : !r.requester_name.trim() ? "requester_name" : !/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(r.requester_email.trim()) ? "requester_email" : "";
-      if (miss) { err.hidden = false; err.textContent = miss === "title" ? "Add a short summary of what you need." : miss === "requester_name" ? "Add your name." : "Add a valid email so RFIP can reach you."; document.getElementById(miss).focus(); return; }
+      const miss = ON_PROJECT.includes(r.kind) && !r.project_id && document.getElementById("project_id") ? "project_id" : !r.title.trim() ? "title" : !r.requester_name.trim() ? "requester_name" : !/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(r.requester_email.trim()) ? "requester_email" : "";
+      if (miss) { err.hidden = false; err.textContent = miss === "project_id" ? "Pick the project this is about." : miss === "title" ? "Add a short summary of what you need." : miss === "requester_name" ? "Add your name." : "Add a valid email so RFIP can reach you."; document.getElementById(miss).focus(); return; }
       const btn = document.getElementById("send"); btn.disabled = true; btn.textContent = "Sending…"; err.hidden = true;
       let res;
       try { res = await rpc("customer_request_submit", {k:a, r}); }
@@ -343,7 +349,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
       await loadReqs();
       history.replaceState({v:"requests"}, "", "?a=" + a + "&v=requests");
       main.innerHTML = `${back()}<div class="ok"><div class="big">R-${esc(res.ref)}</div><h1 style="font-size:28px;margin-top:10px">Request received</h1>
-        <p>RFIP has it and the right team has been notified. ${r.urgent ? "Because it's marked urgent, someone will reach out as soon as possible." : "Someone will follow up with you, usually within one business day."}</p>
+        <p>RFIP has it and ${ON_PROJECT.includes(r.kind) ? "the project manager has" : "the right team has"} been notified. ${r.urgent ? "Because it's marked urgent, someone will reach out as soon as possible." : "Someone will follow up with you, usually within one business day."}</p>
         <p style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap"><button class="btn" id="myreqs">See your requests</button><button class="btn primary" id="newreq">Send another</button></p>
         <p class="d" style="color:var(--muted);font-size:13px">Urgent and can't wait? Call <a href="tel:+14052860928">405-286-0928</a>.</p></div>`;
       wireBack(); document.getElementById("myreqs").onclick = () => go("requests"); document.getElementById("newreq").onclick = () => go("new");
@@ -357,6 +363,13 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
     if (!v) { renderList(); return; }
     if (!noPush) history.pushState({p:id}, "", "?a=" + a + "&p=" + id);
     renderProject(v, d.customer);
+    if (reqs && v.phase !== "closed") {
+      const b = document.createElement("div"); b.className = "reqbar"; b.style.marginTop = "16px";
+      b.innerHTML = `<p><b>Something wrong on this project, or need a change?</b> Tell ${esc(v.pm ? v.pm.name : "the project manager")} here.</p>
+        <span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-k="change">Request a change</button><button class="btn primary" data-k="issue">Report an issue</button></span>`;
+      const meta = main.querySelector(".hero"); meta.parentNode.insertBefore(b, meta.nextSibling);
+      b.querySelectorAll("button").forEach(x => x.onclick = () => go("new", false, {kind:x.dataset.k, project_id:id}));
+    }
     document.getElementById("back").onclick = e => { e.preventDefault(); history.pushState({}, "", "?a=" + a); renderList(); window.scrollTo(0, 0); };
   }
   window.onpopstate = () => { const q2 = new URLSearchParams(location.search), p = q2.get("p"), v = q2.get("v");

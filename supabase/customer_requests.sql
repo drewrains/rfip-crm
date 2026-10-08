@@ -3,8 +3,9 @@
 -- Run after customer_portal_schema.sql. Safe to re-run.
 --
 -- A customer like AutoNation opens the dashboard link RFIP already gave
--- them and submits new work (a new site, a service call, a survey/quote)
--- instead of emailing it. Each request lands in Operations → Requests with
+-- them and reports a problem on a current project, asks for a change, or
+-- sends new work (a new site, a service call, a survey/quote) instead of
+-- emailing it. Problems and changes on a project go straight to its PM. Each request lands in Operations → Requests with
 -- a number (R-1001), the department leads (and the PM of a related
 -- project) get an email, and the customer sees its status on the
 -- dashboard: Received → Under review → Quote sent → Scheduled → Complete.
@@ -21,7 +22,7 @@ create table if not exists public.customer_requests (
   requester_phone text,
   title           text not null,
   details         text,
-  kind            text not null default 'new_work' check (kind in ('new_work','service','survey','other')),
+  kind            text not null default 'new_work',
   department      text,                 -- null = customer wasn't sure
   site            text,                 -- site / store name or number
   address         text,
@@ -39,6 +40,10 @@ create table if not exists public.customer_requests (
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
+-- issue = problem on a current project, change = change/addition to one
+alter table public.customer_requests drop constraint if exists customer_requests_kind_check;
+alter table public.customer_requests add constraint customer_requests_kind_check
+  check (kind in ('issue','change','new_work','service','survey','other'));
 create index if not exists customer_requests_account on public.customer_requests (account_id, created_at desc);
 create index if not exists customer_requests_status on public.customer_requests (status);
 
@@ -93,7 +98,7 @@ create trigger customer_requests_guard before insert or update on public.custome
 -- ---------- the customer side (anonymous, by dashboard link) --------------
 create or replace function public.customer_request_submit(k text, r jsonb) returns jsonb
 language plpgsql security definer set search_path = public as $$
-declare l account_links; v_title text; v_name text; v_email text; v_kind text; v_dept text; v_pid uuid; v_need date; rec customer_requests;
+declare l account_links; v_title text; v_name text; v_email text; v_kind text; v_dept text; v_pid uuid; v_need date; v_pm uuid; rec customer_requests;
 begin
   if k is null or k !~ '^[0-9a-f]{48}$' then raise exception 'This link isn''t valid.'; end if;
   select * into l from account_links where token = k and active;
@@ -108,19 +113,25 @@ begin
   if v_name = '' then raise exception 'Please add your name.'; end if;
   if v_email !~ '^[^\s@<>()",;]+@[^\s@<>()",;]+\.[a-z]{2,}$' then raise exception 'Please add a valid email so we can reach you.'; end if;
   v_kind := coalesce(nullif(r->>'kind', ''), 'new_work');
-  if v_kind not in ('new_work','service','survey','other') then v_kind := 'other'; end if;
+  if v_kind not in ('issue','change','new_work','service','survey','other') then v_kind := 'other'; end if;
   v_dept := nullif(r->>'department', '');
   if v_dept is not null and not exists (select 1 from departments where key = v_dept) then v_dept := null; end if;
   begin v_pid := nullif(r->>'project_id', '')::uuid; exception when others then v_pid := null; end;
   if v_pid is not null and not exists (select 1 from projects where id = v_pid and account_id = l.account_id) then v_pid := null; end if;
+  if v_kind in ('issue','change') and v_pid is null then raise exception 'Pick the project this is about.'; end if;
+  -- a problem or change on a project belongs to that project's PM and department
+  if v_pid is not null then
+    select pm_id, coalesce(v_dept, department) into v_pm, v_dept from projects where id = v_pid;
+    if v_kind not in ('issue','change') then v_pm := null; end if;
+  end if;
   begin v_need := nullif(r->>'needed_by', '')::date; exception when others then v_need := null; end;
   if v_need is not null and (v_need < current_date - 1 or v_need > current_date + 1000) then v_need := null; end if;
   insert into customer_requests (account_id, requester_name, requester_email, requester_phone, title, details, kind, department,
-                                 site, address, needed_by, urgent, project_id, source)
+                                 site, address, needed_by, urgent, project_id, assigned_to, source)
   values (l.account_id, v_name, v_email, nullif(left(btrim(coalesce(r->>'requester_phone', '')), 40), ''), v_title,
           nullif(left(btrim(coalesce(r->>'details', '')), 5000), ''), v_kind, v_dept,
           nullif(left(btrim(coalesce(r->>'site', '')), 200), ''), nullif(left(btrim(coalesce(r->>'address', '')), 300), ''),
-          v_need, coalesce((r->>'urgent')::boolean, false), v_pid, 'portal')
+          v_need, coalesce((r->>'urgent')::boolean, false), v_pid, v_pm, 'portal')
   returning * into rec;
   return jsonb_build_object('id', rec.id, 'ref', rec.ref);
 end $$;

@@ -52,7 +52,8 @@ const appLink = (req: Request, hash: string) => {
   return base ? base.replace(/\/$/, "") + "/" + hash : "";
 };
 
-const KIND_NAME: Record<string, string> = {new_work: "New project / install", service: "Service call / repair", survey: "Site survey / quote", other: "Other"};
+const KIND_NAME: Record<string, string> = {issue: "Issue on a current project", change: "Change to a current project", new_work: "New project / install",
+  service: "Service call / repair", survey: "Site survey / quote", other: "Question / other"};
 async function customerRequest(req: Request, body: any) {
   const k = String(body.k || ""), id = String(body.id || "");
   if (!/^[0-9a-f]{48}$/.test(k) || !/^[0-9a-f-]{36}$/.test(id)) return json({sent: 0}, 400);
@@ -102,7 +103,8 @@ async function customerRequest(req: Request, body: any) {
     <p style="color:#5b6876;font-size:12px">Reply to this email to answer ${esc(r.requester_name)} directly. Update the status in RFIP → Operations → Requests so ${esc(cust)} sees it on their dashboard.</p></div>`;
   const access = await tokenFor(admin, from);
   const res = await graphAs(access, "/me/sendMail", {method: "POST", body: JSON.stringify({saveToSentItems: false, message: {
-    subject: (r.urgent ? "URGENT · " : "") + "New request " + ref + " from " + cust + ": " + String(r.title).slice(0, 150),
+    subject: (r.urgent ? "URGENT · " : "") + (r.kind === "issue" && proj ? "Issue on " + (proj as any).number : r.kind === "change" && proj ? "Change request on " + (proj as any).number : "New request")
+      + " (" + ref + ") from " + cust + ": " + String(r.title).slice(0, 150),
     body: {contentType: "HTML", content: html}, importance: r.urgent ? "high" : "normal",
     replyTo: emailOk(r.requester_email) ? [{emailAddress: {address: r.requester_email, name: r.requester_name}}] : [],
     toRecipients: to.map((p: any) => ({emailAddress: {address: p.email, name: p.full_name || p.email}}))}})});
