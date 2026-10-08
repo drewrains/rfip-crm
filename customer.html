@@ -87,6 +87,31 @@ details.older summary{cursor:pointer;color:var(--accent);padding:10px 0}
 .pcard .when{font-size:13px;color:var(--muted);text-align:right}
 .pcard .when b{display:block;color:var(--fg);font-size:15px}
 .none{padding:24px 16px;text-align:center;color:var(--muted);background:var(--panel);border:1px solid var(--line);border-radius:10px}
+.reqbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;padding:14px 16px;margin:0 0 6px}
+.reqbar p{margin:0;color:var(--muted);font-size:14px}.reqbar b{color:var(--fg)}
+.btn{display:inline-block;border:1px solid var(--line);background:var(--panel);color:var(--fg);font:inherit;font-size:14px;font-weight:600;padding:8px 14px;border-radius:8px;cursor:pointer;text-decoration:none}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn:disabled{opacity:.6;cursor:default}
+form.req{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 16px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 16px;margin-top:16px}
+form.req .full{grid-column:1/-1}
+form.req label{display:block;font-size:13px;font-weight:600;margin-bottom:4px}
+form.req label small{font-weight:400;color:var(--muted)}
+form.req input,form.req select,form.req textarea{width:100%;font:inherit;font-size:15px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
+form.req textarea{min-height:120px;resize:vertical}
+form.req input:focus,form.req select:focus,form.req textarea:focus{outline:2px solid var(--data);outline-offset:0;border-color:var(--data)}
+form.req .check{display:flex;gap:8px;align-items:flex-start;font-weight:400;font-size:14px;margin-top:22px}
+form.req .check input{width:auto;margin-top:3px}
+form.req h2{grid-column:1/-1;font-size:15px;margin:6px 0 -4px;padding-top:10px;border-top:1px solid var(--line)}
+form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
+.formerr{grid-column:1/-1;background:var(--bad-soft);color:var(--bad);border-radius:8px;padding:10px 12px;font-size:14px}
+.actions{grid-column:1/-1;display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
+.rq{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 16px;align-items:start}
+.rq .t{font-weight:600}.rq .d{color:var(--muted);font-size:13px}
+.rq .note{grid-column:1/-1;background:var(--sunk);border-radius:8px;padding:8px 10px;font-size:14px;white-space:pre-wrap;margin-top:4px}
+.rq .note b{display:block;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+.ok{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:28px 20px;text-align:center;margin-top:16px}
+.ok .big{font-family:var(--f-display);font-size:40px;font-weight:700;color:var(--go);line-height:1}
+@media (max-width:640px){form.req{grid-template-columns:1fr}.rq{grid-template-columns:1fr}}
 @media (max-width:760px){.hero.four{grid-template-columns:repeat(2,minmax(0,1fr))}.pcard{grid-template-columns:1fr}.pcard .when{text-align:left}}
 @media (max-width:640px){.hero{grid-template-columns:1fr}.ph{grid-template-columns:1fr}}
 </style>
@@ -112,7 +137,7 @@ details.older summary{cursor:pointer;color:var(--accent);padding:10px 0}
   const rpc = async (fn, body) => {
     const r = await fetch(cfg.supabaseUrl + "/rest/v1/rpc/" + fn, {method:"POST",
       headers:{"apikey":cfg.supabaseAnonKey, "Content-Type":"application/json"}, body:JSON.stringify(body)});
-    if (!r.ok) throw new Error(r.status);
+    if (!r.ok) { let m = ""; try { m = (await r.json()).message || ""; } catch (e) {} const err = new Error(m || String(r.status)); err.status = r.status; throw err; }
     return r.json();
   };
   const qs = new URLSearchParams(location.search);
@@ -178,8 +203,9 @@ details.older summary{cursor:pointer;color:var(--accent);padding:10px 0}
 
   // ---------- customer dashboard: every project for the account ----------
   if (!isTok(a)) return fail("This link isn't complete", "Check that you copied the whole link from the email, or ask your RFIP contact for a new one.");
-  let d;
-  try { d = await rpc("customer_portal", {k:a}); } catch (e) { return fail("We couldn't load your projects", "Please refresh in a minute. If it keeps happening, contact RFIP at 405-286-0928."); }
+  let d, reqs = null;
+  const loadReqs = async () => { try { reqs = await rpc("customer_requests_list", {k:a}); } catch (e) { reqs = null; } };
+  try { [d] = await Promise.all([rpc("customer_portal", {k:a}), loadReqs()]); } catch (e) { return fail("We couldn't load your projects", "Please refresh in a minute. If it keeps happening, contact RFIP at 405-286-0928."); }
   if (!d) return fail("This link is no longer active", "Your RFIP contact can send you a current link.");
   document.getElementById("sub").textContent = "Projects for " + d.customer;
   const all = d.projects || [];
@@ -219,6 +245,8 @@ details.older summary{cursor:pointer;color:var(--accent);padding:10px 0}
         <div class="tile"><div class="k">On schedule</div><div class="v">${withUpd.length ? onTrack + " of " + withUpd.length : "—"}</div><div class="s">From the latest weekly updates</div></div>
         <div class="tile"><div class="k">Finishing in 30 days</div><div class="v">${soon}</div><div class="s">Planned completions</div></div>
       </div>
+      ${reqs ? `<div class="reqbar"><p><b>Need new work, a service call or a quote?</b> Send it to RFIP here and track it on this page.</p>
+        <span style="display:flex;gap:8px;flex-wrap:wrap">${reqs.length ? `<button class="btn" id="myreqs">Your requests${openReqs() ? " (" + openReqs() + " open)" : ""}</button>` : ""}<button class="btn primary" id="newreq">Submit a request</button></span></div>` : ""}
       <div class="tools">
         <div class="seg" role="group" aria-label="Show">
           <button data-v="active" aria-pressed="${st.view === "active"}">Active (${active.length})</button>
@@ -234,6 +262,93 @@ details.older summary{cursor:pointer;color:var(--accent);padding:10px 0}
     const qi = document.getElementById("q");
     if (qi) qi.oninput = e => { st.q = e.target.value; const pos = e.target.selectionStart; renderList(); const n = document.getElementById("q"); n.focus(); n.setSelectionRange(pos, pos); };
     main.querySelectorAll(".pcard").forEach(b => b.onclick = () => openProject(b.dataset.id));
+    const nb = document.getElementById("newreq"); if (nb) nb.onclick = () => go("new");
+    const mb = document.getElementById("myreqs"); if (mb) mb.onclick = () => go("requests");
+  }
+
+  // ---------- requests: submit new work and follow its status ----------
+  const RST = {new:["Received", "acc"], reviewing:["Under review", "acc"], quoted:["Quote sent", "warn"], scheduled:["Scheduled", "go"], done:["Complete", "go"], declined:["Closed", ""]};
+  const KINDS = [["new_work", "New project or install"], ["service", "Service call or repair"], ["survey", "Site survey or quote"], ["other", "Something else"]];
+  const WORK = [["", "Not sure"], ["DataComm", "Structured cabling / low voltage"], ["Security", "Security: cameras, access control"], ["Network", "Network & Wi-Fi"], ["DAS", "Cellular coverage (DAS)"], ["Tower", "Tower work"]];
+  const openReqs = () => (reqs || []).filter(r => !["done", "declined"].includes(r.status)).length;
+  const back = () => `<a class="back" href="#" id="back">← All ${esc(d.customer)} projects</a>`;
+  const wireBack = () => { const b = document.getElementById("back"); if (b) b.onclick = e => { e.preventDefault(); go(""); }; };
+  function go(v, noPush) {
+    if (!noPush) history.pushState({v}, "", "?a=" + a + (v ? "&v=" + v : ""));
+    if (v === "new") renderForm(); else if (v === "requests") renderRequests(); else renderList();
+    window.scrollTo(0, 0);
+  }
+  function renderRequests() {
+    document.title = "Requests · " + d.customer + " · RFIP";
+    const list = reqs || [];
+    const row = r => `<li class="rq"><div><div class="t">R-${esc(r.ref)} · ${esc(r.title)}</div>
+        <div class="d">${esc((KINDS.find(x => x[0] === r.kind) || KINDS[3])[1])}${r.site ? " · " + esc(r.site) : ""} · Sent ${esc(short(r.created_at.slice(0, 10)))} by ${esc(r.requester_name)}${r.needed_by ? " · Needed by " + esc(short(r.needed_by)) : ""}${r.project ? " · Job " + esc(r.project.number) : ""}</div></div>
+        <div>${r.urgent && !["done", "declined"].includes(r.status) ? chip(["Urgent", "bad"]) + " " : ""}${chip(RST[r.status] || RST.new)}</div>
+        ${r.customer_note ? `<div class="note"><b>From RFIP · ${esc(short(r.updated_at.slice(0, 10)))}</b>${esc(r.customer_note)}</div>` : ""}</li>`;
+    const open = list.filter(r => !["done", "declined"].includes(r.status)), closed = list.filter(r => ["done", "declined"].includes(r.status));
+    main.innerHTML = `${back()}
+      <div class="eyebrow">Requests</div><h1>${esc(d.customer)}</h1>
+      <div class="meta"><span>Everything your team has sent to RFIP from this page, and where it stands.</span></div>
+      <div class="tools"><span></span><button class="btn primary" id="newreq">Submit a request</button></div>
+      <section><h2>Open <span>${open.length}</span></h2>${open.length ? `<ul class="rows">${open.map(row).join("")}</ul>` : `<div class="empty">Nothing open right now.</div>`}</section>
+      ${closed.length ? `<section><h2>Completed or closed <span>last 90 days</span></h2><ul class="rows">${closed.map(row).join("")}</ul></section>` : ""}
+      <p class="foot">Questions about a request? Call RFIP at <a href="tel:+14052860928">405-286-0928</a> and give the R- number.</p>`;
+    wireBack(); document.getElementById("newreq").onclick = () => go("new");
+  }
+  function renderForm() {
+    document.title = "New request · " + d.customer + " · RFIP";
+    let me = {}; try { me = JSON.parse(localStorage.getItem("rfip.requester") || "{}") || {}; } catch (e) {}
+    const active = all.filter(p => p.phase !== "closed");
+    const opt = (v, t, sel) => `<option value="${esc(v)}"${sel ? " selected" : ""}>${esc(t)}</option>`;
+    main.innerHTML = `${back()}
+      <div class="eyebrow">New request</div><h1>Send RFIP a request</h1>
+      <div class="meta"><span>For ${esc(d.customer)}. It goes straight to the right RFIP team, and you can follow it under <b>Your requests</b>.</span></div>
+      <form class="req" id="f" novalidate>
+        <h2>What do you need?</h2>
+        <div><label for="kind">Type of request</label><select id="kind" name="kind">${KINDS.map(([v, t]) => opt(v, t)).join("")}</select></div>
+        <div><label for="department">Kind of work</label><select id="department" name="department">${WORK.map(([v, t]) => opt(v, t)).join("")}</select></div>
+        <div class="full"><label for="title">Short summary *</label><input id="title" name="title" maxlength="200" required placeholder="e.g. Cabling and cameras for the new Tulsa store"></div>
+        <div class="full"><label for="details">Details <small>scope, quantities, access notes, contacts on site</small></label><textarea id="details" name="details" maxlength="5000"></textarea></div>
+        <h2>Where and when</h2>
+        <div><label for="site">Site or store <small>name or number</small></label><input id="site" name="site" maxlength="200"></div>
+        <div><label for="address">Site address</label><input id="address" name="address" maxlength="300" autocomplete="street-address"></div>
+        <div><label for="needed_by">Needed by <small>optional</small></label><input id="needed_by" name="needed_by" type="date" min="${today}"></div>
+        ${active.length ? `<div><label for="project_id">Related to a current project? <small>optional</small></label><select id="project_id" name="project_id">${opt("", "No, it's new")}${active.map(p => opt(p.id, p.number + " · " + p.name)).join("")}</select></div>` : "<div></div>"}
+        <label class="check full"><input type="checkbox" name="urgent" id="urgent"> <span><b>Urgent</b> — something is down or affecting business today</span></label>
+        <h2>Your contact info</h2>
+        <div><label for="requester_name">Your name *</label><input id="requester_name" name="requester_name" maxlength="120" required autocomplete="name" value="${esc(me.n || "")}"></div>
+        <div><label for="requester_email">Email *</label><input id="requester_email" name="requester_email" type="email" maxlength="200" required autocomplete="email" value="${esc(me.e || "")}"></div>
+        <div><label for="requester_phone">Phone</label><input id="requester_phone" name="requester_phone" type="tel" maxlength="40" autocomplete="tel" value="${esc(me.p || "")}"></div>
+        <div id="err" class="formerr" role="alert" hidden></div>
+        <div class="actions"><button type="button" class="btn" id="cancel">Cancel</button><button type="submit" class="btn primary" id="send">Send request</button></div>
+      </form>`;
+    wireBack();
+    document.getElementById("cancel").onclick = () => go("");
+    const f = document.getElementById("f"), err = document.getElementById("err");
+    f.oninput = () => { err.hidden = true; };
+    f.onsubmit = async e => {
+      e.preventDefault();
+      const fd = new FormData(f), r = Object.fromEntries(fd.entries());
+      r.urgent = !!fd.get("urgent");
+      const miss = !r.title.trim() ? "title" : !r.requester_name.trim() ? "requester_name" : !/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(r.requester_email.trim()) ? "requester_email" : "";
+      if (miss) { err.hidden = false; err.textContent = miss === "title" ? "Add a short summary of what you need." : miss === "requester_name" ? "Add your name." : "Add a valid email so RFIP can reach you."; document.getElementById(miss).focus(); return; }
+      const btn = document.getElementById("send"); btn.disabled = true; btn.textContent = "Sending…"; err.hidden = true;
+      let res;
+      try { res = await rpc("customer_request_submit", {k:a, r}); }
+      catch (x) { btn.disabled = false; btn.textContent = "Send request"; err.hidden = false; err.textContent = x.message && !/^\d+$/.test(x.message) ? x.message : "We couldn't send that. Please try again, or call RFIP at 405-286-0928."; return; }
+      try { localStorage.setItem("rfip.requester", JSON.stringify({n:r.requester_name.trim(), e:r.requester_email.trim(), p:(r.requester_phone || "").trim()})); } catch (x) {}
+      // tell RFIP by email; the request is saved either way
+      fetch(cfg.supabaseUrl + "/functions/v1/customer-request", {method:"POST", headers:{"apikey":cfg.supabaseAnonKey, "Content-Type":"application/json"},
+        body:JSON.stringify({k:a, id:res.id})}).catch(() => {});
+      await loadReqs();
+      history.replaceState({v:"requests"}, "", "?a=" + a + "&v=requests");
+      main.innerHTML = `${back()}<div class="ok"><div class="big">R-${esc(res.ref)}</div><h1 style="font-size:28px;margin-top:10px">Request received</h1>
+        <p>RFIP has it and the right team has been notified. ${r.urgent ? "Because it's marked urgent, someone will reach out as soon as possible." : "Someone will follow up with you, usually within one business day."}</p>
+        <p style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap"><button class="btn" id="myreqs">See your requests</button><button class="btn primary" id="newreq">Send another</button></p>
+        <p class="d" style="color:var(--muted);font-size:13px">Urgent and can't wait? Call <a href="tel:+14052860928">405-286-0928</a>.</p></div>`;
+      wireBack(); document.getElementById("myreqs").onclick = () => go("requests"); document.getElementById("newreq").onclick = () => go("new");
+      window.scrollTo(0, 0);
+    };
   }
   async function openProject(id, noPush) {
     main.innerHTML = `<p style="color:var(--muted)">Loading…</p>`;
@@ -244,9 +359,12 @@ details.older summary{cursor:pointer;color:var(--accent);padding:10px 0}
     renderProject(v, d.customer);
     document.getElementById("back").onclick = e => { e.preventDefault(); history.pushState({}, "", "?a=" + a); renderList(); window.scrollTo(0, 0); };
   }
-  window.onpopstate = () => { const p = new URLSearchParams(location.search).get("p"); if (p) openProject(p, true); else renderList(); };
-  const startP = qs.get("p");
-  if (startP && all.some(p => p.id === startP)) openProject(startP, true); else renderList();
+  window.onpopstate = () => { const q2 = new URLSearchParams(location.search), p = q2.get("p"), v = q2.get("v");
+    if (p) openProject(p, true); else if (reqs && (v === "new" || v === "requests")) go(v, true); else renderList(); };
+  const startP = qs.get("p"), startV = qs.get("v");
+  if (startP && all.some(p => p.id === startP)) openProject(startP, true);
+  else if (reqs && (startV === "new" || startV === "requests")) go(startV, true);
+  else renderList();
 })();
 </script>
 </body>

@@ -336,10 +336,11 @@ function notify(ids, subject, text, link) {
 }
 // links in emails and invites: #deal=<id> or #project=<id>
 function openFromHash() {
-  const m = location.hash.match(/^#(deal|project)=([0-9a-f-]{36})$/);
+  const m = location.hash.match(/^#(deal|project|request)=([0-9a-f-]{36})$/);
   if (!m) return;
   history.replaceState(null, "", location.pathname + location.search);
   if (m[1] === "deal") { if (byId(S.deals, m[2])) openDeal(m[2]); else toast("That deal isn't available to you."); }
+  else if (m[1] === "request") { if (OPS && OPS.openRequest) { S.section = "ops"; OPS.openRequest(m[2]); } }
   else if (OPS && OPS.openProject) { S.section = "ops"; OPS.openProject(m[2]); }
 }
 
@@ -1501,7 +1502,7 @@ function portalBox(src) {
     load();
   };
   const draw = l => {
-    const what = "One private link that shows " + (src.name || "this customer") + " every project RFIP is running for them: progress, schedule, milestones and weekly updates. No money, internal notes or documents.";
+    const what = "One private link that shows " + (src.name || "this customer") + " every project RFIP is running for them: progress, schedule, milestones and weekly updates. They can also send RFIP new requests from it (they land in Operations → Requests). No money, internal notes or documents.";
     let body;
     if (!l) body = [h("p", {class:"muted small", style:"margin:0 0 8px"}, what), h("button", {class:"btn small primary", onclick:() => act("on")}, "Turn on and copy the link")];
     else if (!l.active) body = [h("p", {class:"small", style:"margin:0 0 8px"}, h("b", null, "The dashboard link is off."), " Anyone who had it sees a message to contact RFIP."),

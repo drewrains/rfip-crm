@@ -5,7 +5,7 @@
    decides what each person sees; these screens only arrange it. */
 window.RFIP_OPS_INIT = core => {
 "use strict";
-const {h, sb, S, money, fmtDate, daysUntil, todayStr, run, toast, friendly, openDrawer, closeDrawer, fld, deleteButton,
+const {h, sb, S, money, fmtDate, fmtDateTime, daysUntil, todayStr, run, toast, friendly, openDrawer, closeDrawer, fld, deleteButton,
   render, go, person, personName, activePeople, isAdmin, byId, acctName, emptyState, plural, nullify, spState, spLoad, spUpload, spDelete, notify, meetingsBox, readSheet: readBook, normDate} = core;
 const tell = (...a) => { if (notify) notify(...a); };
 
@@ -13,14 +13,14 @@ const tell = (...a) => { if (notify) notify(...a); };
 const TABLES = {projects:"projects", handoffs:"handoffs", depts:"departments", costs:"cost_lines", labor:"labor_weeks", ms:"milestones",
   cos:"change_orders", mats:"materials", logs:"daily_logs", plan:"crew_plan", roster:"crew_roster", closeout:"closeout_items",
   bills:"billings", safety:"safety_events", techs:"techs", asg:"assignments", docs:"documents", wu:"weekly_updates", rcpts:"material_receipts",
-  items:"plan_items", exps:"expenses", clinks:"customer_links", insts:"material_installs", members:"project_members"};
+  items:"plan_items", exps:"expenses", clinks:"customer_links", insts:"material_installs", members:"project_members", reqs:"customer_requests"};
 // added later than the rest; if a database hasn't been given these yet, the rest of operations still works
-const OPTIONAL = new Set(["items", "exps", "clinks", "insts", "members"]);
+const OPTIONAL = new Set(["items", "exps", "clinks", "insts", "members", "reqs"]);
 const KEY_OF = Object.fromEntries(Object.entries(TABLES).map(([k, t]) => [t, k]));
 const O = {missing:false, detail:null, q:"", dept:"", pm:"", phase:"active", hand:true, mpMode:"week", mpDate:null, mpDept:""};
 try { const m = localStorage.getItem("rfipops.mpMode"); if (m) O.mpMode = m; } catch (e) {}
 for (const k of Object.keys(TABLES)) O[k] = [];
-O.dir = []; O.docFolder = ""; O.wuWeek = null; O.off = new Set(); O.taskWho = "me";
+O.dir = []; O.docFolder = ""; O.wuWeek = null; O.off = new Set(); O.taskWho = "me"; O.reqView = "open"; O.reqDept = "";
 try { const d = localStorage.getItem("rfipops.detail"); if (d) O.detail = d; } catch (e) {}
 
 async function fetchTable(key) {
@@ -2110,7 +2110,134 @@ function customerPanel(p, edit) {
 }
 
 // ---------------------------------------------------------------- routing
-const VIEW_FN = {"ops-updates":viewUpdates, "ops-overview":viewOverview, "ops-projects":viewProjects, "ops-project":viewProject, "ops-handoffs":viewHandoffs, "ops-billing":viewBilling, "ops-manpower":viewManpower, "ops-tasks":viewTasks, "ops-expenses":viewExpenses, handoffs:viewHandoffs};
+
+// ---------------------------------------------------------------- customer requests
+// Customers submit work from their dashboard link (customer.html?a=…); it lands here. They see the status
+// and the "message to customer" on their dashboard; everything else stays internal.
+const REQ_ST = [["new", "New", "bad", "Received"], ["reviewing", "Reviewing", "acc", "Under review"], ["quoted", "Quote sent", "warn", "Quote sent"],
+  ["scheduled", "Scheduled", "go", "Scheduled"], ["done", "Done", "go", "Complete"], ["declined", "Declined / closed", "", "Closed"]];
+const REQ_KIND = [["new_work", "New project / install"], ["service", "Service call / repair"], ["survey", "Site survey / quote"], ["other", "Other"]];
+const reqSt = s => REQ_ST.find(x => x[0] === s) || REQ_ST[0];
+const reqChip = s => { const x = reqSt(s); return chip(x[2], x[1]); };
+const reqOpen = r => !["done", "declined"].includes(r.status);
+const canWorkReqs = () => ["admin", "lead", "pm"].includes(role());
+const seesReqs = () => featureOn("reqs") && (["admin", "lead", "pm", "viewer"].includes(role()) || O.reqs.length > 0);
+const newReqs = () => O.reqs.filter(r => r.status === "new").length;
+const reqRef = r => "R-" + r.ref;
+const reqAge = r => { const d = dayDiff((r.created_at || "").slice(0, 10), TODAY); return d <= 0 ? "today" : d === 1 ? "yesterday" : d + " days ago"; };
+function viewRequests() {
+  const wrap = h("div", {class:"o-stack"});
+  const v = O.reqView, dp = O.reqDept;
+  const pool = O.reqs.filter(r => !dp || (dp === "none" ? !r.department : r.department === dp));
+  const list = pool.filter(r => v === "open" ? reqOpen(r) : v === "new" ? r.status === "new" : v === "mine" ? r.assigned_to === S.me.id && reqOpen(r) : true)
+    .sort((a, b) => (b.urgent && reqOpen(b)) - (a.urgent && reqOpen(a)) || (a.status === "new" ? 0 : 1) - (b.status === "new" ? 0 : 1) || b.created_at.localeCompare(a.created_at));
+  wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Customer requests"),
+    h("select", {class:"inp", style:"max-width:200px", "aria-label":"Show", onchange: e => { O.reqView = e.target.value; render(); }},
+      [["open", "Open"], ["new", "New, not picked up"], ["mine", "Assigned to me"], ["all", "All, incl. closed"]].map(([k, t]) => h("option", {value:k, selected:v === k}, t))),
+    h("select", {class:"inp", style:"max-width:200px", "aria-label":"Department", onchange: e => { O.reqDept = e.target.value; render(); }},
+      h("option", {value:""}, "All departments"), deptKeys().map(k => h("option", {value:k, selected:dp === k}, k)), h("option", {value:"none", selected:dp === "none"}, "Not sure (unsorted)")),
+    canWorkReqs() ? h("button", {class:"btn primary", onclick:() => openRequest(null)}, "+ Log a request") : null));
+  const open = pool.filter(reqOpen);
+  wrap.append(h("div", {class:"o-tiles"},
+    tile("New", String(pool.filter(r => r.status === "new").length), "not picked up yet", pool.some(r => r.status === "new") ? "bad" : ""),
+    tile("Urgent & open", String(open.filter(r => r.urgent).length), "", open.some(r => r.urgent) ? "bad" : ""),
+    tile("Open", String(open.length), "reviewing, quoted or scheduled"),
+    tile("Done, last 30 days", String(pool.filter(r => r.status === "done" && (r.updated_at || "").slice(0, 10) >= addDays(TODAY, -30)).length))));
+  if (!O.reqs.length) {
+    wrap.append(h("div", {class:"panel"}, emptyState("No customer requests yet",
+      "Customers send requests from their dashboard link (Customer → Customer dashboard). Requests that come in by phone or email can be logged here with + Log a request.")));
+    return wrap;
+  }
+  if (!list.length) { wrap.append(h("div", {class:"panel"}, emptyState("Nothing here", "Try another filter."))); return wrap; }
+  wrap.append(h("div", {class:"tbl-wrap"}, h("table", {class:"exp-tbl req-tbl"},
+    h("thead", null, h("tr", null, h("th", null, "Request"), h("th", null, "Customer and site"), h("th", null, "Type"), h("th", null, "Needed by"),
+      h("th", null, "Assigned"), h("th", null, "Status"))),
+    h("tbody", null, list.map(r => h("tr", {class:"click", tabindex:"0", onclick:() => openRequest(r), onkeydown: e => { if (e.key === "Enter") openRequest(r); }},
+      h("td", null, h("div", null, h("b", {class:"mono"}, reqRef(r)), " ", r.title), h("div", {class:"muted small"}, "From " + r.requester_name + " · " + reqAge(r))),
+      h("td", null, h("div", null, acctName(r.account_id) || "—"), h("div", {class:"muted small"}, [r.site, r.address].filter(Boolean).join(" · ") || "")),
+      h("td", null, (REQ_KIND.find(x => x[0] === r.kind) || REQ_KIND[3])[1], h("div", {class:"muted small"}, r.department || "Dept not set")),
+      h("td", {class:"mono nowrap"}, r.needed_by ? fmtDate(r.needed_by) : "—"),
+      h("td", null, r.assigned_to ? personName(r.assigned_to) : h("span", {class:"muted"}, "Nobody yet")),
+      h("td", null, r.urgent && reqOpen(r) ? chip("bad", "Urgent") : null, " ", reqChip(r.status))))))));
+  return wrap;
+}
+function openRequest(r) {
+  if (typeof r === "string") { const found = byId(O.reqs, r); if (!found) { toast("That request isn't available to you."); return; } r = found; }
+  const edit = canWorkReqs() || (r && r.assigned_to === S.me.id), isNew = !r;
+  const d = r ? {...r, urgent: r.urgent ? "yes" : ""} : {kind:"new_work", status:"reviewing", urgent:"", source:"internal"};
+  const before = r ? r.assigned_to : null;
+  const acctProjects = () => O.projects.filter(p => p.account_id === d.account_id).sort((a, b) => b.number.localeCompare(a.number)).map(p => [p.id, p.number + " · " + p.name]);
+  const acctDeals = () => (S.deals || []).filter(x => x.account_id === d.account_id).map(x => [x.id, x.name]);
+  const projBox = h("div", {style:"display:contents"}), dealBox = h("div", {style:"display:contents"});
+  const drawLinks = () => {
+    const ps = acctProjects(); if (d.project_id && !ps.some(x => x[0] === d.project_id)) ps.unshift([d.project_id, (proj(d.project_id).number || "Project") + " · " + (proj(d.project_id).name || "")]);
+    projBox.replaceChildren(fld(d, "project_id", "Project", "select", {options:ps, blank:d.account_id ? "None" : "Pick a customer first", readonly:!edit}));
+    const ds = acctDeals(); if (d.deal_id && !ds.some(x => x[0] === d.deal_id)) ds.unshift([d.deal_id, "Linked deal"]);
+    dealBox.replaceChildren(S.deals ? fld(d, "deal_id", "Deal / quote", "select", {options:ds, blank:"None", readonly:!edit}) : h("div"));
+  };
+  drawLinks();
+  const fromCustomer = r && r.source === "portal";
+  const info = fromCustomer ? h("div", {class:"full", style:"grid-column:1/-1"},
+    h("div", {class:"req-sent"},
+      h("div", {class:"muted small"}, "Sent " + fmtDateTime(r.created_at) + " from " + (acctName(r.account_id) || "the customer") + "'s dashboard"),
+      h("h3", {style:"margin:4px 0 6px"}, r.urgent ? chip("bad", "Urgent") : null, " ", r.title),
+      h("div", {class:"small"}, (REQ_KIND.find(x => x[0] === r.kind) || REQ_KIND[3])[1] + " · " + (r.department || "Not sure which department") +
+        (r.site || r.address ? " · " + [r.site, r.address].filter(Boolean).join(" · ") : "") + (r.needed_by ? " · Needed by " + fmtDate(r.needed_by) : "")),
+      r.details ? h("p", {class:"pre", style:"white-space:pre-wrap;margin:8px 0"}, r.details) : null,
+      h("div", {class:"small"}, h("b", null, r.requester_name), " · ", h("a", {href:"mailto:" + r.requester_email + "?subject=" + encodeURIComponent(reqRef(r) + ": " + r.title)}, r.requester_email),
+        r.requester_phone ? [" · ", h("a", {href:"tel:" + r.requester_phone.replace(/[^\d+]/g, "")}, r.requester_phone)] : null))) : null;
+  const fields = [info,
+    !fromCustomer ? fld(d, "account_id", "Customer", "select", {options:(S.accounts || []).slice().sort((a, b) => a.name.localeCompare(b.name)).map(a => [a.id, a.name]), blank:"Pick a customer", full:true, readonly:!isNew, onchange: drawLinks}) : null,
+    !fromCustomer ? fld(d, "title", "What they need", "text", {full:true, readonly:!edit, placeholder:"e.g. 12 new cameras at the Edmond store"}) : null,
+    !fromCustomer ? fld(d, "kind", "Type", "select", {options:REQ_KIND, blank:false, readonly:!edit}) : null,
+    !fromCustomer ? fld(d, "urgent", "Urgent?", "select", {options:[["yes", "Yes, urgent"]], blank:"No", readonly:!edit}) : null,
+    !fromCustomer ? fld(d, "requester_name", "Customer contact", "text", {readonly:!edit}) : null,
+    !fromCustomer ? fld(d, "requester_email", "Contact email", "email", {readonly:!edit}) : null,
+    !fromCustomer ? fld(d, "requester_phone", "Contact phone", "tel", {readonly:!edit}) : null,
+    !fromCustomer ? fld(d, "site", "Site or store", "text", {readonly:!edit}) : null,
+    !fromCustomer ? fld(d, "address", "Site address", "text", {readonly:!edit}) : null,
+    !fromCustomer ? fld(d, "needed_by", "Needed by", "date", {readonly:!edit}) : null,
+    !fromCustomer ? fld(d, "details", "Details", "textarea", {full:true, readonly:!edit}) : null,
+    h("div", {class:"section-h", style:"grid-column:1/-1;margin-top:8px"}, "RFIP's handling"),
+    fld(d, "status", "Status", "select", {options:REQ_ST.map(x => [x[0], x[1] + (x[3] !== x[1] ? " (customer sees “" + x[3] + "”)" : "")]), blank:false, readonly:!edit}),
+    fld(d, "assigned_to", "Assigned to", "select", {options:opsPeople().map(x => [x.id, x.full_name || x.email]), blank:"Nobody yet", readonly:!canWorkReqs()}),
+    fld(d, "department", "Department", "select", {options:deptKeys(), blank:"Not sure", readonly:!edit}),
+    projBox, dealBox,
+    fld(d, "customer_note", "Message to the customer (shows on their dashboard)", "textarea", {full:true, readonly:!edit}),
+    fld(d, "internal_note", "Internal notes (RFIP only)", "textarea", {full:true, readonly:!edit}),
+    r && !r.deal_id && S.deals && core.openDeal && edit && (isAdmin() || S.me.sales_access !== false) ? h("div", {style:"grid-column:1/-1"}, h("button", {class:"btn small", type:"button", onclick:() => {
+      closeDrawer(); core.openDeal(null, null, {stage:"lead", services:[], owner_id:S.me.id, gng:{scores:{}}, account_id:r.account_id, name:(r.site ? r.site + " – " : "") + r.title,
+        source:"Customer request " + reqRef(r), description:[reqRef(r) + " from " + r.requester_name + " <" + r.requester_email + ">", r.details || ""].filter(Boolean).join("\n\n")});
+      toast("After you save the deal, link it on " + reqRef(r) + ".");
+    }}, "Start a deal from this request"), h("span", {class:"muted small", style:"margin-left:8px"}, "Then pick it under Deal / quote here.")) : null].filter(Boolean);
+  const save = async () => {
+    const txt = k => nullify((d[k] || "").trim ? (d[k] || "").trim() : d[k]);
+    let row;
+    if (!edit) return true;
+    row = {status:d.status, assigned_to:nullify(d.assigned_to), department:nullify(d.department), project_id:nullify(d.project_id), deal_id:nullify(d.deal_id),
+      customer_note:txt("customer_note"), internal_note:txt("internal_note")};
+    if (!canWorkReqs()) delete row.assigned_to;
+    if (!fromCustomer) {
+      if (!d.account_id) { toast("Pick the customer."); return false; }
+      if (!(d.title || "").trim()) { toast("Say what they need."); return false; }
+      if (!(d.requester_name || "").trim()) { toast("Add the customer contact's name."); return false; }
+      Object.assign(row, {title:d.title.trim(), kind:d.kind || "new_work", urgent:d.urgent === "yes", requester_name:d.requester_name.trim(), requester_email:(d.requester_email || "").trim(),
+        requester_phone:txt("requester_phone"), site:txt("site"), address:txt("address"), needed_by:nullify(d.needed_by), details:txt("details")});
+      if (isNew) Object.assign(row, {account_id:d.account_id, source:"internal"});
+    }
+    const res = await saveRow("customer_requests", row, r && r.id);
+    if (res && row.assigned_to && row.assigned_to !== S.me.id && row.assigned_to !== before) {
+      const x = res;
+      tell([row.assigned_to], "Customer request " + reqRef(x) + " assigned to you: " + x.title, (S.me.full_name || S.me.email) + " assigned you a customer request from " +
+        (acctName(x.account_id) || "a customer") + ":\n\n" + x.title + (x.details ? "\n\n" + x.details : "") + "\n\nContact: " + x.requester_name + (x.requester_email ? " · " + x.requester_email : "") +
+        (x.requester_phone ? " · " + x.requester_phone : ""), "#request=" + x.id);
+    }
+    return res;
+  };
+  drawerForm(isNew ? "Log a customer request" : reqRef(r) + " · " + (acctName(r.account_id) || "Customer request"), d, fields, save,
+    r && isAdmin() ? del("customer_requests", r.id) : null);
+}
+const VIEW_FN = {"ops-updates":viewUpdates, "ops-overview":viewOverview, "ops-projects":viewProjects, "ops-project":viewProject, "ops-handoffs":viewHandoffs, "ops-billing":viewBilling, "ops-manpower":viewManpower, "ops-tasks":viewTasks, "ops-expenses":viewExpenses, "ops-requests":viewRequests, handoffs:viewHandoffs};
 return {
   tables: Object.values(TABLES),
   load, changed,
@@ -2122,9 +2249,10 @@ return {
     const myOpen = O.items.filter(i => i.assignee_id === S.me.id && i.status !== "done").length, waiting = waitingOnMe().length;
     const tk = featureOn("items") ? [["ops-tasks", "My tasks" + (myOpen ? " (" + myOpen + ")" : "")]] : [];
     const ex = featureOn("exps") ? [["ops-expenses", "Expenses" + (waiting ? " (" + waiting + ")" : "")]] : [];
-    if (r === "field") return [["ops-projects", "My projects"], ...tk, ...mp, ...ex];
-    if (r === "pm") return [["ops-projects", "My projects"], ...tk, ["ops-updates", "Weekly updates"], ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
-    return [["ops-overview", "Overview"], ["ops-projects", "Projects"], ...tk, ["ops-updates", "Weekly updates"], ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
+    const rq = seesReqs() ? [["ops-requests", "Requests" + (newReqs() ? " (" + newReqs() + " new)" : "")]] : [];
+    if (r === "field") return [["ops-projects", "My projects"], ...tk, ...mp, ...ex, ...rq];
+    if (r === "pm") return [["ops-projects", "My projects"], ...rq, ...tk, ["ops-updates", "Weekly updates"], ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
+    return [["ops-overview", "Overview"], ["ops-projects", "Projects"], ...rq, ...tk, ["ops-updates", "Weekly updates"], ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
   },
   salesViews: () => O.missing ? [] : [["handoffs", "Handoffs"]],
   hiddenViews: () => ["ops-project"],
@@ -2133,5 +2261,6 @@ return {
   render: v => (VIEW_FN[v] || viewOverview)(),
   strip,
   openProject: id => { openProject(id); render(); },
+  openRequest: id => { go("ops-requests"); openRequest(id); },
 };
 };
