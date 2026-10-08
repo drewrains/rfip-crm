@@ -2232,7 +2232,16 @@ function openSendBack(e) {
 }
 function openExpense(p, e) {
   const d = e ? {...e, amount:Number(e.amount)} : {spent_on:TODAY, category:"materials", amount:null, paid_with:"company_card", vendor:"", description:""};
-  const file = h("input", {type:"file", id:"f-receipt", class:"inp", accept:"image/*,application/pdf"});
+  // two pickers: the camera (phones open it straight away) or a photo/PDF already on the device
+  let picked = null;
+  const preview = h("div", {class:"rc-preview"});
+  const choose = f => { picked = f || null; preview.replaceChildren();
+    if (!f) return;
+    if (/^image\//.test(f.type)) { const u = URL.createObjectURL(f); preview.append(h("img", {src:u, alt:"Receipt photo"})); }
+    preview.append(h("span", null, f.name + " · " + Math.max(1, Math.round(f.size / 1024)) + " KB"), h("button", {class:"btn small", type:"button", onclick:() => choose(null)}, "Remove")); };
+  const cam = h("input", {type:"file", accept:"image/*", capture:"environment", class:"sr", id:"f-receipt-cam", onchange: ev => choose(ev.target.files[0])});
+  const pick = h("input", {type:"file", accept:"image/*,application/pdf", class:"sr", id:"f-receipt", onchange: ev => choose(ev.target.files[0])});
+  const file = {get files() { return picked ? [picked] : []; }};
   const note = h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Goes to " + (p.pm_id ? personName(p.pm_id) + " (PM)" : "the PM") + " to approve, then to the CFO for final approval. Approved expenses count toward the job's cost.");
   const body = h("div", null,
     e && e.status === "rejected" ? h("div", {class:"o-due bad"}, h("b", null, "Sent back by " + personName(e.rejected_by)), h("span", null, e.reject_reason || "")) : null,
@@ -2241,7 +2250,8 @@ function openExpense(p, e) {
       fld(d, "category", "Category", "select", {options:EXP_CAT, blank:false}), fld(d, "paid_with", "Paid with", "select", {options:EXP_PAID, blank:false}),
       fld(d, "vendor", "Vendor or store", "text", {full:true, placeholder:"e.g. Home Depot, Sunbelt Rentals, Hampton Inn"}),
       fld(d, "description", "What it was for", "textarea", {full:true}),
-      h("div", {class:"field full"}, h("label", {for:"f-receipt"}, e && e.receipt_path ? "Replace the receipt (photo or PDF)" : "Receipt (take a photo or attach a PDF)"), file),
+      h("div", {class:"field full"}, h("span", {class:"lab-like"}, e && e.receipt_path ? "Replace the receipt (photo or PDF)" : "Receipt"),
+        h("div", {class:"rc-btns"}, cam, pick, h("label", {for:"f-receipt-cam", class:"btn primary rc-cam"}, "📷 Take a photo"), h("label", {for:"f-receipt", class:"btn"}, "Choose a photo or PDF")), preview),
       note));
   const foot = [];
   if (e && e.submitted_by === S.me.id && ["submitted", "rejected"].includes(e.status)) foot.push(deleteButton(async () => {
@@ -2273,6 +2283,33 @@ function openExpense(p, e) {
       (S.me.full_name || S.me.email) + (e ? " resubmitted" : " submitted") + " an expense on " + p.number + " " + p.name + ": " + fullMoney(amt) + " at " + (row.vendor || catName(row.category)) + ". It needs your approval.", "#project=" + p.id);
   }}, e ? "Resubmit" : "Submit"));
   openDrawer({title:(e ? "Expense · " : "Log an expense · ") + p.number, body, foot});
+  const amt = document.getElementById("f-amount"); if (amt) { amt.setAttribute("inputmode", "decimal"); amt.setAttribute("placeholder", "0.00"); }
+}
+// on a phone: big buttons and cards instead of the wide tables
+const isPhone = () => window.matchMedia && window.matchMedia("(max-width:700px)").matches;
+const isInstalled = () => (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true;
+function startExpense() {
+  const ps = O.projects.filter(p => p.phase !== "closed");
+  if (!ps.length) { toast("You aren't on any active projects yet."); return; }
+  if (ps.length === 1) { openExpense(ps[0]); return; }
+  const mine = ps.filter(p => p.pm_id === S.me.id || O.asg.some(a => a.project_id === p.id && a.work_date === TODAY && tech(a.tech_id).profile_id === S.me.id));
+  const sorted = [...mine, ...ps.filter(p => !mine.includes(p)).sort((a, b) => a.name.localeCompare(b.name))];
+  openDrawer({title:"Log an expense · which job?", body:h("div", {class:"pick-job"}, sorted.map(p => h("button", {class:"btn wide pick-row", onclick:() => openExpense(p)},
+    h("b", null, p.name), h("small", null, p.number + (mine.includes(p) ? " · today" : ""))))), foot:[h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel")]});
+}
+function expCards(list) {
+  if (!list.length) return h("div", {class:"empty"}, "No expenses here.");
+  return h("ul", {class:"exp-cards"}, list.map(e => { const p = byId(O.projects, e.project_id) || proj(e.project_id), st = EXP_ST[e.status] || EXP_ST.submitted;
+    return h("li", null,
+      h("div", {class:"ec-top"}, h("b", null, fullMoney(e.amount)), chip(st[1], st[0])),
+      h("div", null, (e.vendor || catName(e.category)) + " · " + fmtDate(e.spent_on)),
+      h("div", {class:"muted small"}, (p.number ? p.number + " · " + p.name : "") + (e.submitted_by !== S.me.id ? " · " + personName(e.submitted_by) : "")),
+      e.status === "rejected" && e.reject_reason ? h("div", {class:"small bad-t"}, e.reject_reason) : null,
+      h("div", {class:"ec-acts"},
+        e.receipt_path ? h("button", {class:"btn small", onclick: async () => { const [u] = await signedUrls([e.receipt_path]); if (u) window.open(u, "_blank", "noopener"); else toast("Couldn't open the receipt."); }}, "Receipt") : null,
+        canPmApprove(e) || canCfoApprove(e) ? h("button", {class:"btn small primary", onclick: ev => decideExpense(e, ev.currentTarget)}, canCfoApprove(e) ? "Final approve" : "Approve") : null,
+        canSendBack(e) ? h("button", {class:"btn small", onclick:() => openSendBack(e)}, "Send back") : null,
+        e.submitted_by === S.me.id && ["submitted", "rejected"].includes(e.status) && p.id ? h("button", {class:"btn small", onclick:() => openExpense(p, e)}, e.status === "rejected" ? "Fix and resubmit" : "Edit") : null)); }));
 }
 function expensePanel(p) {
   const list = O.exps.filter(e => e.project_id === p.id).sort((a, b) => b.spent_on.localeCompare(a.spent_on) || (b.created_at || "").localeCompare(a.created_at || ""));
@@ -2283,6 +2320,7 @@ function expensePanel(p) {
 }
 function viewExpenses() {
   const wrap = h("div", {class:"o-stack"});
+  if (isPhone()) return phoneExpenses(wrap);
   const me = waitingOnMe().sort((a, b) => a.spent_on.localeCompare(b.spent_on));
   const mine = O.exps.filter(e => e.submitted_by === S.me.id).sort((a, b) => b.spent_on.localeCompare(a.spent_on));
   const others = O.exps.filter(e => e.submitted_by !== S.me.id && !me.includes(e));
@@ -2301,6 +2339,20 @@ function viewExpenses() {
   wrap.append(panel("Expenses you logged", plural(mine.length, "expense"), expTable(mine, true)));
   if (role() !== "field" && others.length) wrap.append(h("details", {class:"o-hist panel-ish"}, h("summary", null, "All other expenses on your projects (" + others.length + ")"),
     expTable(others.sort((a, b) => b.spent_on.localeCompare(a.spent_on)), true)));
+  return wrap;
+}
+
+function phoneExpenses(wrap) {
+  const me = waitingOnMe().sort((a, b) => a.spent_on.localeCompare(b.spent_on));
+  const mine = O.exps.filter(e => e.submitted_by === S.me.id).sort((a, b) => b.spent_on.localeCompare(a.spent_on) || (b.created_at || "").localeCompare(a.created_at || ""));
+  let tipOff = false; try { tipOff = localStorage.getItem("rfip.hometip") === "off"; } catch (e) {}
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  wrap.append(h("button", {class:"btn primary big-cta", onclick:() => startExpense()}, "+ Log an expense"),
+    !isInstalled() && !tipOff ? h("div", {class:"home-tip"}, h("b", null, "Put RFIP on your home screen"),
+      h("span", null, ios ? "In Safari, tap the Share button, then “Add to Home Screen.”" : "In Chrome, tap ⋮ (top right), then “Add to Home screen” or “Install app.”"),
+      h("button", {class:"btn small", onclick:() => { try { localStorage.setItem("rfip.hometip", "off"); } catch (e) {} render(); }}, "Got it")) : null,
+    me.length ? panel("Waiting on your approval", plural(me.length, "expense"), expCards(me)) : null,
+    panel("Your expenses", mine.length ? fullMoney(sum(mine.filter(e => ["submitted", "pm_approved"].includes(e.status)), e => e.amount)) + " waiting on approval" : "", expCards(mine.slice(0, 30))));
   return wrap;
 }
 
@@ -2692,5 +2744,6 @@ return {
   strip,
   openProject: id => { openProject(id); render(); },
   openRequest: id => { go("ops-requests"); openRequest(id); },
+  startExpense: () => { if (featureOn("exps")) { go("ops-expenses"); startExpense(); } },
 };
 };
