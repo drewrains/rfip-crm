@@ -427,7 +427,7 @@ function viewProjects() {
       money ? h("th", {class:"num"}, "Margin budget → fcst") : null, money ? h("th", {class:"num"}, "Ready to bill") : null, h("th", null, "Weekly update"), h("th", null, "Flags"))),
     h("tbody", null, list.length ? list.map(p => { const c = calc(p); const bc = c.burn >= .8 && c.done < .8 ? "bad" : c.burn > c.done + .1 ? "warn" : "";
       return h("tr", {class:"click", tabindex:"0", onclick:() => openProject(p.id), onkeydown: e => { if (e.key === "Enter") openProject(p.id); }},
-        h("td", null, h("b", null, p.name), h("div", {class:"muted small"}, p.number + " · " + (acctName(p.account_id) || ""))),
+        h("td", null, h("b", null, p.name), h("div", {class:"muted small"}, p.number + " · " + (acctName(p.account_id) || "") + (p.parent_id ? " · phase of " + (proj(p.parent_id).number || "program") : isProgram(p) ? " · program, " + plural(kidsOf(p.id).length, "phase") : ""))),
         h("td", null, p.department), h("td", null, personName(p.pm_id)), h("td", null, phaseChip(p.phase)),
         money ? h("td", {class:"num"}, compact(c.total), c.coAppr ? h("div", {class:"muted small"}, "incl. " + compact(c.coAppr) + " CO") : null) : null,
         h("td", {class:"num"}, pct(c.done)),
@@ -461,6 +461,10 @@ function viewProject() {
         h("span", null, fmtDate(p.start_date) + " → ", h("b", null, fmtDate(p.end_date))), phaseChip(p.phase))),
     h("div", {class:"o-head-r"}, p.end_date && p.phase !== "closed" ? h("div", {class:"muted"}, daysUntil(p.end_date) >= 0 ? h("b", {class:"mono"}, String(daysUntil(p.end_date))) : null, daysUntil(p.end_date) >= 0 ? " days to completion" : "Past planned completion") : null,
       edit ? h("button", {class:"btn primary", onclick:() => openProgress(p)}, "Update progress") : null)));
+  const par = p.parent_id ? (byId(O.projects, p.parent_id) || proj(p.parent_id)) : null;
+  if (p.parent_id || p.po_number) wrap.append(h("div", {class:"o-crm prog-link"},
+    par ? [h("span", {class:"k"}, "Program"), h("span", null, "Phase of ", byId(O.projects, p.parent_id) ? h("button", {class:"linkish", onclick:() => openProject(p.parent_id)}, (par.number || "") + " · " + (par.name || "")) : h("b", null, (par.number || "") + " · " + (par.name || "")))] : null,
+    p.po_number ? h("span", null, "Customer PO ", h("b", {class:"mono"}, p.po_number)) : null));
   if (featureOn("members")) wrap.append(sharedRow(p, edit));
   wrap.append(h("div", {class:"o-crm"}, h("span", {class:"k"}, "From the CRM"),
     h("span", null, "Sold by ", h("b", null, personName(p.sold_by || (deal && deal.owner_id)))),
@@ -471,7 +475,8 @@ function viewProject() {
     ho ? h("button", {class:"linkish", onclick:() => openHandoff(ho.id)}, "Handoff packet") : null,
     p.sharepoint_url ? h("a", {class:"linkish", href:p.sharepoint_url, target:"_blank", rel:"noopener"}, "SharePoint folder") : null));
 
-  wrap.append(h("div", {class:"o-tiles"},
+  const prog = opsView && isProgram(p);
+  if (!prog) wrap.append(h("div", {class:"o-tiles"},
     money ? tile("Contract", compact(c.total), compact(p.contract_value) + " original" + (c.coAppr ? " + " + compact(c.coAppr) + " approved COs" : "")) : null,
     tile("Complete vs schedule", pct(c.done), c.elapsed == null ? "" : pct(c.elapsed) + " of schedule elapsed", c.elapsed != null && c.done < c.elapsed - .1 ? "warn" : ""),
     c.inst.pct != null ? tile("Installed work", pct(c.inst.pct), "Suggested % complete · PM has " + pct(c.done), Math.abs(c.inst.pct - c.done) >= .05 ? "warn" : "") : null,
@@ -479,8 +484,9 @@ function viewProject() {
     money ? tile("Margin forecast", pct(c.fcM), (c.fcM < c.estM - .005 ? "Down from " : "Budget ") + pct(c.estM), c.fcM < c.estM - .02 ? "bad" : "") : null,
     money ? tile("Ready to bill", compact(c.ready), "Billed " + compact(c.billed) + " · " + compact(c.retH) + " retainage held") : null));
 
-  if (opsView && role() !== "field" || O.wu.some(u => u.project_id === p.id)) wrap.append(updatePanel(p, c, edit));
-  if (opsView && featureOn("issues")) wrap.append(issuePanel(p));
+  if (!prog && (opsView && role() !== "field" || O.wu.some(u => u.project_id === p.id))) wrap.append(updatePanel(p, c, edit));
+  if (prog) wrap.append(...programPanels(p));
+  if (opsView && featureOn("issues") && !prog) wrap.append(issuePanel(p));
   if (opsView && featureOn("items")) wrap.append(planPanel(p, canPlan(p)));
   if (role() === "field") wrap.append(logPanel(p));
   if (opsView) {
@@ -498,7 +504,7 @@ function viewProject() {
   if (money) wrap.append(costPanel(p, c, edit));
   if (opsView) wrap.append(matPanel(p, c, edit));
   wrap.append(h("div", {class:"o-two even"}, opsView && role() !== "field" ? logPanel(p) : null, h("div", {class:"o-stack"}, opsView ? coPanel(p, c, edit, money) : null, rosterPanel(p, c, edit), closeoutPanel(p, c, edit))));
-  if (opsView && featureOn("exps")) wrap.append(expensePanel(p));
+  if (opsView && featureOn("exps") && !prog) wrap.append(expensePanel(p));
   if (opsView) wrap.append(docsPanel(p));
   if (opsView && role() !== "field" && meetingsBox) wrap.append(panel("Meetings", "Outlook invites sent from the person who schedules them",
     h("div", {class:"o-pad"}, meetingsBox({project_id:p.id}, {subject:p.number + " " + p.name, account_id:p.account_id,
@@ -698,7 +704,9 @@ function suggestBox(p, d) {
     h("button", {type:"button", class:"btn small", onclick:() => { d.pct_complete = v; const el = document.getElementById("f-pct_complete"); if (el) el.value = v; }}, "Use " + v + "%"));
 }
 function openProgress(p) {
-  const d = {pct_complete:Number(p.pct_complete), phase:p.phase, start_date:p.start_date, end_date:p.end_date, pm_id:p.pm_id, notes:p.notes || ""};
+  const d = {pct_complete:Number(p.pct_complete), phase:p.phase, start_date:p.start_date, end_date:p.end_date, pm_id:p.pm_id, notes:p.notes || "", po_number:p.po_number || "", parent_id:p.parent_id || null};
+  const canProg = ["admin", "lead"].includes(role()) && !isProgram(p) && "parent_id" in p;
+  const parents = O.projects.filter(x => x.id !== p.id && !x.parent_id && x.phase !== "closed" && canEdit(x)).sort((a, b) => a.number.localeCompare(b.number)).map(x => [x.id, x.number + " · " + x.name]);
   const pms = activePeople().filter(x => x.ops_role === "pm" || x.ops_role === "lead" || x.id === p.pm_id).map(x => [x.id, x.full_name || x.email]);
   drawerForm("Update " + p.number, d, [
     suggestBox(p, d),
@@ -706,10 +714,15 @@ function openProgress(p) {
     fld(d, "phase", "Phase", "select", {options:PHASES.map(x => [x[0], x[1]]), blank:false}),
     fld(d, "start_date", "Start", "date"), fld(d, "end_date", "Substantial completion", "date"),
     fld(d, "pm_id", "Project manager", "select", {options:pms, blank:false, readonly: role() === "pm"}),
+    "po_number" in p ? fld(d, "po_number", "Customer PO number", "text") : null,
+    canProg ? fld(d, "parent_id", "Phase of program (parent job)", "select", {options:parents, blank:"Not part of a program"}) : null,
     fld(d, "notes", "Notes", "textarea", {full:true}),
-    h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Percent complete drives earned hours, earned revenue and the margin forecast. Update it at least weekly.")],
+    h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Percent complete drives earned hours, earned revenue and the margin forecast. Update it at least weekly.")].filter(Boolean),
     () => { const v = Number(d.pct_complete); if (!(v >= 0 && v <= 100)) { toast("Percent complete must be between 0 and 100."); return false; }
-      return saveRow("projects", {pct_complete:v, phase:d.phase, start_date:nullify(d.start_date), end_date:nullify(d.end_date), pm_id:d.pm_id, notes:nullify(d.notes)}, p.id); });
+      const row = {pct_complete:v, phase:d.phase, start_date:nullify(d.start_date), end_date:nullify(d.end_date), pm_id:d.pm_id, notes:nullify(d.notes)};
+      if ("po_number" in p) row.po_number = nullify((d.po_number || "").trim());
+      if (canProg) row.parent_id = nullify(d.parent_id);
+      return saveRow("projects", row, p.id); });
 }
 function openHours(p) {
   const wk = addDays(nextMonday(), -7);
@@ -2411,6 +2424,101 @@ function customerPanel(p, edit) {
 // ---------------------------------------------------------------- routing
 
 
+
+
+// ---------------------------------------------------------------- programs (parent job + a phase job per PO)
+const kidsOf = pid => O.projects.filter(x => x.parent_id === pid).sort((a, b) => a.number.localeCompare(b.number));
+const isProgram = p => !!p && kidsOf(p.id).length > 0;
+const famIds = p => [p.id, ...kidsOf(p.id).map(k => k.id)];
+const phaseLabel = pid => { const x = byId(O.projects, pid) || proj(pid); return x.parent_id ? (x.number || "") + " · " + (x.name || "") : "Program-wide"; };
+const phaseTag = pid => { const x = byId(O.projects, pid) || proj(pid); return h("span", {class:"chip " + (x.parent_id ? pjClass(pid) : "") + " ph-tag", title:phaseLabel(pid)}, x.parent_id ? (x.number || "").split("-").slice(-1)[0] === x.number ? x.number : "Ph " + (x.number || "").split("-").slice(-1)[0] : "Program"); };
+function programPanels(p) {
+  const kids = kidsOf(p.id), all = [p, ...kids], ids = new Set(all.map(x => x.id)), money = role() !== "field";
+  const cs = all.map(x => ({x, c:calc(x)}));
+  const tot = sum(cs, r => r.c.total), billed = sum(cs, r => r.c.billed), budCost = sum(cs, r => r.c.budCost), fcCost = sum(cs, r => r.c.fcCost);
+  const done = tot ? sum(cs, r => r.c.total * r.c.done) / tot : 0;
+  const iss = O.issues.filter(i => ids.has(i.project_id) && issOpen(i)).sort(issSort);
+  const out = [];
+  out.push(h("div", {class:"o-tiles"},
+    money ? tile("Program contract", compact(tot), plural(kids.length, "phase job") + (p.contract_value ? " + program-level" : "")) : null,
+    money ? tile("Billed", compact(billed), compact(Math.max(0, tot - billed)) + " left to bill") : null,
+    tile("Complete", pct(done), "weighted by contract"),
+    money ? tile("Margin forecast", pct(tot ? (tot - fcCost) / tot : 0), "budget " + pct(tot ? (tot - budCost) / tot : 0), tot && (tot - fcCost) / tot < (tot - budCost) / tot - .02 ? "bad" : "") : null,
+    tile("Open issues", String(iss.length), iss.filter(issLate).length + " overdue", iss.some(issLate) ? "bad" : "")));
+  out.push(panel("Phase jobs", "One per customer PO · click a phase for its full page", h("div", {class:"tbl-wrap flat"}, h("table", {class:"prog-tbl"},
+    h("thead", null, h("tr", null, h("th", null, "Phase job"), h("th", null, "PO"), h("th", null, "PM"), money ? h("th", {class:"num"}, "Contract") : null, money ? h("th", {class:"num"}, "Billed") : null,
+      h("th", null, "Labor hours"), money ? h("th", {class:"num"}, "Margin fcst") : null, h("th", null, "Complete"), h("th", null, "Phase"))),
+    h("tbody", null, kids.map(k => { const c = calc(k), over = c.burn >= .8 && c.done < .8;
+      return h("tr", {class:"click", tabindex:"0", onclick:() => openProject(k.id), onkeydown: e => { if (e.key === "Enter") openProject(k.id); }},
+        h("td", null, h("b", null, k.number), h("div", {class:"muted small"}, k.name)), h("td", {class:"mono"}, k.po_number || "—"), h("td", null, personName(k.pm_id)),
+        money ? h("td", {class:"num"}, compact(c.total)) : null, money ? h("td", {class:"num"}, compact(c.billed)) : null,
+        h("td", {class:over ? "bad-t" : ""}, num(c.hu) + " / " + num(c.hb)),
+        money ? h("td", {class:"num" + (c.fcM < c.estM - .02 ? " bad-t" : "")}, pct(c.fcM), h("div", {class:"muted small"}, "budget " + pct(c.estM))) : null,
+        h("td", {class:"nowrap"}, h("span", {class:"minibar inline"}, h("i", {class:"go", style:"width:" + Math.round(c.done * 100) + "%"})), " " + pct(c.done)),
+        h("td", null, phaseChip(k.phase))); }),
+      p.contract_value || calc(p).hu ? h("tr", {class:"muted"}, h("td", null, h("b", null, p.number), h("div", {class:"muted small"}, "Program-level (this page)")), h("td", {class:"mono"}, p.po_number || "—"), h("td", null, personName(p.pm_id)),
+        money ? h("td", {class:"num"}, compact(calc(p).total)) : null, money ? h("td", {class:"num"}, compact(calc(p).billed)) : null, h("td", null, num(calc(p).hu) + " / " + num(calc(p).hb)),
+        money ? h("td", {class:"num"}, pct(calc(p).fcM)) : null, h("td", null, pct(calc(p).done)), h("td", null, phaseChip(p.phase))) : null))),
+    canEdit(p) ? h("div", {class:"o-actions"}, h("button", {class:"btn primary small", onclick:() => openAddPhase(p)}, "+ Add phase job (new PO)")) : null));
+  // everything from every phase, combined
+  const logOn = (list, sel) => h("select", {class:"inp", style:"max-width:240px", "aria-label":"Choose the phase", onchange: e => { const x = byId(O.projects, e.target.value); e.target.value = ""; if (x) sel(x); }},
+    h("option", {value:""}, list[0]), all.filter(x => canPlan(x)).map(x => h("option", {value:x.id}, x.parent_id ? x.number + " · " + x.name : x.number + " · whole program")));
+  out.push(h("div", {class:"prog-h"}, h("h3", null, "Across all phases"), h("span", {class:"muted small"}, "Everything from " + plural(kids.length, "phase job") + " and this page, labeled by phase")));
+  if (featureOn("issues")) out.push(panel("Issue log", plural(iss.length, "open issue"), all.some(canPlan) ? h("div", {class:"o-pad", style:"padding-bottom:0"}, logOn(["+ Log an issue on…"], x => openIssue(x, null))) : null,
+    issueTable(iss, true), (() => { const cl = O.issues.filter(i => ids.has(i.project_id) && !issOpen(i)); return cl.length ? h("details", {class:"o-hist", style:"padding:0 16px 10px"}, h("summary", null, "Closed (" + cl.length + ")"), issueTable(cl.sort(issSort), true)) : null; })()));
+  const wk = reportWeek();
+  out.push(panel("Weekly updates", "Latest from each phase", h("div", {class:"o-pad"}, all.map(x => { const u = O.wu.filter(w => w.project_id === x.id).sort((a, b) => b.week_start.localeCompare(a.week_start))[0], st = updateState(x, wk);
+    if (!u && !needsUpdate(x)) return null;
+    return h("div", {class:"prog-wu"}, h("div", {class:"prog-wu-h"}, phaseTag(x.id), h("b", null, x.parent_id ? x.name : "Program-wide"), chip(st.cls, st.text),
+      canEdit(x) && needsUpdate(x) ? h("button", {class:"btn small", onclick:() => openUpdate(x, wk)}, st.u ? "Edit" : "Write update") : null),
+      u ? updateCard(u, false) : h("div", {class:"muted small"}, "No updates yet.")); }))));
+  const tasks = O.items.filter(i => ids.has(i.project_id) && i.status !== "done").sort((a, b) => (isLate(b) - isLate(a)) || (a.due_date || "9999").localeCompare(b.due_date || "9999")).slice(0, 25);
+  if (featureOn("items")) out.push(panel("Open tasks", plural(O.items.filter(i => ids.has(i.project_id) && i.status !== "done").length, "open task") + " across the phase plans", tasks.length ? h("ul", {class:"task-list"}, tasks.map(i => { const x = byId(O.projects, i.project_id);
+    return h("li", {class:"task-r"}, h("span"), h("div", {class:"task-main"}, h("button", {class:"linkish", onclick:() => openPlanItem(x, i)}, i.title), h("small", null, parentPath(i))), phaseTag(i.project_id),
+      h("span", {class:"muted small"}, i.assignee_id ? personName(i.assignee_id) : "Unassigned"), planChip(i.status),
+      h("span", {class:"mono small nowrap" + (isLate(i) ? " bad-t" : "")}, i.due_date ? fmtDate(i.due_date) : "—")); })) : h("div", {class:"empty"}, "No open tasks. Each phase job keeps its own plan.")));
+  const ms = O.ms.filter(m => ids.has(m.project_id)).sort((a, b) => (a.actual ? 1 : 0) - (b.actual ? 1 : 0) || (a.planned || "9999").localeCompare(b.planned || "9999"));
+  if (ms.length) out.push(panel("Milestones", ms.filter(m => m.actual).length + " of " + ms.length + " done", h("ul", {class:"prog-list"}, ms.map(m => h("li", {class:(m.actual ? "done" : m.planned && m.planned < TODAY ? "late" : "")},
+    phaseTag(m.project_id), h("span", {class:"grow"}, m.name), h("span", {class:"mono small"}, m.actual ? "Done " + fmtDate(m.actual) : m.planned ? fmtDate(m.planned) : "no date"))))));
+  const crew = O.asg.filter(a => ids.has(a.project_id) && a.work_date >= mondayOf(TODAY) && a.work_date <= addDays(mondayOf(TODAY), 4));
+  if (crew.length) { const by = new Map(); for (const a of crew) { if (!by.has(a.project_id)) by.set(a.project_id, new Set()); by.get(a.project_id).add(a.tech_id); }
+    out.push(panel("Crew this week", people(new Set(crew.map(a => a.tech_id)).size) + " across the phases", h("ul", {class:"prog-list"}, [...by].map(([pid, set]) => h("li", null, phaseTag(pid),
+      h("span", {class:"grow"}, [...set].map(t => tech(t).name).filter(Boolean).join(", ")), h("span", {class:"muted small"}, people(set.size))))))); }
+  const logs = O.logs.filter(l => ids.has(l.project_id)).sort((a, b) => b.log_date.localeCompare(a.log_date) || (b.created_at || "").localeCompare(a.created_at || "")).slice(0, 15);
+  if (logs.length) out.push(panel("Daily field logs", "Latest across the phases", h("ul", {class:"prog-list logs"}, logs.map(l => h("li", null, phaseTag(l.project_id),
+    h("div", {class:"grow"}, h("b", {class:"small"}, fmtDate(l.log_date) + (l.crew_count ? " · crew " + l.crew_count : "") + (l.hours ? " · " + num(l.hours) + " hrs" : "")), h("div", {class:"pre small"}, l.work),
+      l.issues ? h("div", {class:"small warn-t"}, "Issue: " + l.issues) : null), h("span", {class:"muted small"}, personName(l.author_id)))))));
+  const cos = O.cos.filter(c => ids.has(c.project_id));
+  if (cos.length && money) out.push(panel("Change orders", plural(cos.length, "change order"), h("ul", {class:"prog-list"}, cos.map(c => h("li", null, phaseTag(c.project_id),
+    h("span", {class:"grow"}, (c.number ? c.number + " · " : "") + (c.title || c.description || "Change order")), h("span", {class:"mono small"}, c.amount != null ? compact(c.amount) : "not priced"), chip(c.status === "approved" ? "go" : c.status === "pending" ? "warn" : "", c.status || ""))))));
+  const reqs = O.reqs.filter(r => ids.has(r.project_id) && reqOpen(r));
+  if (reqs.length) out.push(panel("Customer requests", plural(reqs.length, "open request"), h("ul", {class:"prog-list"}, reqs.map(r => h("li", null, phaseTag(r.project_id),
+    h("button", {class:"linkish grow", onclick:() => openRequest(r)}, reqRef(r) + " · " + r.title), reqChip(r.status))))));
+  const docs = O.docs.filter(d => ids.has(d.project_id)).sort((a, b) => (b.created_at || "").localeCompare(a.created_at || "")).slice(0, 15);
+  if (docs.length) out.push(panel("Recent documents", "Newest across the phases · each phase's page has its full document set", h("ul", {class:"prog-list"}, docs.map(d => h("li", null, phaseTag(d.project_id),
+    h("button", {class:"linkish grow", onclick: async () => { const [u] = await signedUrls([d.path]); if (u) window.open(u, "_blank", "noopener"); else toast("Couldn't open that file."); }}, d.name),
+    h("span", {class:"muted small"}, folderName(d.folder) + " · " + fmtDate((d.created_at || "").slice(0, 10))))))));
+  if (featureOn("exps")) { const ex = O.exps.filter(e => ids.has(e.project_id)).sort((a, b) => b.spent_on.localeCompare(a.spent_on));
+    out.push(panel("Expenses", ex.length ? fullMoney(sum(ex.filter(e => e.status === "approved"), e => e.amount)) + " approved across the phases" : "None yet", h("div", {class:"o-pad", style:"padding-bottom:0"}, logOn(["+ Log an expense on…"], x => openExpense(x))), expTable(ex, true))); }
+  out.push(h("div", {class:"prog-h"}, h("h3", null, "Program-wide records"), h("span", {class:"muted small"}, "Things logged on the parent job itself")));
+  return out;
+}
+function openAddPhase(p) {
+  const n = kidsOf(p.id).length + 1;
+  const d = {name:"Phase " + n, po:"", contract:null, hours:null, pm:p.pm_id};
+  const pms = activePeople().filter(x => x.ops_role === "pm" || x.ops_role === "lead" || x.id === p.pm_id).map(x => [x.id, x.full_name || x.email]);
+  drawerForm("Add a phase job to " + p.number, d, [
+    h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Creates job " + p.number + "-" + String(n).padStart(2, "0") + " under this program, with the same customer and department. It keeps its own budget, hours, billing and margin, and shows up combined on this page."),
+    fld(d, "name", "Phase name", "text", {full:true, placeholder:"e.g. Phase 2 – North bowl remotes"}), fld(d, "po", "Customer PO number", "text"),
+    fld(d, "pm", "PM for this phase", "select", {options:pms, blank:false}),
+    fld(d, "contract", "PO amount (contract value, USD)", "number"), fld(d, "hours", "Labor hours budget", "number")],
+    async () => {
+      if (!(d.name || "").trim()) { toast("Name the phase."); return false; }
+      const {data, error} = await sb.rpc("add_phase_job", {parent:p.id, phase_name:d.name.trim(), po:d.po || null, contract:Number(d.contract) || 0, hours:Number(d.hours) || 0, pm:d.pm || null});
+      if (error) { toast(friendly(error)); return false; }
+      toast("Added " + data.number); await Promise.all([reload("projects"), loadDir()]); render(); return true;
+    });
+}
 
 // ---------------------------------------------------------------- summary by PM or customer
 // One page per PM or customer: every active project's progress, schedule, next milestone, open issues,

@@ -655,3 +655,16 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
   .drawer .form input,.drawer .form select,.drawer .form textarea{font-size:16px}
   .drawer .d-foot .btn{min-height:44px;flex:1}
 }
+
+/* programs */
+.prog-h{display:flex;align-items:baseline;gap:12px;margin:10px 0 -4px}.prog-h h3{margin:0;font-size:18px}
+.prog-tbl{min-width:900px}.prog-tbl td{vertical-align:top}
+.ph-tag{font-size:11px;white-space:nowrap}
+.prog-list{list-style:none;margin:0;padding:4px 16px 10px}
+.prog-list li{display:flex;gap:10px;align-items:baseline;padding:7px 0;border-top:1px solid var(--line)}.prog-list li:first-child{border-top:0}
+.prog-list .grow{flex:1;min-width:0;text-align:left}
+.prog-list li.done{color:var(--muted)}.prog-list li.late .mono{color:var(--bad)}
+.prog-list.logs .pre{white-space:pre-wrap}
+.prog-wu{border-top:1px solid var(--line);padding:10px 0}.prog-wu:first-child{border-top:0;padding-top:0}
+.prog-wu-h{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px}
+.prog-link .k{font-weight:600}
