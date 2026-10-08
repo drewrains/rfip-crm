@@ -87,6 +87,10 @@ details.older summary{cursor:pointer;color:var(--accent);padding:10px 0}
 .pcard .when{font-size:13px;color:var(--muted);text-align:right}
 .pcard .when b{display:block;color:var(--fg);font-size:15px}
 .none{padding:24px 16px;text-align:center;color:var(--muted);background:var(--panel);border:1px solid var(--line);border-radius:10px}
+.iss .t{font-weight:600}.iss .d{color:var(--muted);font-size:13px}.iss .d b{color:var(--fg);font-weight:600}
+.iss .nx{margin-top:6px;background:var(--sunk);border-radius:8px;padding:7px 10px;font-size:14px;white-space:pre-wrap}
+.iss .nx span{display:block;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+.iss .nx.late span{color:var(--bad)}.iss .nx.done span{color:var(--go)}
 .reqbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;padding:14px 16px;margin:0 0 6px}
 .reqbar p{margin:0;color:var(--muted);font-size:14px}.reqbar b{color:var(--fg)}
 .btn{display:inline-block;border:1px solid var(--line);background:var(--panel);color:var(--fg);font:inherit;font-size:14px;font-weight:600;padding:8px 14px;border-radius:8px;cursor:pointer;text-decoration:none}
@@ -150,7 +154,15 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
     const pct = Math.max(0, Math.min(100, Math.round(Number(v.pct_complete) || 0)));
     const latest = (v.updates || [])[0];
     const days = v.end_date ? Math.round((Date.parse(v.end_date + "T12:00:00Z") - Date.parse(today + "T12:00:00Z")) / 864e5) : null;
-    const plan = v.plan || [], ms = v.milestones || [], ups = v.updates || [];
+    const plan = v.plan || [], ms = v.milestones || [], ups = v.updates || [], iss = v.issues || [];
+    const issOpen = iss.filter(i => i.status !== "closed"), issDone = iss.filter(i => i.status === "closed");
+    const issRow = i => {
+      const late = i.status !== "closed" && i.due && i.due < today;
+      return `<li class="iss"><div class="t">${i.priority === "high" && i.status !== "closed" ? chip(["High priority", "bad"]) + " " : ""}${esc(i.issue)}</div>
+        <div class="d">Raised ${esc(short(i.opened))} · Owner <b>${esc(i.owner)}</b>${i.status === "closed" ? " · Closed " + esc(short(i.closed)) : ""}</div>
+        ${i.status !== "closed" && i.next_step ? `<div class="nx${late ? " late" : ""}"><span>Next step${i.due ? (late ? " · was due " : " · by ") + esc(short(i.due)) : ""}</span>${esc(i.next_step)}</div>` : ""}
+        ${i.status === "closed" && i.resolution ? `<div class="nx done"><span>Resolved</span>${esc(i.resolution)}</div>` : ""}</li>`;
+    };
     const phaseRow = p => {
       const share = p.items ? Math.round(p.done / p.items * 100) : (p.status === "done" ? 100 : p.status === "in_progress" ? 50 : 0);
       const st = p.status === "done" ? "Done" : p.status === "in_progress" ? "Underway" : p.status === "blocked" ? "On hold" : "Upcoming";
@@ -181,6 +193,9 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
         <div class="tile"><div class="k">Planned completion</div><div class="v">${v.end_date ? esc(short(v.end_date)) : "—"}</div>
           <div class="s">${v.phase === "closed" ? "Complete" : days == null ? "" : days >= 0 ? days + " days from today" : "Past the planned date"}</div></div>
       </div>
+      ${iss.length ? `<section><h2>Open issues <span>${issOpen.length ? issOpen.length + " being worked" : "none open"}${issDone.length ? " · " + issDone.length + " closed in the last 30 days" : ""}</span></h2>
+        ${issOpen.length ? `<ul class="rows">${issOpen.map(issRow).join("")}</ul>` : `<div class="empty">No open issues.</div>`}
+        ${issDone.length ? `<details class="older"><summary>Recently closed (${issDone.length})</summary><ul class="rows">${issDone.map(issRow).join("")}</ul></details>` : ""}</section>` : ""}
       ${plan.length ? `<section><h2>Project plan <span>${plan.filter(p => p.status === "done").length} of ${plan.length} phases done</span></h2><ul class="rows">${plan.map(phaseRow).join("")}</ul></section>` : ""}
       ${ms.length ? `<section><h2>Milestones <span>${ms.filter(m => m.actual).length} of ${ms.length} done</span></h2><ul class="rows">${ms.map(msRow).join("")}</ul></section>` : ""}
       <section><h2>Weekly update ${latest ? `<span>from ${esc(v.pm ? v.pm.name : "your project manager")}</span>` : ""}</h2>
@@ -216,6 +231,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
     document.title = d.customer + " projects · RFIP";
     const active = all.filter(p => p.phase !== "closed"), done = all.filter(p => p.phase === "closed");
     const withUpd = active.filter(sched), onTrack = withUpd.filter(p => sched(p) === "on_track").length;
+    const issN = active.reduce((n, p) => n + (Number(p.open_issues) || 0), 0);
     const avg = active.length ? Math.round(active.reduce((s, p) => s + (Number(p.pct_complete) || 0), 0) / active.length) : 0;
     const soon = active.filter(p => p.end_date && p.end_date >= today && p.end_date <= new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10)).length;
     const q = st.q.trim().toLowerCase();
@@ -228,7 +244,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
       return `<li><button class="pcard" data-id="${esc(p.id)}" aria-label="Open ${esc(p.name)}">
         <div><div class="t">${esc(p.name)}</div>
           <div class="d">Job ${esc(p.number)}${p.department ? " · " + esc(p.department) : ""}${p.pm ? " · PM " + esc(p.pm.name) : ""}</div>
-          <div class="chips">${chip(PHASE[p.phase] || PHASE.in_progress)}${s ? chip(SCHED[s]) : ""}${p.milestones ? `<span class="chip">${p.milestones_done} of ${p.milestones} milestones</span>` : ""}</div>
+          <div class="chips">${chip(PHASE[p.phase] || PHASE.in_progress)}${s ? chip(SCHED[s]) : ""}${p.milestones ? `<span class="chip">${p.milestones_done} of ${p.milestones} milestones</span>` : ""}${p.open_issues ? chip([p.open_issues + (p.open_issues === 1 ? " open issue" : " open issues"), "warn"]) : ""}</div>
           ${nm ? `<div class="d" style="margin-top:6px">${esc(nm)}</div>` : ""}</div>
         <div><div class="pct">${pct}% complete</div><div class="meter" role="img" aria-label="${pct}% complete"><i style="width:${pct}%"></i></div></div>
         <div class="when">${p.phase === "closed" ? "Completed" : "Planned finish"}<b>${p.end_date ? esc(short(p.end_date)) : "—"}</b>
@@ -243,7 +259,8 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
         <div class="tile"><div class="k">Active projects</div><div class="v">${active.length}</div><div class="s">${done.length ? done.length + " completed" : ""}</div></div>
         <div class="tile"><div class="k">Average complete</div><div class="v">${avg}%</div><div class="meter" role="img" aria-label="${avg}% average complete"><i style="width:${avg}%"></i></div></div>
         <div class="tile"><div class="k">On schedule</div><div class="v">${withUpd.length ? onTrack + " of " + withUpd.length : "—"}</div><div class="s">From the latest weekly updates</div></div>
-        <div class="tile"><div class="k">Finishing in 30 days</div><div class="v">${soon}</div><div class="s">Planned completions</div></div>
+        ${issN ? `<div class="tile"><div class="k">Open issues</div><div class="v">${issN}</div><div class="s">Across ${active.filter(p => p.open_issues).length} project${active.filter(p => p.open_issues).length === 1 ? "" : "s"} · ${soon} finishing in 30 days</div></div>`
+          : `<div class="tile"><div class="k">Finishing in 30 days</div><div class="v">${soon}</div><div class="s">Planned completions</div></div>`}
       </div>
       ${reqs ? `<div class="reqbar"><p><b>Problem on a project, a question, a change, or new work?</b> Send it to RFIP here and track it on this page.</p>
         <span style="display:flex;gap:8px;flex-wrap:wrap">${reqs.length ? `<button class="btn" id="myreqs">Your requests${openReqs() ? " (" + openReqs() + " open)" : ""}</button>` : ""}<button class="btn primary" id="newreq">Submit a request</button></span></div>` : ""}
