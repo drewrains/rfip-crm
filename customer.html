@@ -91,6 +91,10 @@ details.older summary{cursor:pointer;color:var(--accent);padding:10px 0}
 .iss .nx{margin-top:6px;background:var(--sunk);border-radius:8px;padding:7px 10px;font-size:14px;white-space:pre-wrap}
 .iss .nx span{display:block;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
 .iss .nx.late span{color:var(--bad)}.iss .nx.done span{color:var(--go)}
+.tlink{text-align:left;font:inherit;color:inherit;cursor:pointer;width:100%}
+.tlink:hover,.tlink:focus-visible{border-color:var(--accent);outline:none}.tlink .k span{color:var(--accent)}
+.ilink{cursor:pointer}.ilink:hover{text-decoration:underline}
+.iss .pj{display:block;font-size:13px;font-weight:600;text-decoration:none;margin-bottom:2px}.iss .pj:hover{text-decoration:underline}
 .reqbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;padding:14px 16px;margin:0 0 6px}
 .reqbar p{margin:0;color:var(--muted);font-size:14px}.reqbar b{color:var(--fg)}
 .btn{display:inline-block;border:1px solid var(--line);background:var(--panel);color:var(--fg);font:inherit;font-size:14px;font-weight:600;padding:8px 14px;border-radius:8px;cursor:pointer;text-decoration:none}
@@ -148,6 +152,13 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
   const k = qs.get("k") || "", a = qs.get("a") || "";
   const isTok = t => /^[0-9a-f]{48}$/.test(t);
 
+  const issRow = (i, pj) => {
+    const late = i.status !== "closed" && i.due && i.due < today;
+    return `<li class="iss"><div class="t">${pj ? `<a href="#" class="pj" data-p="${esc(pj.id)}">Job ${esc(pj.number)} · ${esc(pj.name)}</a>` : ""}${i.priority === "high" && i.status !== "closed" ? chip(["High priority", "bad"]) + " " : ""}${esc(i.issue)}</div>
+      <div class="d">Raised ${esc(short(i.opened))} · Owner <b>${esc(i.owner)}</b>${i.status === "closed" ? " · Closed " + esc(short(i.closed)) : ""}</div>
+      ${i.status !== "closed" && i.next_step ? `<div class="nx${late ? " late" : ""}"><span>Next step${i.due ? (late ? " · was due " : " · by ") + esc(short(i.due)) : ""}</span>${esc(i.next_step)}</div>` : ""}
+      ${i.status === "closed" && i.resolution ? `<div class="nx done"><span>Resolved</span>${esc(i.resolution)}</div>` : ""}</li>`;
+  };
   // ---------- one project's status page ----------
   function renderProject(v, back) {
     document.title = v.name + " · RFIP";
@@ -156,13 +167,6 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
     const days = v.end_date ? Math.round((Date.parse(v.end_date + "T12:00:00Z") - Date.parse(today + "T12:00:00Z")) / 864e5) : null;
     const plan = v.plan || [], ms = v.milestones || [], ups = v.updates || [], iss = v.issues || [];
     const issOpen = iss.filter(i => i.status !== "closed"), issDone = iss.filter(i => i.status === "closed");
-    const issRow = i => {
-      const late = i.status !== "closed" && i.due && i.due < today;
-      return `<li class="iss"><div class="t">${i.priority === "high" && i.status !== "closed" ? chip(["High priority", "bad"]) + " " : ""}${esc(i.issue)}</div>
-        <div class="d">Raised ${esc(short(i.opened))} · Owner <b>${esc(i.owner)}</b>${i.status === "closed" ? " · Closed " + esc(short(i.closed)) : ""}</div>
-        ${i.status !== "closed" && i.next_step ? `<div class="nx${late ? " late" : ""}"><span>Next step${i.due ? (late ? " · was due " : " · by ") + esc(short(i.due)) : ""}</span>${esc(i.next_step)}</div>` : ""}
-        ${i.status === "closed" && i.resolution ? `<div class="nx done"><span>Resolved</span>${esc(i.resolution)}</div>` : ""}</li>`;
-    };
     const phaseRow = p => {
       const share = p.items ? Math.round(p.done / p.items * 100) : (p.status === "done" ? 100 : p.status === "in_progress" ? 50 : 0);
       const st = p.status === "done" ? "Done" : p.status === "in_progress" ? "Underway" : p.status === "blocked" ? "On hold" : "Upcoming";
@@ -193,7 +197,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
         <div class="tile"><div class="k">Planned completion</div><div class="v">${v.end_date ? esc(short(v.end_date)) : "—"}</div>
           <div class="s">${v.phase === "closed" ? "Complete" : days == null ? "" : days >= 0 ? days + " days from today" : "Past the planned date"}</div></div>
       </div>
-      ${iss.length ? `<section><h2>Open issues <span>${issOpen.length ? issOpen.length + " being worked" : "none open"}${issDone.length ? " · " + issDone.length + " closed in the last 30 days" : ""}</span></h2>
+      ${iss.length ? `<section id="issues"><h2>Open issues <span>${issOpen.length ? issOpen.length + " being worked" : "none open"}${issDone.length ? " · " + issDone.length + " closed in the last 30 days" : ""}</span></h2>
         ${issOpen.length ? `<ul class="rows">${issOpen.map(issRow).join("")}</ul>` : `<div class="empty">No open issues.</div>`}
         ${issDone.length ? `<details class="older"><summary>Recently closed (${issDone.length})</summary><ul class="rows">${issDone.map(issRow).join("")}</ul></details>` : ""}</section>` : ""}
       ${plan.length ? `<section><h2>Project plan <span>${plan.filter(p => p.status === "done").length} of ${plan.length} phases done</span></h2><ul class="rows">${plan.map(phaseRow).join("")}</ul></section>` : ""}
@@ -244,7 +248,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
       return `<li><button class="pcard" data-id="${esc(p.id)}" aria-label="Open ${esc(p.name)}">
         <div><div class="t">${esc(p.name)}</div>
           <div class="d">Job ${esc(p.number)}${p.department ? " · " + esc(p.department) : ""}${p.pm ? " · PM " + esc(p.pm.name) : ""}</div>
-          <div class="chips">${chip(PHASE[p.phase] || PHASE.in_progress)}${s ? chip(SCHED[s]) : ""}${p.milestones ? `<span class="chip">${p.milestones_done} of ${p.milestones} milestones</span>` : ""}${p.open_issues ? chip([p.open_issues + (p.open_issues === 1 ? " open issue" : " open issues"), "warn"]) : ""}</div>
+          <div class="chips">${chip(PHASE[p.phase] || PHASE.in_progress)}${s ? chip(SCHED[s]) : ""}${p.milestones ? `<span class="chip">${p.milestones_done} of ${p.milestones} milestones</span>` : ""}${p.open_issues ? `<span class="chip warn ilink" data-iss="${esc(p.id)}" title="See this project's issues">${p.open_issues + (p.open_issues === 1 ? " open issue" : " open issues")} →</span>` : ""}</div>
           ${nm ? `<div class="d" style="margin-top:6px">${esc(nm)}</div>` : ""}</div>
         <div><div class="pct">${pct}% complete</div><div class="meter" role="img" aria-label="${pct}% complete"><i style="width:${pct}%"></i></div></div>
         <div class="when">${p.phase === "closed" ? "Completed" : "Planned finish"}<b>${p.end_date ? esc(short(p.end_date)) : "—"}</b>
@@ -259,7 +263,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
         <div class="tile"><div class="k">Active projects</div><div class="v">${active.length}</div><div class="s">${done.length ? done.length + " completed" : ""}</div></div>
         <div class="tile"><div class="k">Average complete</div><div class="v">${avg}%</div><div class="meter" role="img" aria-label="${avg}% average complete"><i style="width:${avg}%"></i></div></div>
         <div class="tile"><div class="k">On schedule</div><div class="v">${withUpd.length ? onTrack + " of " + withUpd.length : "—"}</div><div class="s">From the latest weekly updates</div></div>
-        ${issN ? `<div class="tile"><div class="k">Open issues</div><div class="v">${issN}</div><div class="s">Across ${active.filter(p => p.open_issues).length} project${active.filter(p => p.open_issues).length === 1 ? "" : "s"} · ${soon} finishing in 30 days</div></div>`
+        ${issN ? `<button class="tile tlink" id="issTile" aria-label="See all open issues"><div class="k">Open issues <span aria-hidden="true">→</span></div><div class="v">${issN}</div><div class="s">Across ${active.filter(p => p.open_issues).length} project${active.filter(p => p.open_issues).length === 1 ? "" : "s"} · ${soon} finishing in 30 days</div></button>`
           : `<div class="tile"><div class="k">Finishing in 30 days</div><div class="v">${soon}</div><div class="s">Planned completions</div></div>`}
       </div>
       ${reqs ? `<div class="reqbar"><p><b>Problem on a project, a question, a change, or new work?</b> Send it to RFIP here and track it on this page.</p>
@@ -278,7 +282,8 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
     main.querySelectorAll(".seg button").forEach(b => b.onclick = () => { st.view = b.dataset.v; renderList(); });
     const qi = document.getElementById("q");
     if (qi) qi.oninput = e => { st.q = e.target.value; const pos = e.target.selectionStart; renderList(); const n = document.getElementById("q"); n.focus(); n.setSelectionRange(pos, pos); };
-    main.querySelectorAll(".pcard").forEach(b => b.onclick = () => openProject(b.dataset.id));
+    main.querySelectorAll(".pcard").forEach(b => b.onclick = e => openProject(b.dataset.id, false, !!e.target.closest("[data-iss]")));
+    const it = document.getElementById("issTile"); if (it) it.onclick = () => go("issues");
     const nb = document.getElementById("newreq"); if (nb) nb.onclick = () => go("new");
     const mb = document.getElementById("myreqs"); if (mb) mb.onclick = () => go("requests");
   }
@@ -295,7 +300,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
   const wireBack = () => { const b = document.getElementById("back"); if (b) b.onclick = e => { e.preventDefault(); go(""); }; };
   function go(v, noPush, pre) {
     if (!noPush) history.pushState({v}, "", "?a=" + a + (v ? "&v=" + v : ""));
-    if (v === "new") renderForm(pre); else if (v === "requests") renderRequests(); else renderList();
+    if (v === "new") renderForm(pre); else if (v === "requests") renderRequests(); else if (v === "issues") renderIssues(); else renderList();
     window.scrollTo(0, 0);
   }
   function renderRequests() {
@@ -374,7 +379,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
       window.scrollTo(0, 0);
     };
   }
-  async function openProject(id, noPush) {
+  async function openProject(id, noPush, toIssues) {
     main.innerHTML = `<p style="color:var(--muted)">Loading…</p>`;
     let v;
     try { v = await rpc("customer_portal_project", {k:a, pid:id}); } catch (e) { v = null; }
@@ -389,12 +394,33 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
       b.querySelectorAll("button").forEach(x => x.onclick = () => go("new", false, {kind:x.dataset.k, project_id:id}));
     }
     document.getElementById("back").onclick = e => { e.preventDefault(); history.pushState({}, "", "?a=" + a); renderList(); window.scrollTo(0, 0); };
+    const sec = document.getElementById("issues"); if (toIssues && sec) sec.scrollIntoView({behavior:"smooth", block:"start"});
+  }
+  // every open issue across the customer's projects
+  async function renderIssues() {
+    document.title = "Open issues · " + d.customer + " · RFIP";
+    main.innerHTML = `<p style="color:var(--muted)">Loading…</p>`;
+    const withIss = all.filter(p => p.phase !== "closed" && p.open_issues);
+    const pages = await Promise.all(withIss.map(p => rpc("customer_portal_project", {k:a, pid:p.id}).catch(() => null)));
+    const rows = [];
+    pages.forEach((v, n) => { if (v) for (const i of v.issues || []) if (i.status !== "closed") rows.push({i, pj:withIss[n]}); });
+    const today2 = today, late = rows.filter(r => r.i.due && r.i.due < today2);
+    rows.sort((x, y) => ((y.i.due && y.i.due < today2) - (x.i.due && x.i.due < today2)) || ((x.i.priority === "high" ? 0 : 1) - (y.i.priority === "high" ? 0 : 1)) || (x.i.due || "9999").localeCompare(y.i.due || "9999"));
+    main.innerHTML = `<a class="back" href="#" id="back">← All ${esc(d.customer)} projects</a>
+      <div class="eyebrow">Open issues</div><h1>${esc(d.customer)}</h1>
+      <div class="meta"><span>Every open issue across your active projects, who owns it and the next step.${late.length ? ` <b style="color:var(--bad)">${late.length} past due.</b>` : ""}</span></div>
+      <section><h2>Open issues <span>${rows.length} across ${new Set(rows.map(r => r.pj.id)).size} project${new Set(rows.map(r => r.pj.id)).size === 1 ? "" : "s"}</span></h2>
+        ${rows.length ? `<ul class="rows">${rows.map(r => issRow(r.i, r.pj)).join("")}</ul>` : `<div class="empty">No open issues.</div>`}</section>
+      <p class="foot">Something new? Open the project and use <b>Report an issue</b>, or call RFIP at <a href="tel:+14052860928">405-286-0928</a>.</p>`;
+    document.getElementById("back").onclick = e => { e.preventDefault(); go(""); };
+    main.querySelectorAll("a.pj").forEach(x => x.onclick = e => { e.preventDefault(); openProject(x.dataset.p, false, true); });
+    window.scrollTo(0, 0);
   }
   window.onpopstate = () => { const q2 = new URLSearchParams(location.search), p = q2.get("p"), v = q2.get("v");
-    if (p) openProject(p, true); else if (reqs && (v === "new" || v === "requests")) go(v, true); else renderList(); };
+    if (p) openProject(p, true); else if (v === "issues" || (reqs && (v === "new" || v === "requests"))) go(v, true); else renderList(); };
   const startP = qs.get("p"), startV = qs.get("v");
   if (startP && all.some(p => p.id === startP)) openProject(startP, true);
-  else if (reqs && (startV === "new" || startV === "requests")) go(startV, true);
+  else if (startV === "issues" || (reqs && (startV === "new" || startV === "requests"))) go(startV, true);
   else renderList();
 })();
 </script>
