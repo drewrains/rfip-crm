@@ -100,10 +100,16 @@ create policy exp_read on public.expenses for select to authenticated
   using (submitted_by = auth.uid() or approver_id = auth.uid() or public.is_finance()
          or (project_id is not null and public.ops_can_see_money(project_id))
          or (project_id is null and public.is_admin()));
+-- (checked with definer rights: a sales rep can't read the projects table itself)
+create or replace function public.project_is_open(p uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from projects where id = p and phase <> 'closed');
+$$;
+revoke execute on function public.project_is_open(uuid) from public, anon;
+grant execute on function public.project_is_open(uuid) to authenticated;
 drop policy if exists exp_insert on public.expenses;
 create policy exp_insert on public.expenses for insert to authenticated
-  with check (public.is_active_user() and (project_id is null
-    or exists (select 1 from projects p where p.id = project_id and p.phase <> 'closed')));
+  with check (public.is_active_user() and (project_id is null or public.project_is_open(project_id)));
 
 -- a short list of active jobs anyone can log an expense against (no money, no details)
 create or replace function public.expense_projects()
