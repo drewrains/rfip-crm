@@ -38,7 +38,11 @@ async function reload(key) { O[key] = await fetchTable(key); CALC.clear(); }
 async function load() {
   await reload("depts");
   if (O.missing) return;
-  await Promise.all(Object.keys(TABLES).filter(k => k !== "depts").map(reload).concat([loadDir()]));
+  await Promise.all(Object.keys(TABLES).filter(k => k !== "depts").map(reload).concat([loadDir(), loadExpProj()]));
+}
+async function loadExpProj() {
+  const {data, error} = await sb.rpc("expense_projects");
+  O.expProj = error ? null : (data || []);
 }
 async function loadDir() {
   const {data, error} = await sb.rpc("ops_project_directory");
@@ -228,7 +232,7 @@ function daysSafe(deptKey) {
 
 // ---------------------------------------------------------------- strip
 function strip(el) {
-  el.hidden = S.view === "ops-overview" || S.view === "ops-manpower";
+  el.hidden = ["ops-overview", "ops-manpower", "ops-expenses", "ops-timeline", "ops-summary"].includes(S.view);
   if (el.hidden) return;
   if (!role() || (S.view === "handoffs" && S.section !== "ops")) {
     const mine = O.handoffs.filter(x => x.status !== "cancelled");
@@ -2179,7 +2183,13 @@ const EXP_ST = {submitted:["Waiting on PM", "warn"], pm_approved:["Waiting on CF
 const catName = k => (EXP_CAT.find(x => x[0] === k) || [k, k])[1];
 const paidName = k => (EXP_PAID.find(x => x[0] === k) || [k, k])[1];
 const isFin = () => !!(S.me && S.me.finance_approver);
-const canPmApprove = e => { const p = byId(O.projects, e.project_id); return e.status === "submitted" && !!p && canEdit(p); };
+const canPmApprove = e => { if (e.status !== "submitted") return false;
+  if (!e.project_id) return e.approver_id === S.me.id || isAdmin();
+  const p = byId(O.projects, e.project_id); return !!p && canEdit(p); };
+// jobs anyone can log an expense against (falls back to the projects you can see if the list isn't set up yet)
+const expJobs = () => (O.expProj || O.projects.filter(p => p.phase !== "closed")).slice().sort((a, b) => a.number.localeCompare(b.number));
+const GENERAL = {id:null, number:"", name:"General / overhead", general:true};
+const expProject = id => id ? (byId(O.projects, id) || byId(O.expProj || [], id) || proj(id)) : GENERAL;
 const canCfoApprove = e => e.status === "pm_approved" && isFin();
 const canSendBack = e => (e.status === "submitted" && (canPmApprove(e) || isFin())) || (e.status === "pm_approved" && isFin());
 const waitingOnMe = () => O.exps.filter(e => canPmApprove(e) || canCfoApprove(e));
@@ -2192,7 +2202,7 @@ function expTable(list, showProject) {
     h("thead", null, h("tr", null, h("th", null, "Date"), showProject ? h("th", null, "Project") : null, h("th", null, "Category"), h("th", null, "Vendor and purpose"), h("th", null, "Logged by"),
       h("th", {class:"num"}, "Amount"), h("th", null, "Status"), h("th", null, "Receipt"), h("th", null, h("span", {class:"sr"}, "Actions")))),
     h("tbody", null, list.map(e => {
-      const p = byId(O.projects, e.project_id) || proj(e.project_id);
+      const p = expProject(e.project_id);
       return h("tr", null, h("td", {class:"mono nowrap"}, fmtDate(e.spent_on)),
         showProject ? h("td", null, p.number ? h("button", {class:"linkish", onclick:() => byId(O.projects, e.project_id) && openProject(e.project_id)}, p.number) : "—", h("div", {class:"muted small"}, p.name || "")) : null,
         h("td", null, catName(e.category)),
@@ -2205,7 +2215,7 @@ function expTable(list, showProject) {
         h("td", {class:"nowrap"},
           canPmApprove(e) || canCfoApprove(e) ? h("button", {class:"btn small primary", onclick: ev => decideExpense(e, ev.currentTarget)}, canCfoApprove(e) ? "Final approve" : "Approve") : null,
           canSendBack(e) ? h("button", {class:"btn small", onclick:() => openSendBack(e)}, "Send back") : null,
-          e.submitted_by === S.me.id && ["submitted", "rejected"].includes(e.status) && p.id ? h("button", {class:"btn small", onclick:() => openExpense(p, e)}, e.status === "rejected" ? "Fix and resubmit" : "Edit") : null));
+          e.submitted_by === S.me.id && ["submitted", "rejected"].includes(e.status) && (p.id || p.general) ? h("button", {class:"btn small", onclick:() => openExpense(p, e)}, e.status === "rejected" ? "Fix and resubmit" : "Edit") : null));
     }))));
 }
 async function decideExpense(e, btn) {
@@ -2234,6 +2244,7 @@ function openSendBack(e) {
     }}, "Send back")]});
 }
 function openExpense(p, e) {
+  p = p || GENERAL;
   const d = e ? {...e, amount:Number(e.amount)} : {spent_on:TODAY, category:"materials", amount:null, paid_with:"company_card", vendor:"", description:""};
   // two pickers: the camera (phones open it straight away) or a photo/PDF already on the device
   let picked = null;
@@ -2245,7 +2256,10 @@ function openExpense(p, e) {
   const cam = h("input", {type:"file", accept:"image/*", capture:"environment", class:"sr", id:"f-receipt-cam", onchange: ev => choose(ev.target.files[0])});
   const pick = h("input", {type:"file", accept:"image/*,application/pdf", class:"sr", id:"f-receipt", onchange: ev => choose(ev.target.files[0])});
   const file = {get files() { return picked ? [picked] : []; }};
-  const note = h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Goes to " + (p.pm_id ? personName(p.pm_id) + " (PM)" : "the PM") + " to approve, then to the CFO for final approval. Approved expenses count toward the job's cost.");
+  const mgr = S.me.manager_id ? personName(S.me.manager_id) : null;
+  const note = h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, p.general
+    ? "Not tied to a project. Goes to " + (mgr ? mgr + " (your manager)" : "your department lead, or straight to the CFO if you don't have one,") + " to approve, then to the CFO for final approval."
+    : "Goes to " + (p.pm_id ? personName(p.pm_id) + " (PM)" : "the PM") + " to approve, then to the CFO for final approval. Approved expenses count toward the job's cost.");
   const body = h("div", null,
     e && e.status === "rejected" ? h("div", {class:"o-due bad"}, h("b", null, "Sent back by " + personName(e.rejected_by)), h("span", null, e.reject_reason || "")) : null,
     h("div", {class:"form"},
@@ -2270,49 +2284,55 @@ function openExpense(p, e) {
     if (file.files.length) {
       const f = await shrinkImage(file.files[0]);
       const safe = f.name.replace(/[^\w.\- ]+/g, "_").replace(/\s+/g, " ").slice(-100);
-      uploaded = p.id + "/expenses/" + Date.now() + "-" + Math.random().toString(36).slice(2, 6) + "-" + safe;
+      uploaded = (p.general ? "general/" + S.me.id : p.id) + "/expenses/" + Date.now() + "-" + Math.random().toString(36).slice(2, 6) + "-" + safe;
       const {error} = await sb.storage.from(BUCKET).upload(uploaded, f, {contentType:f.type || "application/octet-stream", upsert:false});
       if (error) { btn.disabled = false; btn.textContent = e ? "Resubmit" : "Submit"; toast("The receipt didn't upload: " + friendly(error)); return; }
       path = uploaded;
     }
-    const row = {project_id:p.id, spent_on:d.spent_on, category:d.category, amount:amt, paid_with:d.paid_with, vendor:nullify((d.vendor || "").trim()), description:nullify((d.description || "").trim()), receipt_path:path};
+    const row = {project_id:p.general ? null : p.id, spent_on:d.spent_on, category:d.category, amount:amt, paid_with:d.paid_with, vendor:nullify((d.vendor || "").trim()), description:nullify((d.description || "").trim()), receipt_path:path};
     const res = e ? await run(sb.from("expenses").update(row).eq("id", e.id).select().single(), "Resubmitted to the PM")
                   : await run(sb.from("expenses").insert(row).select().single(), "Submitted to the PM");
     btn.disabled = false; btn.textContent = e ? "Resubmit" : "Submit";
     if (!res) { if (uploaded) await sb.storage.from(BUCKET).remove([uploaded]); return; }
     if (uploaded && e && e.receipt_path && e.receipt_path !== uploaded) await sb.storage.from(BUCKET).remove([e.receipt_path]);
     closeDrawer(); await reload("exps"); render();
-    if (p.pm_id) tell([p.pm_id], "Expense to approve: " + fullMoney(amt) + " · " + (row.vendor || catName(row.category)) + " on " + p.number,
-      (S.me.full_name || S.me.email) + (e ? " resubmitted" : " submitted") + " an expense on " + p.number + " " + p.name + ": " + fullMoney(amt) + " at " + (row.vendor || catName(row.category)) + ". It needs your approval.", "#project=" + p.id);
+    const where = p.general ? "(general, not a project)" : "on " + p.number + " " + p.name;
+    const who = p.general ? (res.status === "pm_approved" ? activePeople().filter(x => x.finance_approver).map(x => x.id) : [res.approver_id]) : [p.pm_id];
+    tell(who.filter(Boolean), "Expense to approve: " + fullMoney(amt) + " · " + (row.vendor || catName(row.category)) + (p.general ? "" : " on " + p.number),
+      (S.me.full_name || S.me.email) + (e ? " resubmitted" : " submitted") + " an expense " + where + ": " + fullMoney(amt) + " at " + (row.vendor || catName(row.category)) + ". It needs your approval.", p.general ? "" : "#project=" + p.id);
   }}, e ? "Resubmit" : "Submit"));
-  openDrawer({title:(e ? "Expense · " : "Log an expense · ") + p.number, body, foot});
+  openDrawer({title:(e ? "Expense · " : "Log an expense · ") + (p.general ? "General" : p.number), body, foot});
   const amt = document.getElementById("f-amount"); if (amt) { amt.setAttribute("inputmode", "decimal"); amt.setAttribute("placeholder", "0.00"); }
 }
 // on a phone: big buttons and cards instead of the wide tables
 const isPhone = () => window.matchMedia && window.matchMedia("(max-width:700px)").matches;
 const isInstalled = () => (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true;
 function startExpense() {
-  const ps = O.projects.filter(p => p.phase !== "closed");
-  if (!ps.length) { toast("You aren't on any active projects yet."); return; }
-  if (ps.length === 1) { openExpense(ps[0]); return; }
-  const mine = ps.filter(p => p.pm_id === S.me.id || O.asg.some(a => a.project_id === p.id && a.work_date === TODAY && tech(a.tech_id).profile_id === S.me.id));
-  const sorted = [...mine, ...ps.filter(p => !mine.includes(p)).sort((a, b) => a.name.localeCompare(b.name))];
-  openDrawer({title:"Log an expense · which job?", body:h("div", {class:"pick-job"}, sorted.map(p => h("button", {class:"btn wide pick-row", onclick:() => openExpense(p)},
-    h("b", null, p.name), h("small", null, p.number + (mine.includes(p) ? " · today" : ""))))), foot:[h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel")]});
+  const ps = expJobs();
+  const mine = ps.filter(p => p.pm_id === S.me.id || O.asg.some(a => a.project_id === p.id && a.work_date === TODAY && tech(a.tech_id).profile_id === S.me.id)
+    || (O.members || []).some(m => m.project_id === p.id && m.profile_id === S.me.id));
+  const rest = ps.filter(p => !mine.includes(p));
+  const q = h("input", {class:"inp", type:"search", placeholder:"Search jobs by name or number", "aria-label":"Search jobs"});
+  const list = h("div", {class:"pick-job"});
+  const row = (p, tag) => h("button", {class:"btn wide pick-row", onclick:() => openExpense(p)}, h("b", null, p.name), h("small", null, (p.number || "") + (tag ? " · " + tag : "")));
+  const draw = () => { const t = q.value.trim().toLowerCase(), f = p => !t || (p.name + " " + p.number).toLowerCase().includes(t);
+    list.replaceChildren(row(GENERAL, "not tied to a project (sales travel, office, training…)"), ...mine.filter(f).map(p => row(p, "yours")), ...rest.filter(f).map(p => row(p))); };
+  q.oninput = draw; draw();
+  openDrawer({title:"Log an expense · which job?", body:h("div", {class:"o-stack"}, ps.length > 8 ? q : null, list), foot:[h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel")]});
 }
 function expCards(list) {
   if (!list.length) return h("div", {class:"empty"}, "No expenses here.");
-  return h("ul", {class:"exp-cards"}, list.map(e => { const p = byId(O.projects, e.project_id) || proj(e.project_id), st = EXP_ST[e.status] || EXP_ST.submitted;
+  return h("ul", {class:"exp-cards"}, list.map(e => { const p = expProject(e.project_id), st = EXP_ST[e.status] || EXP_ST.submitted;
     return h("li", null,
       h("div", {class:"ec-top"}, h("b", null, fullMoney(e.amount)), chip(st[1], st[0])),
       h("div", null, (e.vendor || catName(e.category)) + " · " + fmtDate(e.spent_on)),
-      h("div", {class:"muted small"}, (p.number ? p.number + " · " + p.name : "") + (e.submitted_by !== S.me.id ? " · " + personName(e.submitted_by) : "")),
+      h("div", {class:"muted small"}, (p.general ? "General / overhead" : p.number ? p.number + " · " + p.name : "") + (e.submitted_by !== S.me.id ? " · " + personName(e.submitted_by) : "")),
       e.status === "rejected" && e.reject_reason ? h("div", {class:"small bad-t"}, e.reject_reason) : null,
       h("div", {class:"ec-acts"},
         e.receipt_path ? h("button", {class:"btn small", onclick: async () => { const [u] = await signedUrls([e.receipt_path]); if (u) window.open(u, "_blank", "noopener"); else toast("Couldn't open the receipt."); }}, "Receipt") : null,
         canPmApprove(e) || canCfoApprove(e) ? h("button", {class:"btn small primary", onclick: ev => decideExpense(e, ev.currentTarget)}, canCfoApprove(e) ? "Final approve" : "Approve") : null,
         canSendBack(e) ? h("button", {class:"btn small", onclick:() => openSendBack(e)}, "Send back") : null,
-        e.submitted_by === S.me.id && ["submitted", "rejected"].includes(e.status) && p.id ? h("button", {class:"btn small", onclick:() => openExpense(p, e)}, e.status === "rejected" ? "Fix and resubmit" : "Edit") : null)); }));
+        e.submitted_by === S.me.id && ["submitted", "rejected"].includes(e.status) && (p.id || p.general) ? h("button", {class:"btn small", onclick:() => openExpense(p, e)}, e.status === "rejected" ? "Fix and resubmit" : "Edit") : null)); }));
 }
 function expensePanel(p) {
   const list = O.exps.filter(e => e.project_id === p.id).sort((a, b) => b.spent_on.localeCompare(a.spent_on) || (b.created_at || "").localeCompare(a.created_at || ""));
@@ -2330,8 +2350,7 @@ function viewExpenses() {
   const month = TODAY.slice(0, 7);
   const tot = f => sum(O.exps.filter(f), e => e.amount);
   wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Expenses"),
-    O.projects.length ? h("select", {class:"inp", style:"max-width:280px", "aria-label":"Log an expense on", onchange: e => { const p = byId(O.projects, e.target.value); e.target.value = ""; if (p) openExpense(p); }},
-      h("option", {value:""}, "+ Log an expense on…"), O.projects.filter(p => p.phase !== "closed").map(p => h("option", {value:p.id}, p.number + " · " + p.name))) : null));
+    h("button", {class:"btn primary", onclick:() => startExpense()}, "+ Log an expense")));
   wrap.append(h("div", {class:"o-tiles"},
     tile("Waiting on you", String(me.length), me.length ? fullMoney(sum(me, e => e.amount)) : isFin() ? "final approvals" : "approvals", me.length ? "warn" : ""),
     role() !== "field" ? tile("Waiting on PMs", fullMoney(tot(e => e.status === "submitted")), plural(O.exps.filter(e => e.status === "submitted").length, "expense")) : null,
@@ -2739,7 +2758,7 @@ return {
     if (r === "pm") return [["ops-projects", "My projects"], ...sm, ...rq, ...is, ...tk, ["ops-updates", "Weekly updates"], ...tl, ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
     return [["ops-overview", "Overview"], ["ops-projects", "Projects"], ...sm, ...rq, ...is, ...tk, ["ops-updates", "Weekly updates"], ...tl, ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
   },
-  salesViews: () => O.missing ? [] : [["handoffs", "Handoffs"]],
+  salesViews: () => O.missing ? [] : [["handoffs", "Handoffs"], ...(!role() && featureOn("exps") ? [["ops-expenses", "Expenses" + (waitingOnMe().length ? " (" + waitingOnMe().length + ")" : "")]] : [])],
   hiddenViews: () => ["ops-project"],
   parentView: v => v === "ops-project" ? "ops-projects" : null,
   owns: v => v in VIEW_FN,

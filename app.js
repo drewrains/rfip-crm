@@ -336,7 +336,7 @@ function notify(ids, subject, text, link) {
 }
 // links in emails and invites: #deal=<id> or #project=<id>
 function openFromHash() {
-  if (location.hash === "#expense") { history.replaceState(null, "", location.pathname + location.search); if (OPS && OPS.startExpense) { S.section = "ops"; OPS.startExpense(); } return; }
+  if (location.hash === "#expense") { history.replaceState(null, "", location.pathname + location.search); if (OPS && OPS.startExpense) { S.section = hasOps() ? "ops" : "sales"; OPS.startExpense(); } return; }
   const m = location.hash.match(/^#(deal|project|request)=([0-9a-f-]{36})$/);
   if (!m) return;
   history.replaceState(null, "", location.pathname + location.search);
