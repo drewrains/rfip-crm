@@ -619,3 +619,15 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
 .cal-show{display:flex;gap:12px;flex-wrap:wrap;font-size:14px}.cal-show label{display:flex;align-items:center;gap:4px;cursor:pointer}
 @media (max-width:760px){.cal-head,.cal-week{grid-template-columns:repeat(7,minmax(0,1fr))}.cal-e span{display:none}.cal-bar span{font-size:11px}}
 .cal-more{z-index:2;font-size:12px;color:var(--muted);padding:0 8px;line-height:18px}
+
+/* summary by PM / customer */
+.sum-head h2{margin:2px 0 2px;font-family:var(--f-display,inherit);font-size:30px}
+.sum-head .eyebrow{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.sum-tbl{min-width:1050px}.sum-tbl td{vertical-align:top}
+.clamp1{max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sum-reqs{list-style:none;margin:0;padding:8px 16px}.sum-reqs li{padding:6px 0;border-top:1px solid var(--line)}.sum-reqs li:first-child{border-top:0}
+@media print{
+  header,.no-print,#tabs,#strip,.scrim,.drawer,.toast{display:none!important}
+  body{background:#fff}.wrap{max-width:none;padding:0}.tbl-wrap{overflow:visible;border:0}.sum-tbl{min-width:0;font-size:11px}
+  .o-panel,.o-tile{break-inside:avoid;box-shadow:none}
+}

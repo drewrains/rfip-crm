@@ -20,7 +20,7 @@ const KEY_OF = Object.fromEntries(Object.entries(TABLES).map(([k, t]) => [t, k])
 const O = {missing:false, detail:null, q:"", dept:"", pm:"", phase:"active", hand:true, mpMode:"week", mpDate:null, mpDept:""};
 try { const m = localStorage.getItem("rfipops.mpMode"); if (m) O.mpMode = m; } catch (e) {}
 for (const k of Object.keys(TABLES)) O[k] = [];
-O.dir = []; O.docFolder = ""; O.wuWeek = null; O.off = new Set(); O.taskWho = "me"; O.reqView = "open"; O.reqDept = ""; O.issView = "open"; O.issDept = ""; O.tl = {mode:"projects", span:6, start:null, dept:"", pm:"", open:new Set(), group:"dept", cal:null, show:{bars:true, ms:true, tasks:true, issues:true}};
+O.dir = []; O.docFolder = ""; O.wuWeek = null; O.off = new Set(); O.taskWho = "me"; O.reqView = "open"; O.reqDept = ""; O.issView = "open"; O.issDept = ""; O.sum = {by:"pm", id:""}; O.tl = {mode:"projects", span:6, start:null, dept:"", pm:"", open:new Set(), group:"dept", cal:null, show:{bars:true, ms:true, tasks:true, issues:true}};
 try { const t = JSON.parse(localStorage.getItem("rfipops.tl") || "null"); if (t) Object.assign(O.tl, {mode:t.mode || "projects", span:t.span || 6, group:t.group || "dept", show:t.show || O.tl.show}); } catch (e) {}
 try { const d = localStorage.getItem("rfipops.detail"); if (d) O.detail = d; } catch (e) {}
 
@@ -2337,6 +2337,92 @@ function customerPanel(p, edit) {
 // ---------------------------------------------------------------- routing
 
 
+
+// ---------------------------------------------------------------- summary by PM or customer
+// One page per PM or customer: every active project's progress, schedule, next milestone, open issues,
+// open requests and this week's update, one click into each project to update it.
+function sumRow(p) {
+  const c = calc(p), st = updateState(p), last = O.wu.filter(u => u.project_id === p.id).sort((a, b) => b.week_start.localeCompare(a.week_start))[0];
+  const next = c.ms.find(m => !m.actual), iss = O.issues.filter(i => i.project_id === p.id && issOpen(i));
+  const reqs = O.reqs.filter(r => r.project_id === p.id && reqOpen(r));
+  const days = p.end_date ? dayDiff(TODAY, p.end_date) : null;
+  const sched = c.lateDays ? "off_track" : last ? last.schedule_status : null;
+  return {p, c, st, last, next, iss, late:iss.filter(issLate), reqs, days, sched};
+}
+function viewSummary() {
+  const wrap = h("div", {class:"o-stack sum-page"});
+  const S2 = O.sum, all = active().filter(p => p.phase !== "closed");
+  const pms = [...new Set(all.map(p => p.pm_id).filter(Boolean))].sort((a, b) => personName(a).localeCompare(personName(b)));
+  const custs = [...new Set(all.map(p => p.account_id).filter(Boolean))].sort((a, b) => (acctName(a) || "").localeCompare(acctName(b) || ""));
+  if (!S2.id && role() === "pm") S2.id = S.me.id;
+  const pick = S2.by === "pm" ? pms : custs, name = id => S2.by === "pm" ? personName(id) : acctName(id) || "Customer";
+  const toolbar = h("div", {class:"toolbar no-print"}, h("h2", null, "Summary"),
+    h("div", {class:"sections mp-modes", role:"group", "aria-label":"Summarize by"}, [["pm", "By PM"], ["customer", "By customer"]].map(([k, l]) =>
+      h("button", {"aria-pressed":String(S2.by === k), onclick:() => { S2.by = k; S2.id = ""; render(); }}, l))),
+    h("select", {class:"inp", style:"max-width:280px", "aria-label":S2.by === "pm" ? "Project manager" : "Customer", onchange: e => { S2.id = e.target.value; render(); }},
+      h("option", {value:""}, S2.by === "pm" ? "Everyone (all PMs)" : "All customers"), pick.map(id => h("option", {value:id, selected:S2.id === id}, name(id) + " (" + all.filter(p => (S2.by === "pm" ? p.pm_id : p.account_id) === id).length + ")"))),
+    S2.id ? h("button", {class:"btn small", onclick:() => window.print()}, "Print / PDF") : null);
+  wrap.append(toolbar);
+  if (!all.length) { wrap.append(h("div", {class:"panel"}, emptyState("No active projects", "Projects show here once handoffs are accepted."))); return wrap; }
+  const money = role() !== "field";
+  // overview: one line per PM or customer, click to drill in
+  if (!S2.id) {
+    const rows = pick.map(id => { const ps = all.filter(p => (S2.by === "pm" ? p.pm_id : p.account_id) === id).map(sumRow);
+      return {id, ps, behind:ps.filter(r => r.sched === "off_track" || r.sched === "at_risk").length, iss:sum(ps, r => r.iss.length), late:sum(ps, r => r.late.length),
+        reqs:sum(ps, r => r.reqs.length), missing:ps.filter(r => r.st.missing).length, total:sum(ps, r => r.c.total), avg:ps.length ? sum(ps, r => r.c.done) / ps.length : 0}; });
+    const R = all.map(sumRow);
+    wrap.append(h("div", {class:"o-tiles"}, tile("Active projects", String(all.length), plural(pick.length, S2.by === "pm" ? "PM" : "customer")),
+      tile("Behind or at risk", String(R.filter(r => r.sched === "off_track" || r.sched === "at_risk").length), "", R.some(r => r.sched === "off_track") ? "bad" : ""),
+      tile("Open issues", String(sum(R, r => r.iss.length)), sum(R, r => r.late.length) + " with an overdue next step", sum(R, r => r.late.length) ? "bad" : ""),
+      tile("Updates missing", String(R.filter(r => r.st.missing).length), "this week", R.some(r => r.st.missing) ? "warn" : "")));
+    wrap.append(panel(S2.by === "pm" ? "Everyone's projects" : "Customers", "Click a row for the full summary", h("div", {class:"tbl-wrap flat"}, h("table", null,
+      h("thead", null, h("tr", null, h("th", null, S2.by === "pm" ? "Project manager" : "Customer"), h("th", {class:"num"}, "Projects"), money ? h("th", {class:"num"}, "Contract") : null,
+        h("th", {class:"num"}, "Avg complete"), h("th", {class:"num"}, "Behind / at risk"), h("th", {class:"num"}, "Open issues"), h("th", {class:"num"}, "Requests open"), h("th", {class:"num"}, "Updates missing"))),
+      h("tbody", null, rows.map(x => h("tr", {class:"click", tabindex:"0", onclick:() => { S2.id = x.id; render(); }, onkeydown: e => { if (e.key === "Enter") { S2.id = x.id; render(); } }},
+        h("td", null, h("b", null, name(x.id))), h("td", {class:"num"}, String(x.ps.length)), money ? h("td", {class:"num"}, compact(x.total)) : null, h("td", {class:"num"}, pct(x.avg)),
+        h("td", {class:"num" + (x.behind ? " warn-t" : "")}, x.behind ? String(x.behind) : "—"),
+        h("td", {class:"num" + (x.late ? " bad-t" : "")}, x.iss ? x.iss + (x.late ? " (" + x.late + " overdue)" : "") : "—"),
+        h("td", {class:"num"}, x.reqs ? String(x.reqs) : "—"), h("td", {class:"num" + (x.missing ? " warn-t" : "")}, x.missing ? String(x.missing) : "—"))))))));
+    return wrap;
+  }
+  const R = all.filter(p => (S2.by === "pm" ? p.pm_id : p.account_id) === S2.id).map(sumRow)
+    .sort((a, b) => (b.sched === "off_track") - (a.sched === "off_track") || b.late.length - a.late.length || (a.p.end_date || "9999").localeCompare(b.p.end_date || "9999"));
+  const issues = R.flatMap(r => r.iss).sort(issSort), reqs = R.flatMap(r => r.reqs);
+  const custReqs = S2.by === "customer" ? O.reqs.filter(r => r.account_id === S2.id && reqOpen(r) && !r.project_id) : [];
+  wrap.append(h("div", {class:"sum-head"}, h("button", {class:"linkish back no-print", onclick:() => { S2.id = ""; render(); }}, S2.by === "pm" ? "← Everyone's projects" : "← All customers"),
+    h("div", {class:"eyebrow"}, S2.by === "pm" ? "Project manager" : "Customer"), h("h2", null, name(S2.id)),
+    h("div", {class:"muted small"}, "As of " + fmtDate(TODAY) + " · " + plural(R.length, "active project"))));
+  wrap.append(h("div", {class:"o-tiles"},
+    money ? tile("Contract value", compact(sum(R, r => r.c.total)), compact(sum(R, r => r.c.backlog)) + " left to earn") : null,
+    tile("Average complete", pct(R.length ? sum(R, r => r.c.done) / R.length : 0), (n => n + (n === 1 ? " finishes" : " finish"))(R.filter(r => r.days != null && r.days >= 0 && r.days <= 30).length) + " in the next 30 days"),
+    tile("Behind or at risk", String(R.filter(r => r.sched === "off_track" || r.sched === "at_risk").length), "from weekly updates and late milestones", R.some(r => r.sched === "off_track") ? "bad" : R.some(r => r.sched === "at_risk") ? "warn" : ""),
+    tile("Open issues", String(issues.length), issues.filter(issLate).length + " with an overdue next step", issues.some(issLate) ? "bad" : ""),
+    tile("Customer requests", String(reqs.length + custReqs.length), "open", reqs.concat(custReqs).some(r => r.status === "new") ? "warn" : ""),
+    tile("This week's updates", (R.length - R.filter(r => r.st.missing || (!r.st.u && needsUpdate(r.p))).length) + " of " + R.filter(r => needsUpdate(r.p)).length, R.some(r => r.st.missing) ? plural(R.filter(r => r.st.missing).length, "missing") : "in", R.some(r => r.st.missing) ? "warn" : "")));
+  wrap.append(panel("Projects", "Click a project to open and update it", h("div", {class:"tbl-wrap flat"}, h("table", {class:"sum-tbl"},
+    h("thead", null, h("tr", null, h("th", null, "Project"), h("th", null, "Phase"), h("th", null, "Complete"), h("th", null, "Finish"), h("th", null, "Schedule"),
+      h("th", null, "Next milestone"), h("th", null, "Open issues"), h("th", null, "Weekly update"), h("th", {class:"no-print"}, h("span", {class:"sr"}, "Actions")))),
+    h("tbody", null, R.map(r => { const p = r.p, edit = canEdit(p);
+      return h("tr", null,
+        h("td", null, h("button", {class:"linkish", onclick:() => openProject(p.id)}, h("b", null, p.name)), h("div", {class:"muted small"}, p.number + " · " + (S2.by === "pm" ? acctName(p.account_id) || "" : personName(p.pm_id)))),
+        h("td", null, phaseChip(p.phase)),
+        h("td", {class:"nowrap"}, h("span", {class:"minibar inline"}, h("i", {class:"go", style:"width:" + Math.round(r.c.done * 100) + "%"})), " " + pct(r.c.done)),
+        h("td", {class:"nowrap" + (r.days != null && r.days < 0 ? " bad-t" : "")}, p.end_date ? fmtDate(p.end_date) : "—", r.days != null ? h("div", {class:"muted small"}, r.days < 0 ? -r.days + " days past" : r.days + " days left") : null),
+        h("td", null, r.sched ? stChip(r.sched) : h("span", {class:"muted"}, "No update yet"), r.c.lateDays ? h("div", {class:"bad-t small"}, r.c.late[0].name + " " + r.c.lateDays + "d late") : null),
+        h("td", null, r.next ? [r.next.name, h("div", {class:"muted small" + (r.next.planned && r.next.planned < TODAY ? " bad-t" : "")}, r.next.planned ? fmtDate(r.next.planned) : "no date")] : h("span", {class:"muted"}, "—")),
+        h("td", null, r.iss.length ? [h("b", {class:r.late.length ? "bad-t" : ""}, String(r.iss.length)), r.late.length ? h("span", {class:"bad-t small"}, " · " + r.late.length + " overdue") : null,
+          h("div", {class:"muted small clamp1"}, r.iss.slice().sort(issSort)[0].title)] : h("span", {class:"muted"}, "—")),
+        h("td", null, chip(r.st.cls, r.st.text)),
+        h("td", {class:"no-print nowrap"}, edit && needsUpdate(p) ? h("button", {class:"btn small" + (r.st.u ? "" : " primary"), onclick:() => openUpdate(p, reportWeek())}, r.st.u ? "Edit update" : "Write update") : null,
+          " ", canPlan(p) && featureOn("issues") ? h("button", {class:"btn small", onclick:() => openIssue(p, null)}, "+ Issue") : null));
+    }))))));
+  if (featureOn("issues")) wrap.append(panel("Open issues", plural(issues.length, "issue") + " across these projects", issueTable(issues, true)));
+  if (featureOn("reqs") && (reqs.length || custReqs.length)) wrap.append(panel("Open customer requests", plural(reqs.length + custReqs.length, "request"),
+    h("ul", {class:"sum-reqs"}, reqs.concat(custReqs).map(q => h("li", null, h("button", {class:"linkish", onclick:() => openRequest(q)}, reqRef(q) + " · " + q.title),
+      h("span", {class:"muted small"}, " " + (proj(q.project_id).number || acctName(q.account_id) || "") + " · " + q.requester_name + " · " + reqAge(q)), " ", reqChip(q.status))))));
+  return wrap;
+}
+
 // ---------------------------------------------------------------- issue log
 // Problems to be solved on a project: date raised, issue, owner (RFIP person or someone outside),
 // next step and when it's due; closing stamps the date. Shared ones show on the customer's pages.
@@ -2577,7 +2663,7 @@ function openRequest(r) {
   drawerForm(isNew ? "Log a customer request" : reqRef(r) + " · " + (acctName(r.account_id) || "Customer request"), d, fields, save,
     r && isAdmin() ? del("customer_requests", r.id) : null);
 }
-const VIEW_FN = {"ops-updates":viewUpdates, "ops-overview":viewOverview, "ops-projects":viewProjects, "ops-project":viewProject, "ops-handoffs":viewHandoffs, "ops-billing":viewBilling, "ops-manpower":viewManpower, "ops-tasks":viewTasks, "ops-expenses":viewExpenses, "ops-requests":viewRequests, "ops-issues":viewIssues, "ops-timeline":viewTimeline, handoffs:viewHandoffs};
+const VIEW_FN = {"ops-updates":viewUpdates, "ops-overview":viewOverview, "ops-projects":viewProjects, "ops-project":viewProject, "ops-handoffs":viewHandoffs, "ops-billing":viewBilling, "ops-manpower":viewManpower, "ops-tasks":viewTasks, "ops-expenses":viewExpenses, "ops-requests":viewRequests, "ops-issues":viewIssues, "ops-timeline":viewTimeline, "ops-summary":viewSummary, handoffs:viewHandoffs};
 return {
   tables: Object.values(TABLES),
   load, changed,
@@ -2587,6 +2673,7 @@ return {
     const r = role();
     const mp = O.techs.length || role() === "admin" ? [["ops-manpower", r === "field" ? "Schedule" : "Manpower"]] : [];
     const tl = r === "field" ? [] : [["ops-timeline", "Timeline"]];
+    const sm = r === "field" ? [] : [["ops-summary", "Summary"]];
     const myOpen = O.items.filter(i => i.assignee_id === S.me.id && i.status !== "done").length, waiting = waitingOnMe().length;
     const tk = featureOn("items") ? [["ops-tasks", "My tasks" + (myOpen ? " (" + myOpen + ")" : "")]] : [];
     const ex = featureOn("exps") ? [["ops-expenses", "Expenses" + (waiting ? " (" + waiting + ")" : "")]] : [];
@@ -2594,8 +2681,8 @@ return {
     const is = featureOn("issues") && (r !== "field" || O.issues.length) ? [["ops-issues", "Issues" + (myIss ? " (" + myIss + " yours)" : "")]] : [];
     const rq = seesReqs() ? [["ops-requests", "Requests" + (newReqs() ? " (" + newReqs() + " new)" : "")]] : [];
     if (r === "field") return [["ops-projects", "My projects"], ...tk, ...is, ...mp, ...ex, ...rq];
-    if (r === "pm") return [["ops-projects", "My projects"], ...rq, ...is, ...tk, ["ops-updates", "Weekly updates"], ...tl, ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
-    return [["ops-overview", "Overview"], ["ops-projects", "Projects"], ...rq, ...is, ...tk, ["ops-updates", "Weekly updates"], ...tl, ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
+    if (r === "pm") return [["ops-projects", "My projects"], ...sm, ...rq, ...is, ...tk, ["ops-updates", "Weekly updates"], ...tl, ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
+    return [["ops-overview", "Overview"], ["ops-projects", "Projects"], ...sm, ...rq, ...is, ...tk, ["ops-updates", "Weekly updates"], ...tl, ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
   },
   salesViews: () => O.missing ? [] : [["handoffs", "Handoffs"]],
   hiddenViews: () => ["ops-project"],
