@@ -623,7 +623,7 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
 /* summary by PM / customer */
 .sum-head h2{margin:2px 0 2px;font-family:var(--f-display,inherit);font-size:30px}
 .sum-head .eyebrow{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
-.sum-tbl{min-width:1050px}.sum-tbl td{vertical-align:top}
+.sum-tbl{min-width:1150px}.sum-tbl td{vertical-align:top}.sum-tbl td:first-child{min-width:240px}
 .clamp1{max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sum-reqs{list-style:none;margin:0;padding:8px 16px}.sum-reqs li{padding:6px 0;border-top:1px solid var(--line)}.sum-reqs li:first-child{border-top:0}
 @media print{
