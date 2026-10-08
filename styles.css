@@ -573,7 +573,7 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
 .tl-today{position:absolute;top:0;bottom:0;border-left:2px solid var(--accent);z-index:2}
 .tl-today.key{position:relative;display:inline-block;height:14px;vertical-align:-2px;margin-right:6px}
 .tl-row.me .tl-lab{box-shadow:inset 3px 0 0 var(--accent)}
-.tl-bar{position:absolute;top:7px;bottom:7px;border:0;border-radius:5px;overflow:hidden;cursor:pointer;padding:0;font:inherit;font-size:12px;font-weight:600;text-align:left;z-index:2;min-width:4px}
+.tl-bar{position:absolute;top:5px;bottom:9px;border:0;border-radius:5px;overflow:hidden;cursor:pointer;padding:0;font:inherit;font-size:12px;font-weight:600;text-align:left;z-index:2;min-width:4px}
 .tl-bar span{position:relative;z-index:1;display:block;padding:0 7px;line-height:24px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tl-bar .tl-done{position:absolute;left:0;top:0;bottom:0;background:currentColor;opacity:.16}
 .tl-bar.late{box-shadow:inset 0 0 0 2px var(--bad)}
@@ -584,7 +584,7 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
 .tl-bar.thin.st-done{background:var(--go-soft);color:var(--go)}.tl-bar.thin.st-blocked{background:var(--bad-soft);color:var(--bad)}
 .tl-bar:hover,.tl-bar:focus-visible{outline:2px solid var(--fg);outline-offset:1px}
 .tl-phase .tl-lab{padding-left:18px}.tl-phase .tl-name span{font-size:13px}.tl-phase{min-height:32px}
-.tl-ms{position:absolute;top:50%;width:11px;height:11px;margin:-6px 0 0 -6px;transform:rotate(45deg);background:var(--panel);border:2px solid var(--fg);z-index:3}
+.tl-ms{position:absolute;top:auto;bottom:1px;width:9px;height:9px;margin:0 0 0 -5px;transform:rotate(45deg);background:var(--panel);border:2px solid var(--fg);z-index:3}
 .o-keys .tl-ms{position:relative;display:inline-block;top:auto;margin:0 6px 0 0;vertical-align:-1px}
 .tl-ms.done{background:var(--go);border-color:var(--go)}.tl-ms.late{background:var(--bad);border-color:var(--bad)}
 @media (max-width:760px){.tl{--lab:170px}.tl-full{width:auto;margin-left:0}}
