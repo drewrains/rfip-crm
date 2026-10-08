@@ -1503,13 +1503,16 @@ function tlSpanOf(p) {
   const a = (p.start_date || ds.sort()[0] || de.sort()[0]), b = (p.end_date || de.sort().slice(-1)[0] || a);
   return {a, b: b < a ? a : b, guessed: !(p.start_date && p.end_date)};
 }
+// who sees which jobs on the timeline: admins, viewers and department leads see every active job;
+// a PM sees the jobs they run and the ones shared with them
+const tlJobs = () => role() === "pm" ? O.projects.filter(p => p.pm_id === S.me.id || (O.members || []).some(m => m.project_id === p.id && m.profile_id === S.me.id)) : jobs();
 function tlProjects(r, sc) {
   const t = O.tl;
-  const pool = jobs().filter(p => p.phase !== "closed" && (!t.dept || p.department === t.dept) && (!t.pm || p.pm_id === t.pm))
+  const pool = tlJobs().filter(p => p.phase !== "closed" && (!t.dept || p.department === t.dept) && (!t.pm || p.pm_id === t.pm))
     .map(p => ({p:byId(O.projects, p.id) || p, sp:tlSpanOf(byId(O.projects, p.id) || p)}))
     .filter(x => x.sp && x.sp.b >= r.start && x.sp.a <= r.end)
     .sort((a, b) => a.sp.a.localeCompare(b.sp.a) || a.p.number.localeCompare(b.p.number));
-  const undated = jobs().filter(p => p.phase !== "closed" && (!t.dept || p.department === t.dept) && (!t.pm || p.pm_id === t.pm) && !tlSpanOf(byId(O.projects, p.id) || p));
+  const undated = tlJobs().filter(p => p.phase !== "closed" && (!t.dept || p.department === t.dept) && (!t.pm || p.pm_id === t.pm) && !tlSpanOf(byId(O.projects, p.id) || p));
   const groupKey = x => t.group === "pm" ? personName(x.p.pm_id) : t.group === "customer" ? (acctName(x.p.account_id) || "Customer not set") : (x.p.department || "No department");
   const groups = new Map(); for (const x of pool) { const k = t.group === "none" ? "" : groupKey(x); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(x); }
   const keys = [...groups.keys()].sort((a, b) => t.group === "dept" ? deptKeys().indexOf(a) - deptKeys().indexOf(b) : a.localeCompare(b));
@@ -1583,9 +1586,9 @@ function tlCalendar() {
   const t = O.tl, m0 = t.cal || monthStart(TODAY);
   const first = mondayOf(m0), lastDay = addDays(addMonths(m0, 1), -1), last = addDays(mondayOf(lastDay), 6);
   const inF = p => p.phase !== "closed" && (!t.dept || p.department === t.dept) && (!t.pm || p.pm_id === t.pm);
-  const projs = jobs().map(p => byId(O.projects, p.id) || p).filter(inF).map(p => ({p, sp:tlSpanOf(p)})).filter(x => x.sp && x.sp.b >= first && x.sp.a <= last)
+  const projs = tlJobs().map(p => byId(O.projects, p.id) || p).filter(inF).map(p => ({p, sp:tlSpanOf(p)})).filter(x => x.sp && x.sp.b >= first && x.sp.a <= last)
     .sort((a, b) => a.sp.a.localeCompare(b.sp.a) || dayDiff(b.sp.a, b.sp.b) - dayDiff(a.sp.a, a.sp.b));
-  const pid = new Set(jobs().filter(inF).map(p => p.id));
+  const pid = new Set(tlJobs().filter(inF).map(p => p.id));
   const ev = new Map(), add = (d, x) => { if (d < first || d > last) return; if (!ev.has(d)) ev.set(d, []); ev.get(d).push(x); };
   if (t.show.ms) for (const m of O.ms) if (pid.has(m.project_id) && (m.actual || m.planned)) add(m.actual || m.planned, {kind:"ms", cls: m.actual ? "done" : m.planned < TODAY ? "late" : "",
     text:m.name, sub:proj(m.project_id).name, open:() => openProject(m.project_id)});
@@ -1626,7 +1629,7 @@ function viewTimeline() {
   const t = O.tl, wrap = h("div", {class:"o-stack tl-full"}), cal = t.mode === "calendar";
   const r = tlRange(), sc = tlScale(r);
   const shift = dir => { t.start = t.mode === "projects" ? addMonths(r.start, dir * Math.max(1, Math.round(r.span / 3))) : addDays(r.start, dir * 7 * Math.max(1, Math.round(r.span / 4))); render(); };
-  const pms = [...new Set(jobs().map(p => p.pm_id).filter(Boolean))];
+  const pms = [...new Set(tlJobs().map(p => p.pm_id).filter(Boolean))];
   wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Timeline"),
     h("div", {class:"sections mp-modes", role:"group", "aria-label":"Show"}, [["projects", "Projects"], ["people", "People"], ["calendar", "Calendar"]].map(([m, l]) =>
       h("button", {"aria-pressed":String(t.mode === m), onclick:() => { t.mode = m; t.start = null; t.cal = null; t.span = m === "people" ? 8 : 6; tlSave(); render(); }}, l))),
@@ -1638,7 +1641,7 @@ function viewTimeline() {
       h("b", {class:"mp-label"}, cal ? new Date((t.cal || monthStart(TODAY)) + "T12:00:00").toLocaleDateString("en-US", {month:"long", year:"numeric"}) : fmtDate(r.start) + " – " + fmtDate(r.end))),
     deptKeys().length > 1 ? h("select", {class:"inp", style:"max-width:170px", "aria-label":"Department", onchange: e => { t.dept = e.target.value; render(); }},
       h("option", {value:""}, "All departments"), deptKeys().map(k => h("option", {value:k, selected:t.dept === k}, k))) : null,
-    t.mode !== "people" && pms.length > 1 ? h("select", {class:"inp", style:"max-width:170px", "aria-label":"Project manager", onchange: e => { t.pm = e.target.value; render(); }},
+    t.mode !== "people" && pms.length > 1 && role() !== "pm" ? h("select", {class:"inp", style:"max-width:170px", "aria-label":"Project manager", onchange: e => { t.pm = e.target.value; render(); }},
       h("option", {value:""}, "All PMs"), pms.map(id => h("option", {value:id, selected:t.pm === id}, personName(id)))) : null,
     t.mode === "projects" ? h("select", {class:"inp", style:"max-width:190px", "aria-label":"Group by", onchange: e => { t.group = e.target.value; tlSave(); render(); }},
       [["dept", "Group by department"], ["pm", "Group by PM"], ["customer", "Group by customer"], ["none", "No grouping"]].map(([v, l]) => h("option", {value:v, selected:t.group === v}, l))) : null,
@@ -2724,7 +2727,7 @@ return {
   views: () => {
     const r = role();
     const mp = O.techs.length || role() === "admin" ? [["ops-manpower", r === "field" ? "Schedule" : "Manpower"]] : [];
-    const tl = r === "field" ? [] : [["ops-timeline", "Timeline"]];
+    const tl = ["admin", "viewer", "lead", "pm"].includes(r) ? [["ops-timeline", "Timeline"]] : [];
     const sm = r === "field" ? [] : [["ops-summary", "Summary"]];
     const myOpen = O.items.filter(i => i.assignee_id === S.me.id && i.status !== "done").length, waiting = waitingOnMe().length;
     const tk = featureOn("items") ? [["ops-tasks", "My tasks" + (myOpen ? " (" + myOpen + ")" : "")]] : [];
