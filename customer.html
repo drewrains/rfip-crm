@@ -245,7 +245,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
         <div class="tile"><div class="k">On schedule</div><div class="v">${withUpd.length ? onTrack + " of " + withUpd.length : "—"}</div><div class="s">From the latest weekly updates</div></div>
         <div class="tile"><div class="k">Finishing in 30 days</div><div class="v">${soon}</div><div class="s">Planned completions</div></div>
       </div>
-      ${reqs ? `<div class="reqbar"><p><b>Problem on a project, a change, or new work?</b> Send it to RFIP here and track it on this page.</p>
+      ${reqs ? `<div class="reqbar"><p><b>Problem on a project, a question, a change, or new work?</b> Send it to RFIP here and track it on this page.</p>
         <span style="display:flex;gap:8px;flex-wrap:wrap">${reqs.length ? `<button class="btn" id="myreqs">Your requests${openReqs() ? " (" + openReqs() + " open)" : ""}</button>` : ""}<button class="btn primary" id="newreq">Submit a request</button></span></div>` : ""}
       <div class="tools">
         <div class="seg" role="group" aria-label="Show">
@@ -268,7 +268,8 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
 
   // ---------- requests: submit new work and follow its status ----------
   const RST = {new:["Received", "acc"], reviewing:["Under review", "acc"], quoted:["Quote sent", "warn"], scheduled:["Scheduled", "go"], done:["Complete", "go"], declined:["Closed", ""]};
-  const KINDS = [["issue", "Problem or issue on a current project"], ["change", "Change or addition to a current project"], ["new_work", "New project or install"],
+  const KINDS = [["issue", "Problem or issue on a current project"], ["change", "Change or addition to a current project"],
+    ["rfi", "Request for information (RFI)"], ["new_work", "New project or install"],
     ["service", "Service call or repair"], ["survey", "Site survey or quote"], ["other", "Question or something else"]];
   const ON_PROJECT = ["issue", "change"];
   const WORK = [["", "Not sure"], ["DataComm", "Structured cabling / low voltage"], ["Security", "Security: cameras, access control"], ["Network", "Network & Wi-Fi"], ["DAS", "Cellular coverage (DAS)"], ["Tower", "Tower work"]];
@@ -284,7 +285,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
     document.title = "Requests · " + d.customer + " · RFIP";
     const list = reqs || [];
     const row = r => `<li class="rq"><div><div class="t">R-${esc(r.ref)} · ${esc(r.title)}</div>
-        <div class="d">${esc((KINDS.find(x => x[0] === r.kind) || KINDS[5])[1])}${r.site ? " · " + esc(r.site) : ""} · Sent ${esc(short(r.created_at.slice(0, 10)))} by ${esc(r.requester_name)}${r.needed_by ? " · Needed by " + esc(short(r.needed_by)) : ""}${r.project ? " · Job " + esc(r.project.number) : ""}</div></div>
+        <div class="d">${esc((KINDS.find(x => x[0] === r.kind) || KINDS[6])[1])}${r.site ? " · " + esc(r.site) : ""} · Sent ${esc(short(r.created_at.slice(0, 10)))} by ${esc(r.requester_name)}${r.needed_by ? " · Needed by " + esc(short(r.needed_by)) : ""}${r.project ? " · Job " + esc(r.project.number) : ""}</div></div>
         <div>${r.urgent && !["done", "declined"].includes(r.status) ? chip(["Urgent", "bad"]) + " " : ""}${chip(RST[r.status] || RST.new)}</div>
         ${r.customer_note ? `<div class="note"><b>From RFIP · ${esc(short(r.updated_at.slice(0, 10)))}</b>${esc(r.customer_note)}</div>` : ""}</li>`;
     const open = list.filter(r => !["done", "declined"].includes(r.status)), closed = list.filter(r => ["done", "declined"].includes(r.status));
@@ -349,7 +350,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
       await loadReqs();
       history.replaceState({v:"requests"}, "", "?a=" + a + "&v=requests");
       main.innerHTML = `${back()}<div class="ok"><div class="big">R-${esc(res.ref)}</div><h1 style="font-size:28px;margin-top:10px">Request received</h1>
-        <p>RFIP has it and ${ON_PROJECT.includes(r.kind) ? "the project manager has" : "the right team has"} been notified. ${r.urgent ? "Because it's marked urgent, someone will reach out as soon as possible." : "Someone will follow up with you, usually within one business day."}</p>
+        <p>RFIP has it and ${ON_PROJECT.includes(r.kind) || (r.kind === "rfi" && r.project_id) ? "the project manager has" : "the right team has"} been notified. ${r.urgent ? "Because it's marked urgent, someone will reach out as soon as possible." : "Someone will follow up with you, usually within one business day."}</p>
         <p style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap"><button class="btn" id="myreqs">See your requests</button><button class="btn primary" id="newreq">Send another</button></p>
         <p class="d" style="color:var(--muted);font-size:13px">Urgent and can't wait? Call <a href="tel:+14052860928">405-286-0928</a>.</p></div>`;
       wireBack(); document.getElementById("myreqs").onclick = () => go("requests"); document.getElementById("newreq").onclick = () => go("new");
@@ -365,8 +366,8 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
     renderProject(v, d.customer);
     if (reqs && v.phase !== "closed") {
       const b = document.createElement("div"); b.className = "reqbar"; b.style.marginTop = "16px";
-      b.innerHTML = `<p><b>Something wrong on this project, or need a change?</b> Tell ${esc(v.pm ? v.pm.name : "the project manager")} here.</p>
-        <span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-k="change">Request a change</button><button class="btn primary" data-k="issue">Report an issue</button></span>`;
+      b.innerHTML = `<p><b>Something wrong on this project, a question, or need a change?</b> Tell ${esc(v.pm ? v.pm.name : "the project manager")} here.</p>
+        <span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-k="rfi">Ask a question (RFI)</button><button class="btn" data-k="change">Request a change</button><button class="btn primary" data-k="issue">Report an issue</button></span>`;
       const meta = main.querySelector(".hero"); meta.parentNode.insertBefore(b, meta.nextSibling);
       b.querySelectorAll("button").forEach(x => x.onclick = () => go("new", false, {kind:x.dataset.k, project_id:id}));
     }

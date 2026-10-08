@@ -2116,7 +2116,7 @@ function customerPanel(p, edit) {
 // and the "message to customer" on their dashboard; everything else stays internal.
 const REQ_ST = [["new", "New", "bad", "Received"], ["reviewing", "Reviewing", "acc", "Under review"], ["quoted", "Quote sent", "warn", "Quote sent"],
   ["scheduled", "Scheduled", "go", "Scheduled"], ["done", "Done", "go", "Complete"], ["declined", "Declined / closed", "", "Closed"]];
-const REQ_KIND = [["issue", "Issue on a project"], ["change", "Change to a project"], ["new_work", "New project / install"], ["service", "Service call / repair"], ["survey", "Site survey / quote"], ["other", "Question / other"]];
+const REQ_KIND = [["issue", "Issue on a project"], ["change", "Change to a project"], ["rfi", "RFI (question)"], ["new_work", "New project / install"], ["service", "Service call / repair"], ["survey", "Site survey / quote"], ["other", "Question / other"]];
 const reqSt = s => REQ_ST.find(x => x[0] === s) || REQ_ST[0];
 const reqChip = s => { const x = reqSt(s); return chip(x[2], x[1]); };
 const reqOpen = r => !["done", "declined"].includes(r.status);
@@ -2155,7 +2155,7 @@ function viewRequests() {
     h("tbody", null, list.map(r => h("tr", {class:"click", tabindex:"0", onclick:() => openRequest(r), onkeydown: e => { if (e.key === "Enter") openRequest(r); }},
       h("td", null, h("div", null, h("b", {class:"mono"}, reqRef(r)), " ", r.title), h("div", {class:"muted small"}, "From " + r.requester_name + " · " + reqAge(r))),
       h("td", null, h("div", null, acctName(r.account_id) || "—"), h("div", {class:"muted small"}, [r.site, r.address].filter(Boolean).join(" · ") || "")),
-      h("td", null, (REQ_KIND.find(x => x[0] === r.kind) || REQ_KIND[5])[1], h("div", {class:"muted small"}, r.department || "Dept not set")),
+      h("td", null, (REQ_KIND.find(x => x[0] === r.kind) || REQ_KIND[6])[1], h("div", {class:"muted small"}, r.department || "Dept not set")),
       h("td", {class:"mono nowrap"}, r.needed_by ? fmtDate(r.needed_by) : "—"),
       h("td", null, r.assigned_to ? personName(r.assigned_to) : h("span", {class:"muted"}, "Nobody yet")),
       h("td", null, r.urgent && reqOpen(r) ? chip("bad", "Urgent") : null, " ", reqChip(r.status))))))));
@@ -2181,7 +2181,7 @@ function openRequest(r) {
     h("div", {class:"req-sent"},
       h("div", {class:"muted small"}, "Sent " + fmtDateTime(r.created_at) + " from " + (acctName(r.account_id) || "the customer") + "'s dashboard"),
       h("h3", {style:"margin:4px 0 6px"}, r.urgent ? chip("bad", "Urgent") : null, " ", r.title),
-      h("div", {class:"small"}, (REQ_KIND.find(x => x[0] === r.kind) || REQ_KIND[5])[1] + " · " + (r.department || "Not sure which department") +
+      h("div", {class:"small"}, (REQ_KIND.find(x => x[0] === r.kind) || REQ_KIND[6])[1] + " · " + (r.department || "Not sure which department") +
         (r.site || r.address ? " · " + [r.site, r.address].filter(Boolean).join(" · ") : "") + (r.needed_by ? " · Needed by " + fmtDate(r.needed_by) : "")),
       r.details ? h("p", {class:"pre", style:"white-space:pre-wrap;margin:8px 0"}, r.details) : null,
       h("div", {class:"small"}, h("b", null, r.requester_name), " · ", h("a", {href:"mailto:" + r.requester_email + "?subject=" + encodeURIComponent(reqRef(r) + ": " + r.title)}, r.requester_email),

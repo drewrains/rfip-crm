@@ -40,10 +40,10 @@ create table if not exists public.customer_requests (
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
--- issue = problem on a current project, change = change/addition to one
+-- issue = problem on a current project, change = change/addition to one, rfi = request for information
 alter table public.customer_requests drop constraint if exists customer_requests_kind_check;
 alter table public.customer_requests add constraint customer_requests_kind_check
-  check (kind in ('issue','change','new_work','service','survey','other'));
+  check (kind in ('issue','change','rfi','new_work','service','survey','other'));
 create index if not exists customer_requests_account on public.customer_requests (account_id, created_at desc);
 create index if not exists customer_requests_status on public.customer_requests (status);
 
@@ -113,16 +113,16 @@ begin
   if v_name = '' then raise exception 'Please add your name.'; end if;
   if v_email !~ '^[^\s@<>()",;]+@[^\s@<>()",;]+\.[a-z]{2,}$' then raise exception 'Please add a valid email so we can reach you.'; end if;
   v_kind := coalesce(nullif(r->>'kind', ''), 'new_work');
-  if v_kind not in ('issue','change','new_work','service','survey','other') then v_kind := 'other'; end if;
+  if v_kind not in ('issue','change','rfi','new_work','service','survey','other') then v_kind := 'other'; end if;
   v_dept := nullif(r->>'department', '');
   if v_dept is not null and not exists (select 1 from departments where key = v_dept) then v_dept := null; end if;
   begin v_pid := nullif(r->>'project_id', '')::uuid; exception when others then v_pid := null; end;
   if v_pid is not null and not exists (select 1 from projects where id = v_pid and account_id = l.account_id) then v_pid := null; end if;
   if v_kind in ('issue','change') and v_pid is null then raise exception 'Pick the project this is about.'; end if;
-  -- a problem or change on a project belongs to that project's PM and department
+  -- a problem, change or RFI on a project belongs to that project's PM and department
   if v_pid is not null then
     select pm_id, coalesce(v_dept, department) into v_pm, v_dept from projects where id = v_pid;
-    if v_kind not in ('issue','change') then v_pm := null; end if;
+    if v_kind not in ('issue','change','rfi') then v_pm := null; end if;
   end if;
   begin v_need := nullif(r->>'needed_by', '')::date; exception when others then v_need := null; end;
   if v_need is not null and (v_need < current_date - 1 or v_need > current_date + 1000) then v_need := null; end if;
