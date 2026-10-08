@@ -20,7 +20,8 @@ const KEY_OF = Object.fromEntries(Object.entries(TABLES).map(([k, t]) => [t, k])
 const O = {missing:false, detail:null, q:"", dept:"", pm:"", phase:"active", hand:true, mpMode:"week", mpDate:null, mpDept:""};
 try { const m = localStorage.getItem("rfipops.mpMode"); if (m) O.mpMode = m; } catch (e) {}
 for (const k of Object.keys(TABLES)) O[k] = [];
-O.dir = []; O.docFolder = ""; O.wuWeek = null; O.off = new Set(); O.taskWho = "me"; O.reqView = "open"; O.reqDept = ""; O.issView = "open"; O.issDept = "";
+O.dir = []; O.docFolder = ""; O.wuWeek = null; O.off = new Set(); O.taskWho = "me"; O.reqView = "open"; O.reqDept = ""; O.issView = "open"; O.issDept = ""; O.tl = {mode:"projects", span:6, start:null, dept:"", pm:"", open:new Set(), group:"dept"};
+try { const t = JSON.parse(localStorage.getItem("rfipops.tl") || "null"); if (t) Object.assign(O.tl, {mode:t.mode || "projects", span:t.span || 6, group:t.group || "dept"}); } catch (e) {}
 try { const d = localStorage.getItem("rfipops.detail"); if (d) O.detail = d; } catch (e) {}
 
 async function fetchTable(key) {
@@ -1446,6 +1447,171 @@ function openTech(t) {
       return saveRow("techs", {name:d.name.trim(), department:d.department, trade:d.trade, profile_id:nullify(d.profile_id), active:d.active !== false, sort:d.sort || 99}, t && t.id); });
 }
 
+
+// ---------------------------------------------------------------- timeline (Gantt)
+// Full-width view to coordinate time across jobs: projects as bars (name, % complete, milestones,
+// plan phases on demand) or people as bars of who's on which job, over months.
+const TL_SPANS = {projects:[[3, "3 months"], [6, "6 months"], [12, "12 months"]], people:[[4, "4 weeks"], [8, "8 weeks"], [13, "3 months"], [26, "6 months"]]};
+const tlSave = () => { try { localStorage.setItem("rfipops.tl", JSON.stringify({mode:O.tl.mode, span:O.tl.span, group:O.tl.group})); } catch (e) {} };
+function tlRange() {
+  const t = O.tl;
+  if (t.mode === "projects") {
+    const span = [3, 6, 12].includes(t.span) ? t.span : 6;
+    const start = t.start || addMonths(monthStart(TODAY), span >= 6 ? -1 : 0);
+    return {start, end:addDays(addMonths(start, span), -1), ppd: span === 3 ? 11 : span === 6 ? 6 : 3.2, span};
+  }
+  const span = [4, 8, 13, 26].includes(t.span) ? t.span : 8;
+  const start = t.start || addDays(mondayOf(TODAY), -7);
+  return {start, end:addDays(start, span * 7 - 1), ppd: span === 4 ? 34 : span === 8 ? 18 : span === 13 ? 11 : 6, span};
+}
+function tlScale(r) {
+  const days = dayDiff(r.start, r.end) + 1;
+  const x = d => Math.max(0, Math.min(days, dayDiff(r.start, d))) / days * 100;
+  return {days, x, w: (a, b) => Math.max(0, x(addDays(b, 1)) - x(a))};
+}
+function tlHeader(r, sc) {
+  const ticks = [], subs = [];
+  if (O.tl.mode === "projects") {
+    for (let m = monthStart(r.start); m <= r.end; m = addMonths(m, 1)) {
+      const a = m < r.start ? r.start : m, b = addDays(addMonths(m, 1), -1) > r.end ? r.end : addDays(addMonths(m, 1), -1);
+      ticks.push(h("div", {class:"tl-tick", style:`left:${sc.x(a)}%;width:${sc.w(a, b)}%`}, new Date(m + "T12:00:00").toLocaleDateString("en-US", {month:"short", year: m.slice(5, 7) === "01" || m === monthStart(r.start) ? "numeric" : undefined})));
+    }
+    for (let w = mondayOf(r.start); w <= r.end; w = addDays(w, 7)) if (w >= r.start && r.ppd >= 6) subs.push(h("div", {class:"tl-sub", style:`left:${sc.x(w)}%`}, String(Number(w.slice(8)))));
+  } else {
+    for (let w = mondayOf(r.start); w <= r.end; w = addDays(w, 7)) {
+      ticks.push(h("div", {class:"tl-tick", style:`left:${sc.x(w)}%;width:${sc.w(w, addDays(w, 6))}%`}, (r.ppd >= 11 ? "Week of " : "") + new Date(w + "T12:00:00").toLocaleDateString("en-US", {month:"short", day:"numeric"})));
+      if (r.ppd >= 18) for (let i = 0; i < 5; i++) subs.push(h("div", {class:"tl-sub" + (addDays(w, i) === TODAY ? " now" : ""), style:`left:${sc.x(addDays(w, i))}%;width:${sc.w(addDays(w, i), addDays(w, i))}%`}, "MTWTF"[i]));
+    }
+  }
+  return h("div", {class:"tl-row tl-head"}, h("div", {class:"tl-lab"}, O.tl.mode === "projects" ? "Project" : "Person"), h("div", {class:"tl-track"}, ticks, subs.length ? h("div", {class:"tl-subs"}, subs) : null));
+}
+function tlGrid(r, sc) {
+  const lines = [];
+  if (O.tl.mode === "projects") { for (let m = monthStart(r.start); m <= r.end; m = addMonths(m, 1)) if (m >= r.start) lines.push(h("i", {class:"tl-line", style:`left:${sc.x(m)}%`})); }
+  else for (let w = mondayOf(r.start); w <= r.end; w = addDays(w, 7)) { if (w >= r.start) lines.push(h("i", {class:"tl-line", style:`left:${sc.x(w)}%`}));
+    if (r.ppd >= 11) lines.push(h("i", {class:"tl-wkend", style:`left:${sc.x(addDays(w, 5))}%;width:${sc.w(addDays(w, 5), addDays(w, 6))}%`})); }
+  if (TODAY >= r.start && TODAY <= r.end) lines.push(h("i", {class:"tl-today", style:`left:${sc.x(TODAY) + sc.w(TODAY, TODAY) / 2}%`, title:"Today"}));
+  return h("div", {class:"tl-grid"}, lines);
+}
+// a project's dates: its own start/end, else its plan and milestones
+function tlSpanOf(p) {
+  const ds = [], de = [];
+  if (p.start_date) ds.push(p.start_date); if (p.end_date) de.push(p.end_date);
+  if (!ds.length || !de.length) for (const i of itemsOf(p.id)) { if (i.start_date) ds.push(i.start_date); if (i.due_date) de.push(i.due_date); }
+  if (!ds.length || !de.length) for (const m of O.ms.filter(m => m.project_id === p.id)) { if (m.planned) { ds.push(m.planned); de.push(m.planned); } }
+  if (!ds.length && !de.length) return null;
+  const a = (p.start_date || ds.sort()[0] || de.sort()[0]), b = (p.end_date || de.sort().slice(-1)[0] || a);
+  return {a, b: b < a ? a : b, guessed: !(p.start_date && p.end_date)};
+}
+function tlProjects(r, sc) {
+  const t = O.tl;
+  const pool = jobs().filter(p => p.phase !== "closed" && (!t.dept || p.department === t.dept) && (!t.pm || p.pm_id === t.pm))
+    .map(p => ({p:byId(O.projects, p.id) || p, sp:tlSpanOf(byId(O.projects, p.id) || p)}))
+    .filter(x => x.sp && x.sp.b >= r.start && x.sp.a <= r.end)
+    .sort((a, b) => a.sp.a.localeCompare(b.sp.a) || a.p.number.localeCompare(b.p.number));
+  const undated = jobs().filter(p => p.phase !== "closed" && (!t.dept || p.department === t.dept) && (!t.pm || p.pm_id === t.pm) && !tlSpanOf(byId(O.projects, p.id) || p));
+  const groupKey = x => t.group === "pm" ? personName(x.p.pm_id) : t.group === "customer" ? (acctName(x.p.account_id) || "Customer not set") : (x.p.department || "No department");
+  const groups = new Map(); for (const x of pool) { const k = t.group === "none" ? "" : groupKey(x); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(x); }
+  const keys = [...groups.keys()].sort((a, b) => t.group === "dept" ? deptKeys().indexOf(a) - deptKeys().indexOf(b) : a.localeCompare(b));
+  const rows = [];
+  for (const k of keys) {
+    if (k) rows.push(h("div", {class:"tl-row tl-grp"}, h("div", {class:"tl-lab"}, h("b", null, k), h("small", null, plural(groups.get(k).length, "project"))), h("div", {class:"tl-track"})));
+    for (const {p, sp} of groups.get(k)) {
+      const full = !!byId(O.projects, p.id), pctDone = Math.max(0, Math.min(100, Number(p.pct_complete) || 0));
+      const late = sp.b < TODAY && p.phase !== "closeout";
+      const phases = full ? itemsOf(p.id).filter(i => !i.parent_id && (i.start_date || i.due_date)).sort((a, b) => (a.start_date || a.due_date).localeCompare(b.start_date || b.due_date)) : [];
+      const isOpen = t.open.has(p.id);
+      const ms = full ? O.ms.filter(m => m.project_id === p.id && (m.actual || m.planned)) : [];
+      const openIss = full ? O.issues.filter(i => i.project_id === p.id && issOpen(i)).length : 0;
+      const crew = new Set(O.asg.filter(a => a.project_id === p.id && a.work_date >= mondayOf(TODAY) && a.work_date <= addDays(mondayOf(TODAY), 4)).map(a => a.tech_id)).size;
+      rows.push(h("div", {class:"tl-row"},
+        h("div", {class:"tl-lab"},
+          phases.length ? h("button", {class:"tl-caret", "aria-expanded":String(isOpen), "aria-label":(isOpen ? "Hide" : "Show") + " plan phases", onclick:() => { isOpen ? t.open.delete(p.id) : t.open.add(p.id); render(); }}, isOpen ? "▾" : "▸") : h("span", {class:"tl-caret"}),
+          h("div", {class:"tl-name"}, full ? h("button", {class:"linkish", onclick:() => openProject(p.id)}, p.name) : h("b", null, p.name),
+            h("small", null, [p.number, t.group !== "pm" ? personName(p.pm_id) : null, t.group !== "customer" && full ? acctName(p.account_id) : null].filter(Boolean).join(" · ")))),
+        h("div", {class:"tl-track"},
+          h("button", {class:"tl-bar " + pjClass(p.id) + (late ? " late" : "") + (sp.guessed ? " guess" : ""), style:`left:${sc.x(sp.a)}%;width:${Math.max(.4, sc.w(sp.a, sp.b))}%`,
+              title:`${p.number} · ${p.name}\n${fmtDate(sp.a)} – ${fmtDate(sp.b)} · ${pctDone}% complete · PM ${personName(p.pm_id)}${crew ? "\n" + people(crew) + " scheduled this week" : ""}${openIss ? "\n" + plural(openIss, "open issue") : ""}${sp.guessed ? "\nDates estimated from the plan" : ""}`,
+              onclick:() => full && openProject(p.id)},
+            h("i", {class:"tl-done", style:`width:${pctDone}%`}),
+            h("span", null, p.name + (pctDone ? " · " + pctDone + "%" : "") + (crew ? " · " + crew + " crew" : "") + (openIss ? " · " + plural(openIss, "issue") : ""))),
+          ms.map(m => { const d = m.actual || m.planned, lateM = !m.actual && m.planned < TODAY;
+            return d >= r.start && d <= r.end ? h("span", {class:"tl-ms" + (m.actual ? " done" : lateM ? " late" : ""), style:`left:${sc.x(d) + sc.w(d, d) / 2}%`, title:m.name + " · " + (m.actual ? "done " + fmtDate(m.actual) : "planned " + fmtDate(m.planned))}) : null; }))));
+      if (isOpen) for (const ph of phases) {
+        const a = ph.start_date || ph.due_date, b = ph.due_date || ph.start_date;
+        rows.push(h("div", {class:"tl-row tl-phase"}, h("div", {class:"tl-lab"}, h("span", {class:"tl-caret"}), h("div", {class:"tl-name"}, h("span", null, ph.title), h("small", null, planStLabel(ph.status) + (ph.assignee_id ? " · " + personName(ph.assignee_id) : "")))),
+          h("div", {class:"tl-track"}, b >= r.start && a <= r.end ? h("button", {class:"tl-bar thin st-" + ph.status + (isLate(ph) ? " late" : ""), style:`left:${sc.x(a)}%;width:${Math.max(.4, sc.w(a, b))}%`,
+            title:ph.title + "\n" + fmtDate(a) + " – " + fmtDate(b), onclick:() => openPlanItem(p, ph)}, h("span", null, ph.title)) : null)));
+      }
+    }
+  }
+  return {rows, count:pool.length, undated};
+}
+function tlPeople(r, sc) {
+  const t = O.tl, ts = O.techs.filter(x => x.active && (!t.dept || x.department === t.dept))
+    .sort((a, b) => deptKeys().indexOf(a.department) - deptKeys().indexOf(b.department) || a.sort - b.sort || a.name.localeCompare(b.name));
+  const editable = ["admin", "lead", "pm"].includes(role());
+  const rows = []; let last = null;
+  const workdays = []; for (let d = r.start; d <= r.end; d = addDays(d, 1)) if (!isWeekend(d)) workdays.push(d);
+  for (const tc of ts) {
+    if (tc.department !== last) { last = tc.department; rows.push(h("div", {class:"tl-row tl-grp"}, h("div", {class:"tl-lab"}, h("b", null, tc.department || "No department")), h("div", {class:"tl-track"}))); }
+    const mine = O.asg.filter(a => a.tech_id === tc.id && a.work_date >= r.start && a.work_date <= r.end).sort((a, b) => a.work_date.localeCompare(b.work_date));
+    // merge runs of workdays on the same job (weekends don't break a run)
+    const segs = [];
+    for (const a of mine) {
+      const key = a.kind === "job" ? a.project_id : a.kind, prev = segs[segs.length - 1];
+      let gap = prev ? addDays(prev.b, 1) : null; while (gap && gap < a.work_date && isWeekend(gap)) gap = addDays(gap, 1);
+      if (prev && prev.key === key && gap === a.work_date) prev.b = a.work_date; else segs.push({key, kind:a.kind, a:a.work_date, b:a.work_date, note:a.note});
+    }
+    const booked = mine.filter(a => a.kind === "job").length, avail = workdays.length - mine.filter(a => a.kind !== "job").length;
+    rows.push(h("div", {class:"tl-row" + (tc.profile_id === S.me.id ? " me" : "")},
+      h("div", {class:"tl-lab"}, h("span", {class:"tl-caret"}), h("div", {class:"tl-name"}, h("b", null, tc.name), h("small", null, (tc.trade || "") + " · " + (avail ? Math.round(booked / avail * 100) : 0) + "% booked"))),
+      h("div", {class:"tl-track", onclick: editable ? e => { if (e.target !== e.currentTarget) return; const rect = e.currentTarget.getBoundingClientRect();
+          let d = addDays(r.start, Math.floor((e.clientX - rect.left) / rect.width * sc.days)); while (isWeekend(d)) d = addDays(d, 1); openAssign({techId:tc.id, date:d}); } : null,
+          title: editable ? "Click an empty spot to assign " + tc.name : null},
+        segs.map(sg => { const pj = sg.kind === "job" ? proj(sg.key) : null, n = workdays.filter(d => d >= sg.a && d <= sg.b).length;
+          const label = sg.kind === "job" ? (pj && pj.name ? pj.name : "Job") : sg.kind === "pto" ? "Time off" : "Training";
+          return h("button", {class:"tl-bar " + (sg.kind === "job" ? pjClass(sg.key) : "off"), style:`left:${sc.x(sg.a)}%;width:${Math.max(.4, sc.w(sg.a, sg.b))}%`,
+            title:(pj && pj.number ? pj.number + " · " : "") + label + "\n" + fmtDate(sg.a) + (sg.b !== sg.a ? " – " + fmtDate(sg.b) : "") + " · " + plural(n, "day") + (sg.note ? "\n" + sg.note : ""),
+            onclick:() => editable && openAssign({techId:tc.id, date:sg.a, projectId:sg.kind === "job" ? sg.key : null})}, h("span", null, label)); }))));
+  }
+  return {rows, count:ts.length};
+}
+const planStLabel = st => (PLAN_ST.find(x => x[0] === st) || PLAN_ST[0])[1];
+function viewTimeline() {
+  const t = O.tl, wrap = h("div", {class:"o-stack tl-full"});
+  const r = tlRange(), sc = tlScale(r);
+  const shift = dir => { t.start = t.mode === "projects" ? addMonths(r.start, dir * Math.max(1, Math.round(r.span / 3))) : addDays(r.start, dir * 7 * Math.max(1, Math.round(r.span / 4))); render(); };
+  const pms = [...new Set(jobs().map(p => p.pm_id).filter(Boolean))];
+  wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Timeline"),
+    h("div", {class:"sections mp-modes", role:"group", "aria-label":"Show"}, [["projects", "Projects"], ["people", "People"]].map(([m, l]) =>
+      h("button", {"aria-pressed":String(t.mode === m), onclick:() => { t.mode = m; t.start = null; t.span = m === "projects" ? 6 : 8; tlSave(); render(); }}, l))),
+    h("select", {class:"inp", style:"max-width:140px", "aria-label":"How long", onchange: e => { t.span = Number(e.target.value); tlSave(); render(); }},
+      TL_SPANS[t.mode].map(([v, l]) => h("option", {value:v, selected:r.span === v}, l))),
+    h("div", {class:"mp-nav"}, h("button", {class:"btn small", "aria-label":"Earlier", onclick:() => shift(-1)}, "‹"),
+      h("button", {class:"btn small", onclick:() => { t.start = null; render(); }}, "Today"),
+      h("button", {class:"btn small", "aria-label":"Later", onclick:() => shift(1)}, "›"),
+      h("b", {class:"mp-label"}, fmtDate(r.start) + " – " + fmtDate(r.end))),
+    deptKeys().length > 1 ? h("select", {class:"inp", style:"max-width:170px", "aria-label":"Department", onchange: e => { t.dept = e.target.value; render(); }},
+      h("option", {value:""}, "All departments"), deptKeys().map(k => h("option", {value:k, selected:t.dept === k}, k))) : null,
+    t.mode === "projects" && pms.length > 1 ? h("select", {class:"inp", style:"max-width:170px", "aria-label":"Project manager", onchange: e => { t.pm = e.target.value; render(); }},
+      h("option", {value:""}, "All PMs"), pms.map(id => h("option", {value:id, selected:t.pm === id}, personName(id)))) : null,
+    t.mode === "projects" ? h("select", {class:"inp", style:"max-width:190px", "aria-label":"Group by", onchange: e => { t.group = e.target.value; tlSave(); render(); }},
+      [["dept", "Group by department"], ["pm", "Group by PM"], ["customer", "Group by customer"], ["none", "No grouping"]].map(([v, l]) => h("option", {value:v, selected:t.group === v}, l))) : null));
+  const body = t.mode === "projects" ? tlProjects(r, sc) : tlPeople(r, sc);
+  const innerW = Math.round(sc.days * r.ppd);
+  if (!body.count) wrap.append(h("div", {class:"panel"}, emptyState(t.mode === "projects" ? "No projects in this window" : "No field techs yet",
+    t.mode === "projects" ? "Projects show here once they have start and end dates (or plan dates)." : "Add techs on the Manpower tab, then schedule them to jobs.")));
+  else wrap.append(h("div", {class:"tl-wrap"}, h("div", {class:"tl", style:`--tl-w:${innerW}px`}, tlHeader(r, sc), h("div", {class:"tl-body"}, tlGrid(r, sc), body.rows))));
+  if (t.mode === "projects") {
+    wrap.append(h("div", {class:"o-keys"}, h("span", null, h("i", {class:"sw acc"}), "Planned start to finish (darker part = % complete)"), h("span", null, h("span", {class:"tl-ms"}), "Milestone"),
+      h("span", null, h("span", {class:"tl-ms done"}), "Milestone done"), h("span", null, h("span", {class:"tl-ms late"}), "Milestone late"), h("span", null, h("i", {class:"tl-today key"}), "Today"),
+      h("span", {class:"muted"}, "▸ shows plan phases · click a bar to open the project")));
+    if (body.undated.length) wrap.append(h("p", {class:"muted small"}, "Not shown (no dates yet): " + body.undated.map(p => p.number + " " + p.name).join(", ")));
+  } else wrap.append(h("p", {class:"muted small"}, "Each bar is a run of workdays on one job. Click a bar to change it" + (["admin", "lead", "pm"].includes(role()) ? ", or an empty spot to assign someone." : ".")));
+  return wrap;
+}
+
 // ---------------------------------------------------------------- weekly PM updates
 const UPDATE_DUE = {dow:5, hour:12};
 const worstOf = u => ["off_track", "at_risk"].find(s => [u.schedule_status, u.cost_status, u.safety_status].includes(s)) || "on_track";   // Friday at noon, local time
@@ -2359,7 +2525,7 @@ function openRequest(r) {
   drawerForm(isNew ? "Log a customer request" : reqRef(r) + " · " + (acctName(r.account_id) || "Customer request"), d, fields, save,
     r && isAdmin() ? del("customer_requests", r.id) : null);
 }
-const VIEW_FN = {"ops-updates":viewUpdates, "ops-overview":viewOverview, "ops-projects":viewProjects, "ops-project":viewProject, "ops-handoffs":viewHandoffs, "ops-billing":viewBilling, "ops-manpower":viewManpower, "ops-tasks":viewTasks, "ops-expenses":viewExpenses, "ops-requests":viewRequests, "ops-issues":viewIssues, handoffs:viewHandoffs};
+const VIEW_FN = {"ops-updates":viewUpdates, "ops-overview":viewOverview, "ops-projects":viewProjects, "ops-project":viewProject, "ops-handoffs":viewHandoffs, "ops-billing":viewBilling, "ops-manpower":viewManpower, "ops-tasks":viewTasks, "ops-expenses":viewExpenses, "ops-requests":viewRequests, "ops-issues":viewIssues, "ops-timeline":viewTimeline, handoffs:viewHandoffs};
 return {
   tables: Object.values(TABLES),
   load, changed,
@@ -2368,6 +2534,7 @@ return {
   views: () => {
     const r = role();
     const mp = O.techs.length || role() === "admin" ? [["ops-manpower", r === "field" ? "Schedule" : "Manpower"]] : [];
+    const tl = r === "field" ? [] : [["ops-timeline", "Timeline"]];
     const myOpen = O.items.filter(i => i.assignee_id === S.me.id && i.status !== "done").length, waiting = waitingOnMe().length;
     const tk = featureOn("items") ? [["ops-tasks", "My tasks" + (myOpen ? " (" + myOpen + ")" : "")]] : [];
     const ex = featureOn("exps") ? [["ops-expenses", "Expenses" + (waiting ? " (" + waiting + ")" : "")]] : [];
@@ -2375,8 +2542,8 @@ return {
     const is = featureOn("issues") && (r !== "field" || O.issues.length) ? [["ops-issues", "Issues" + (myIss ? " (" + myIss + " yours)" : "")]] : [];
     const rq = seesReqs() ? [["ops-requests", "Requests" + (newReqs() ? " (" + newReqs() + " new)" : "")]] : [];
     if (r === "field") return [["ops-projects", "My projects"], ...tk, ...is, ...mp, ...ex, ...rq];
-    if (r === "pm") return [["ops-projects", "My projects"], ...rq, ...is, ...tk, ["ops-updates", "Weekly updates"], ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
-    return [["ops-overview", "Overview"], ["ops-projects", "Projects"], ...rq, ...is, ...tk, ["ops-updates", "Weekly updates"], ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
+    if (r === "pm") return [["ops-projects", "My projects"], ...rq, ...is, ...tk, ["ops-updates", "Weekly updates"], ...tl, ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
+    return [["ops-overview", "Overview"], ["ops-projects", "Projects"], ...rq, ...is, ...tk, ["ops-updates", "Weekly updates"], ...tl, ...mp, ...ex, ["ops-handoffs", "Handoffs"], ["ops-billing", "Billing"]];
   },
   salesViews: () => O.missing ? [] : [["handoffs", "Handoffs"]],
   hiddenViews: () => ["ops-project"],
