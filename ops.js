@@ -2219,7 +2219,7 @@ function expTable(list, showProject) {
       return h("tr", null, h("td", {class:"mono nowrap"}, fmtDate(e.spent_on)),
         showProject ? h("td", null, p.number ? h("button", {class:"linkish", onclick:() => byId(O.projects, e.project_id) && openProject(e.project_id)}, p.number) : "—", h("div", {class:"muted small"}, p.name || "")) : null,
         h("td", null, catName(e.category)),
-        h("td", null, h("div", null, e.vendor || "—"), e.description ? h("div", {class:"muted small"}, e.description) : null),
+        h("td", null, h("button", {class:"linkish", onclick:() => openExpenseReview(e)}, e.vendor || catName(e.category)), e.description ? h("div", {class:"muted small"}, e.description) : null),
         h("td", null, personName(e.submitted_by), h("div", {class:"muted small"}, paidName(e.paid_with))),
         h("td", {class:"num mono"}, fullMoney(e.amount)),
         h("td", {title:trail(e) || null}, chip((EXP_ST[e.status] || EXP_ST.submitted)[1], (EXP_ST[e.status] || EXP_ST.submitted)[0]), e.status === "rejected" && e.reject_reason ? h("div", {class:"small bad-t"}, e.reject_reason) : null,
@@ -2239,10 +2239,43 @@ async function decideExpense(e, btn) {
   if (error) { toast(friendly(error)); return; }
   toast(wasPm ? "Approved. It now counts toward the job cost." : "Approved. It's now with the CFO for final approval.");
   { const p = byId(O.projects, e.project_id) || {}; const what = fullMoney(e.amount) + " · " + (e.vendor || catName(e.category)) + (p.number ? " on " + p.number : "");
-    if (wasPm) tell([e.submitted_by], "Expense approved: " + what, "Your expense " + what + " has final approval.", p.id ? "#project=" + p.id : "");
+    if (wasPm) tell([e.submitted_by], "Expense approved: " + what, "Your expense " + what + " has final approval.", "#expense=" + e.id);
     else tell(activePeople().filter(x => x.finance_approver).map(x => x.id), "Expense to approve: " + what,
-      (S.me.full_name || S.me.email) + " approved " + personName(e.submitted_by) + "'s expense " + what + ". It needs your final approval.", p.id ? "#project=" + p.id : ""); }
+      (S.me.full_name || S.me.email) + " approved " + personName(e.submitted_by) + "'s expense " + what + ". It needs your final approval.", "#expense=" + e.id); }
   await reload("exps"); render();
+}
+
+// one expense on its own: what emails link to (#expense=<id>), with the receipt and Approve / Send back
+async function openExpenseById(id) {
+  let e = byId(O.exps, id);
+  if (!e) { await reload("exps"); e = byId(O.exps, id); }
+  if (!e) { toast("That expense isn't available to you."); return; }
+  openExpenseReview(e);
+}
+function openExpenseReview(e) {
+  const p = expProject(e.project_id), st = EXP_ST[e.status] || EXP_ST.submitted;
+  const rc = h("div", {class:"rc-view"}, e.receipt_path ? h("span", {class:"muted small"}, "Loading receipt…") : h("span", {class:"muted"}, "No receipt attached."));
+  if (e.receipt_path) signedUrls([e.receipt_path]).then(([u]) => {
+    if (!u) { rc.replaceChildren(h("span", {class:"muted"}, "Couldn't load the receipt.")); return; }
+    rc.replaceChildren(/\.pdf($|\?)/i.test(e.receipt_path) ? h("a", {class:"btn small", href:u, target:"_blank", rel:"noopener"}, "Open receipt (PDF)")
+      : h("a", {href:u, target:"_blank", rel:"noopener", title:"Open full size"}, h("img", {src:u, alt:"Receipt"}))); });
+  const row = (k, v) => v ? h("div", {class:"rv-row"}, h("span", {class:"k"}, k), h("span", null, v)) : null;
+  const trail = [e.pm_by ? "First approval: " + personName(e.pm_by) + " " + fmtDate((e.pm_at || "").slice(0, 10)) : null,
+    e.cfo_by ? "Final approval: " + personName(e.cfo_by) + " " + fmtDate((e.cfo_at || "").slice(0, 10)) : null].filter(Boolean).join(" · ");
+  const body = h("div", {class:"o-stack"},
+    h("div", {class:"rv-top"}, h("b", null, fullMoney(e.amount)), chip(st[1], st[0])),
+    e.status === "rejected" && e.reject_reason ? h("div", {class:"o-due bad"}, h("b", null, "Sent back by " + personName(e.rejected_by)), h("span", null, e.reject_reason)) : null,
+    h("div", {class:"rv"}, row("Logged by", personName(e.submitted_by)), row("Date", fmtDate(e.spent_on)), row("Job", p.general ? "General / overhead" : (p.number || "") + " · " + (p.name || "")),
+      row("Category", catName(e.category)), row("Vendor", e.vendor), row("For", e.description), row("Paid with", paidName(e.paid_with)),
+      !e.project_id && e.approver_id && e.status === "submitted" ? row("First approval", personName(e.approver_id)) : null, row("History", trail)),
+    rc);
+  const foot = [];
+  if (canSendBack(e)) foot.push(h("button", {class:"btn spacer", onclick:() => openSendBack(e)}, "Send back"));
+  if (canPmApprove(e) || canCfoApprove(e)) foot.push(h("button", {class:"btn primary" + (foot.length ? "" : " spacer"), onclick: async ev => { await decideExpense(e, ev.currentTarget); closeDrawer(); }}, canCfoApprove(e) ? "Final approve" : "Approve"));
+  if (e.submitted_by === S.me.id && ["submitted", "rejected"].includes(e.status)) foot.push(h("button", {class:"btn" + (foot.length ? "" : " spacer"), onclick:() => openExpense(p.general ? null : p, e)}, e.status === "rejected" ? "Fix and resubmit" : "Edit"));
+  if (p.id && byId(O.projects, p.id)) foot.push(h("button", {class:"btn" + (foot.length ? "" : " spacer"), onclick:() => { closeDrawer(); openProject(p.id); }}, "Open the job"));
+  foot.push(h("button", {class:"btn" + (foot.length ? "" : " spacer"), onclick:() => closeDrawer()}, "Close"));
+  openDrawer({title:"Expense · " + (e.vendor || catName(e.category)), body, foot});
 }
 function openSendBack(e) {
   const d = {reason:""};
@@ -2253,7 +2286,7 @@ function openSendBack(e) {
       const {error} = await sb.rpc("expense_decide", {eid:e.id, decision:"reject", reason:d.reason.trim()});
       if (error) { toast(friendly(error)); return; }
       closeDrawer(); toast("Sent back to " + personName(e.submitted_by)); await reload("exps"); render();
-      tell([e.submitted_by], "Expense sent back: " + fullMoney(e.amount) + " · " + (e.vendor || catName(e.category)), (S.me.full_name || S.me.email) + " sent your expense back:\n\n" + d.reason.trim(), e.project_id ? "#project=" + e.project_id : "");
+      tell([e.submitted_by], "Expense sent back: " + fullMoney(e.amount) + " · " + (e.vendor || catName(e.category)), (S.me.full_name || S.me.email) + " sent your expense back:\n\n" + d.reason.trim(), "#expense=" + e.id);
     }}, "Send back")]});
 }
 function openExpense(p, e) {
@@ -2312,7 +2345,7 @@ function openExpense(p, e) {
     const where = p.general ? "(general, not a project)" : "on " + p.number + " " + p.name;
     const who = p.general ? (res.status === "pm_approved" ? activePeople().filter(x => x.finance_approver).map(x => x.id) : [res.approver_id]) : [p.pm_id];
     tell(who.filter(Boolean), "Expense to approve: " + fullMoney(amt) + " · " + (row.vendor || catName(row.category)) + (p.general ? "" : " on " + p.number),
-      (S.me.full_name || S.me.email) + (e ? " resubmitted" : " submitted") + " an expense " + where + ": " + fullMoney(amt) + " at " + (row.vendor || catName(row.category)) + ". It needs your approval.", p.general ? "" : "#project=" + p.id);
+      (S.me.full_name || S.me.email) + (e ? " resubmitted" : " submitted") + " an expense " + where + ": " + fullMoney(amt) + " at " + (row.vendor || catName(row.category)) + ". It needs your approval.", "#expense=" + res.id);
   }}, e ? "Resubmit" : "Submit"));
   openDrawer({title:(e ? "Expense · " : "Log an expense · ") + (p.general ? "General" : p.number), body, foot});
   const amt = document.getElementById("f-amount"); if (amt) { amt.setAttribute("inputmode", "decimal"); amt.setAttribute("placeholder", "0.00"); }
@@ -2337,7 +2370,7 @@ function expCards(list) {
   if (!list.length) return h("div", {class:"empty"}, "No expenses here.");
   return h("ul", {class:"exp-cards"}, list.map(e => { const p = expProject(e.project_id), st = EXP_ST[e.status] || EXP_ST.submitted;
     return h("li", null,
-      h("div", {class:"ec-top"}, h("b", null, fullMoney(e.amount)), chip(st[1], st[0])),
+      h("div", {class:"ec-top", onclick:() => openExpenseReview(e), style:"cursor:pointer"}, h("b", null, fullMoney(e.amount)), chip(st[1], st[0])),
       h("div", null, (e.vendor || catName(e.category)) + " · " + fmtDate(e.spent_on)),
       h("div", {class:"muted small"}, (p.general ? "General / overhead" : p.number ? p.number + " · " + p.name : "") + (e.submitted_by !== S.me.id ? " · " + personName(e.submitted_by) : "")),
       e.status === "rejected" && e.reject_reason ? h("div", {class:"small bad-t"}, e.reject_reason) : null,
@@ -2875,5 +2908,6 @@ return {
   openProject: id => { openProject(id); render(); },
   openRequest: id => { go("ops-requests"); openRequest(id); },
   startExpense: () => { if (featureOn("exps")) { go("ops-expenses"); startExpense(); } },
+  openExpense: id => { go("ops-expenses"); openExpenseById(id); },
 };
 };

@@ -337,10 +337,11 @@ function notify(ids, subject, text, link) {
 // links in emails and invites: #deal=<id> or #project=<id>
 function openFromHash() {
   if (location.hash === "#expense") { history.replaceState(null, "", location.pathname + location.search); if (OPS && OPS.startExpense) { S.section = hasOps() ? "ops" : "sales"; OPS.startExpense(); } return; }
-  const m = location.hash.match(/^#(deal|project|request)=([0-9a-f-]{36})$/);
+  const m = location.hash.match(/^#(deal|project|request|expense)=([0-9a-f-]{36})$/);
   if (!m) return;
   history.replaceState(null, "", location.pathname + location.search);
   if (m[1] === "deal") { if (byId(S.deals, m[2])) openDeal(m[2]); else toast("That deal isn't available to you."); }
+  else if (m[1] === "expense") { if (OPS && OPS.openExpense) { S.section = hasOps() ? "ops" : "sales"; OPS.openExpense(m[2]); } }
   else if (m[1] === "request") { if (OPS && OPS.openRequest) { S.section = "ops"; OPS.openRequest(m[2]); } }
   else if (OPS && OPS.openProject) { S.section = "ops"; OPS.openProject(m[2]); }
 }
