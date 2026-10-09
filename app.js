@@ -483,6 +483,15 @@ async function loadTable(key) {
   try { S[key] = await fetchAll(TABLES[key], ORDER[key] || "created_at"); status(""); }
   catch (e) { status("Couldn't load " + key + ": " + friendly(e)); }
 }
+// after a laptop sleeps the login token has usually expired: renew it before reloading, or every request fails
+async function freshToken() {
+  try {
+    let {data:{session}} = await sb.auth.getSession();
+    if (session && session.expires_at && session.expires_at * 1000 < Date.now() + 60000) ({data:{session}} = await sb.auth.refreshSession());
+    if (session && session.access_token) { CUR_TOKEN = session.access_token; return true; }
+    showSignin("Your sign-in expired. Sign in again to keep going."); return false;
+  } catch (e) { console.warn("token refresh failed", e); return true; }
+}
 async function loadAll() {
   await Promise.all(Object.keys(TABLES).map(loadTable).concat([loadGng()], OPS ? [OPS.load()] : []));
   const me = byId(S.profiles, S.me.id); if (me) S.me = me;
@@ -514,7 +523,7 @@ function subscribe() {
   // people, settings and anything missed while the tab slept
   let last = Date.now();
   document.addEventListener("visibilitychange", async () => {
-    if (document.visibilityState === "visible" && Date.now() - last > 60000) { last = Date.now(); await loadAll(); render(); }
+    if (document.visibilityState === "visible" && Date.now() - last > 60000) { last = Date.now(); if (await freshToken()) { await loadAll(); render(); } }
   });
 }
 
