@@ -673,3 +673,5 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
 .rv-top{display:flex;justify-content:space-between;align-items:center;font-size:22px}
 .rv{display:grid;gap:6px}.rv-row{display:grid;grid-template-columns:110px 1fr;gap:8px;font-size:14px}.rv-row .k{color:var(--muted)}
 .rc-view img{max-width:100%;max-height:420px;border:1px solid var(--line);border-radius:8px;display:block}
+.prog-plan tr.plan-job td{background:var(--sunk);border-top:2px solid var(--line)}
+.prog-plan .plan-bar.job{opacity:.9}

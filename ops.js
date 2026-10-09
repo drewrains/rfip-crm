@@ -487,7 +487,7 @@ function viewProject() {
   if (!prog && (opsView && role() !== "field" || O.wu.some(u => u.project_id === p.id))) wrap.append(updatePanel(p, c, edit));
   if (prog) wrap.append(...programPanels(p));
   if (opsView && featureOn("issues") && !prog) wrap.append(issuePanel(p));
-  if (opsView && featureOn("items")) wrap.append(planPanel(p, canPlan(p)));
+  if (opsView && featureOn("items") && !prog) wrap.append(planPanel(p, canPlan(p)));
   if (role() === "field") wrap.append(logPanel(p));
   if (opsView) {
     const over = Math.round(c.projH - c.hb);
@@ -2505,11 +2505,7 @@ function programPanels(p) {
     return h("div", {class:"prog-wu"}, h("div", {class:"prog-wu-h"}, phaseTag(x.id), h("b", null, x.parent_id ? x.name : "Program-wide"), chip(st.cls, st.text),
       canEdit(x) && needsUpdate(x) ? h("button", {class:"btn small", onclick:() => openUpdate(x, wk)}, st.u ? "Edit" : "Write update") : null),
       u ? updateCard(u, false) : h("div", {class:"muted small"}, "No updates yet.")); }))));
-  const tasks = O.items.filter(i => ids.has(i.project_id) && i.status !== "done").sort((a, b) => (isLate(b) - isLate(a)) || (a.due_date || "9999").localeCompare(b.due_date || "9999")).slice(0, 25);
-  if (featureOn("items")) out.push(panel("Open tasks", plural(O.items.filter(i => ids.has(i.project_id) && i.status !== "done").length, "open task") + " across the phase plans", tasks.length ? h("ul", {class:"task-list"}, tasks.map(i => { const x = byId(O.projects, i.project_id);
-    return h("li", {class:"task-r"}, h("span"), h("div", {class:"task-main"}, h("button", {class:"linkish", onclick:() => openPlanItem(x, i)}, i.title), h("small", null, parentPath(i))), phaseTag(i.project_id),
-      h("span", {class:"muted small"}, i.assignee_id ? personName(i.assignee_id) : "Unassigned"), planChip(i.status),
-      h("span", {class:"mono small nowrap" + (isLate(i) ? " bad-t" : "")}, i.due_date ? fmtDate(i.due_date) : "—")); })) : h("div", {class:"empty"}, "No open tasks. Each phase job keeps its own plan.")));
+  if (featureOn("items")) out.push(programPlanPanel(p, all));
   const ms = O.ms.filter(m => ids.has(m.project_id)).sort((a, b) => (a.actual ? 1 : 0) - (b.actual ? 1 : 0) || (a.planned || "9999").localeCompare(b.planned || "9999"));
   if (ms.length) out.push(panel("Milestones", ms.filter(m => m.actual).length + " of " + ms.length + " done", h("ul", {class:"prog-list"}, ms.map(m => h("li", {class:(m.actual ? "done" : m.planned && m.planned < TODAY ? "late" : "")},
     phaseTag(m.project_id), h("span", {class:"grow"}, m.name), h("span", {class:"mono small"}, m.actual ? "Done " + fmtDate(m.actual) : m.planned ? fmtDate(m.planned) : "no date"))))));
@@ -2535,6 +2531,50 @@ function programPanels(p) {
     out.push(panel("Expenses", ex.length ? fullMoney(sum(ex.filter(e => e.status === "approved"), e => e.amount)) + " approved across the phases" : "None yet", h("div", {class:"o-pad", style:"padding-bottom:0"}, logOn(["+ Log an expense on…"], x => openExpense(x))), expTable(ex, true))); }
   out.push(h("div", {class:"prog-h"}, h("h3", null, "Program-wide records"), h("span", {class:"muted small"}, "Things logged on the parent job itself")));
   return out;
+}
+
+// the program's plan: every phase job's plan in one table on one timeline, each job as a header row
+function programPlanPanel(p, all) {
+  O.progClosed = O.progClosed || new Set();
+  const jobs = all.filter(x => x.id !== p.id || itemsOf(p.id).length);
+  const items = jobs.flatMap(x => itemsOf(x.id)), done = items.filter(i => i.status === "done").length, late = items.filter(isLate).length;
+  const dates = items.flatMap(i => [i.start_date, i.due_date]).concat(jobs.flatMap(x => [x.start_date, x.end_date])).filter(Boolean).sort();
+  const t0 = dates[0], t1 = dates[dates.length - 1], span = t0 && t1 ? Math.max(1, dayDiff(t0, t1)) : 0;
+  const pos = d => span ? Math.max(0, Math.min(100, dayDiff(t0, d) / span * 100)) : 0;
+  const todayPos = span && TODAY >= t0 && TODAY <= t1 ? pos(TODAY) : null;
+  const track = (...bars) => h("div", {class:"plan-track"}, todayPos != null ? h("i", {class:"plan-today", style:"left:" + todayPos + "%"}) : null, ...bars);
+  const body = [];
+  for (const x of jobs) {
+    const {rows, kids} = planTree(x.id), its = itemsOf(x.id), nd = its.filter(i => i.status === "done").length, open = !O.progClosed.has(x.id), ed = canPlan(x);
+    const ds = its.flatMap(i => [i.start_date, i.due_date]).concat([x.start_date, x.end_date]).filter(Boolean).sort(), a = ds[0], b = ds[ds.length - 1];
+    body.push(h("tr", {class:"plan-job"},
+      h("td", {class:"plan-ck"}, h("button", {class:"tl-caret", "aria-expanded":String(open), "aria-label":(open ? "Hide " : "Show ") + x.number, onclick:() => { open ? O.progClosed.add(x.id) : O.progClosed.delete(x.id); render(); }}, open ? "▾" : "▸")),
+      h("td", {class:"plan-t"}, x.id !== p.id && byId(O.projects, x.id) ? h("button", {class:"linkish", onclick:() => openProject(x.id)}, h("b", null, x.number + " · " + x.name)) : h("b", null, x.id === p.id ? "Program-wide" : x.number + " · " + x.name),
+        h("small", {class:"muted"}, its.length ? " · " + nd + " of " + its.length + " done" : " · no plan yet")),
+      h("td", null, personName(x.pm_id)), h("td", {class:"mono nowrap"}, a ? fmtDate(a) : ""), h("td", {class:"mono nowrap"}, b ? fmtDate(b) : ""),
+      h("td", null, phaseChip(x.phase)),
+      h("td", {class:"plan-tl"}, track(a && b && span ? h("b", {class:"plan-bar ph job " + pjClass(x.id), style:"left:" + pos(a) + "%;width:" + Math.max(1.5, pos(b) - pos(a)) + "%"}) : null)),
+      h("td", null, ed ? h("button", {class:"btn small", onclick:() => openPlanItem(x, null, null)}, "+ Phase or task") : null)));
+    if (!open) continue;
+    if (!rows.length) body.push(h("tr", null, h("td"), h("td", {colspan:"7", class:"muted small", style:"padding-left:30px"}, ed ? "No plan yet. Add phases and tasks here, or open " + x.number + " to start from the standard phases or import from Excel." : "No plan yet.")));
+    for (const {i, depth} of rows) {
+      const sub = descendants(i.id, kids), sd = sub.filter(y => y.status === "done").length, st = i.start_date || i.due_date, en = i.due_date || i.start_date, d = depth + 1;
+      body.push(h("tr", {class:"plan-r d" + Math.min(d, 3) + (i.status === "done" ? " is-done" : "") + (isLate(i) ? " is-late" : "")},
+        h("td", {class:"plan-ck"}, canTick(i, x) ? h("input", {type:"checkbox", "aria-label":"Done: " + i.title, checked:i.status === "done", onchange: ev => setItemStatus(i, ev.target.checked ? "done" : "in_progress")}) : null),
+        h("td", {class:"plan-t", style:"padding-left:" + (8 + d * 22) + "px"}, h("button", {class:"linkish", onclick:() => openPlanItem(x, i)}, i.title), sub.length ? h("small", {class:"muted"}, " · " + sd + " of " + sub.length + " done") : null),
+        h("td", null, i.assignee_id ? personName(i.assignee_id) : h("span", {class:"muted"}, "—")),
+        h("td", {class:"mono nowrap"}, i.start_date ? fmtDate(i.start_date) : ""), h("td", {class:"mono nowrap" + (isLate(i) ? " bad-t" : "")}, i.due_date ? fmtDate(i.due_date) : ""),
+        h("td", null, planChip(i.status)),
+        h("td", {class:"plan-tl"}, track(st && span ? h("b", {class:"plan-bar st-" + i.status + (depth ? "" : " ph") + (isLate(i) ? " late" : ""), style:"left:" + pos(st) + "%;width:" + Math.max(1.5, pos(en) - pos(st)) + "%"}) : null)),
+        h("td", null, ed ? h("button", {class:"btn small", title:"Add a sub-task under " + i.title, onclick:() => openPlanItem(x, null, i.id)}, "+ Sub-task") : null)));
+    }
+  }
+  return panel("Project plan · all phases", items.length ? plural(items.length, "item") + " · " + done + " done" + (late ? " · " + late + " overdue" : "") : "Each phase job's plan, on one timeline",
+    h("div", {class:"tbl-wrap flat"}, h("table", {class:"plan-tbl prog-plan"},
+      h("thead", null, h("tr", null, h("th", {class:"plan-ck"}, h("span", {class:"sr"}, "Done")), h("th", null, "Phase job / phase / task"), h("th", null, "Assigned to"), h("th", null, "Start"), h("th", null, "Due"),
+        h("th", null, "Status"), h("th", {class:"plan-tl"}, t0 ? fmtDate(t0) + " – " + fmtDate(t1) : "Timeline"), h("th", null, h("span", {class:"sr"}, "Add")))),
+      h("tbody", null, body))),
+    canPlan(p) && !itemsOf(p.id).length ? h("div", {class:"o-actions"}, h("button", {class:"btn small", onclick:() => openPlanItem(p, null, null)}, "+ Program-wide phase or task")) : null);
 }
 function openAddPhase(p) {
   const n = kidsOf(p.id).length + 1;
