@@ -255,6 +255,19 @@ function feedbackPanel() {
   })();
   return box;
 }
+// light / dark / follow the device, remembered on this computer
+(function themeToggle() {
+  const btn = $("#themeBtn"); if (!btn) return;
+  const ORDER = ["auto", "light", "dark"], ICON = {auto:"◐", light:"☀", dark:"☾"}, TIP = {auto:"Theme: follows your device", light:"Theme: light", dark:"Theme: dark"};
+  let cur = "auto"; try { cur = localStorage.getItem("rfip.theme") || "auto"; } catch (e) {}
+  const apply = () => {
+    if (cur === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.setAttribute("data-theme", cur);
+    btn.textContent = ICON[cur]; btn.title = TIP[cur] + ". Click to switch."; btn.setAttribute("aria-label", TIP[cur] + ". Switch theme");
+    try { if (cur === "auto") localStorage.removeItem("rfip.theme"); else localStorage.setItem("rfip.theme", cur); } catch (e) {}
+  };
+  btn.addEventListener("click", () => { cur = ORDER[(ORDER.indexOf(cur) + 1) % ORDER.length]; apply(); if (typeof toast === "function") toast(TIP[cur]); });
+  apply();
+})();
 $("#signOut").addEventListener("click", async () => { await sb.auth.signOut(); location.reload(); });
 
 async function boot() {
