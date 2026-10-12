@@ -506,7 +506,7 @@ async function freshToken() {
   } catch (e) { console.warn("token refresh failed", e); return true; }
 }
 async function loadAll() {
-  await Promise.all(Object.keys(TABLES).map(loadTable).concat([loadGng()], OPS ? [OPS.load()] : []));
+  await Promise.all(Object.keys(TABLES).map(loadTable).concat([loadGng(), loadRfpTemplates()], OPS ? [OPS.load()] : []));
   const me = byId(S.profiles, S.me.id); if (me) S.me = me;
 }
 async function loadGng() {
@@ -528,6 +528,7 @@ function subscribe() {
   sb.channel("crm-changes")
     .on("postgres_changes", {event:"*", schema:"public"}, p => {
       if (OPS && OPS.tables.includes(p.table)) { OPS.changed(p.table); return; }
+      if (p.table === "rfp_templates") { loadRfpTemplates().then(() => { render(); refreshDrawer(); }); return; }
       const key = map[p.table];
       if (key === "notes") { if (openNotes && p.new && p.new.deal_id === openNotes.dealId) openNotes.reload(); return; }
       if (key) { scheduleReload(key); if (key === "members") scheduleReload("deals"); }
@@ -882,7 +883,7 @@ function dealCard(d) {
   const c = h("button", {class:"card", draggable:"true", onclick:() => openDeal(d.id)},
     h("div", {class:"t"}, d.name || "Untitled deal"),
     h("div", {class:"a"}, [acctName(d.account_id), d.rfp_no].filter(Boolean).join(" · ") || "No account"),
-    h("div", {class:"row"}, h("span", {class:"mono"}, money(d.value)), h("span", {class:"chips"}, gngChip(d), d.bid_due ? dueChip(d.bid_due) : null)),
+    h("div", {class:"row"}, h("span", {class:"mono"}, money(d.value)), h("span", {class:"chips"}, gngChip(d), dealTaskChip(d), d.bid_due ? dueChip(d.bid_due) : null)),
     h("div", {class:"row muted"}, h("span", null, personName(d.owner_id) + (seNames(d.id) ? " · SE: " + seNames(d.id) : shared ? " +" + shared : "")), h("span", null, (d.services || []).slice(0, 3).join(", "))));
   c.addEventListener("dragstart", e => e.dataTransfer.setData("text/plain", d.id));
   return c;
@@ -913,7 +914,7 @@ function viewDeals() {
         !isOpen(d) && d.outcome_reason ? h("div", {class:"muted", style:"font-size:12px;margin-top:2px"}, d.outcome_reason) : null),
       h("td", null, gngChip(d) || h("span", {class:"muted"}, "—")),
       h("td", {class:"num"}, money(d.value)), h("td", {class:"num"}, prob(d) + "%"),
-      h("td", null, d.bid_due ? dueChip(d.bid_due) : "—"),
+      h("td", null, h("span", {class:"chips"}, d.bid_due ? dueChip(d.bid_due) : "—", dealTaskChip(d))),
       h("td", null, personName(d.owner_id)),
       h("td", null, seNames(d.id) || h("span", {class:"muted"}, "—"))))),
     h("tfoot", null, h("tr", null, h("td", {colspan:"4", class:"muted"}, plural(ds.length, "deal")), h("td", {class:"num"}, money(tot)), h("td", {colspan:"4"}))))));
@@ -973,6 +974,7 @@ function viewTasks() {
   wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Tasks & follow-ups"),
     h("select", {"aria-label":"Assignee", id:"own-t", onchange: e => { S.ownerFilter = e.target.value; render(); }},
       h("option", {value:""}, "Everyone"), activePeople().map(p => h("option", {value:p.id, selected:S.ownerFilter === p.id}, p.full_name || p.email))),
+    h("button", {class:"btn", onclick:() => openTaskImport(null)}, "Import"),
     h("button", {class:"btn primary", onclick:() => openTask()}, "+ Task")));
   const ts = S.tasks.filter(t => !S.ownerFilter || t.assignee_id === S.ownerFilter);
   if (!ts.length) { wrap.append(h("div", {class:"panel"}, emptyState("No tasks yet", "Follow-ups, walkthroughs, question deadlines and submittals. Add them here or from a deal."))); return wrap; }
@@ -983,6 +985,345 @@ function viewTasks() {
     ["Done recently", ts.filter(t => t.done).sort((a, b) => (b.done_at || "").localeCompare(a.done_at || "")).slice(0, 15)]];
   wrap.append(h("div", {class:"task-groups"}, groups.filter(g => g[1].length).map(([name, list]) => h("div", {class:"tg"}, h("h3", null, name, h("span", null, String(list.length))), list.map(taskRow)))));
   return wrap;
+}
+
+// ---------------------------------------------------------------- RFP checklists & task import
+// rfp_tasks.sql adds the RFP dates, addenda and checklist templates; without it the RFP tab stays hidden
+const RFP_FIELDS = ["rfp_released", "questions_due", "prebid_on", "addenda"];
+const RFP_ANCHORS = [["bid_due", "Bid due"], ["questions_due", "Questions due"], ["prebid_on", "Pre-bid / site walk"], ["rfp_released", "RFP released"]];
+const RFP_ROLES = [["owner", "Account manager"], ["sales_engineer", "Sales engineer"], ["estimator", "Estimator"], ["account_manager", "Co–account manager"], ["support", "Support"]];
+const rfpRoleLabel = r => (RFP_ROLES.find(x => x[0] === r) || RFP_ROLES[0])[1];
+const anchorLabel = a => (RFP_ANCHORS.find(x => x[0] === a) || RFP_ANCHORS[0])[1];
+const addDays = (d, n) => { if (!d) return null; const x = new Date(String(d).slice(0, 10) + "T12:00:00Z"); x.setUTCDate(x.getUTCDate() + (Number(n) || 0)); return x.toISOString().slice(0, 10); };
+const daysText = (n, a) => (n === 0 ? "On " : Math.abs(n) + (Math.abs(n) === 1 ? " day " : " days ") + (n < 0 ? "before " : "after ")) + anchorLabel(a).toLowerCase();
+S.rfpOn = false; S.rfpTpl = [];
+async function loadRfpTemplates() {
+  const {data, error} = await sb.from("rfp_templates").select("*").order("name");
+  S.rfpOn = !error; S.rfpTpl = data || [];
+}
+// who on the deal holds this role; the account manager if nobody does
+function rolePerson(deal, role) {
+  if (!role || role === "owner") return deal.owner_id;
+  const m = S.members.find(x => x.deal_id === deal.id && x.role === role);
+  return m ? m.user_id : deal.owner_id;
+}
+function dealTasks(id) { return S.tasks.filter(t => t.deal_id === id); }
+function dealTaskChip(d) {
+  const ts = dealTasks(d.id); if (!ts.length || !isOpen(d)) return null;
+  const done = ts.filter(t => t.done).length, late = ts.filter(t => !t.done && daysUntil(t.due) < 0).length;
+  return h("span", {class:"chip" + (late ? " bad" : done === ts.length ? " go" : ""), title: late ? plural(late, "task") + " overdue" : "Tasks done"}, "✓ " + done + "/" + ts.length);
+}
+// one email per person listing what they were given
+function tellTasks(list, deal, verb) {
+  const by = new Map();
+  for (const t of list) if (t.assignee_id && t.assignee_id !== S.me.id && !t.done) by.set(t.assignee_id, (by.get(t.assignee_id) || []).concat(t));
+  for (const [who, ts] of by)
+    notify([who], plural(ts.length, "new task") + (deal ? " on " + deal.name : ""), (S.me.full_name || S.me.email) + " " + verb + " " + plural(ts.length, "task") + " for you" + (deal ? " on " + deal.name : "") + ":\n\n" +
+      ts.map(t => "• " + t.title + (t.due ? " (due " + fmtDate(t.due) + ")" : "")).join("\n"), deal ? "#deal=" + deal.id : "");
+}
+async function insertTasks(rows) {
+  const out = [];
+  for (let i = 0; i < rows.length; i += 200) {
+    const {data, error} = await sb.from("tasks").insert(rows.slice(i, i + 200)).select();
+    if (error) throw error;
+    out.push(...data);
+  }
+  S.tasks.push(...out);
+  return out;
+}
+async function startChecklist(deal, tpl) {
+  const have = new Set(dealTasks(deal.id).map(t => t.title.trim().toLowerCase()));
+  let sort = Math.max(0, ...dealTasks(deal.id).map(t => t.sort || 0));
+  const rows = (tpl.steps || []).filter(s => (s.title || "").trim() && !have.has(s.title.trim().toLowerCase())).map(s => {
+    const anchor = RFP_ANCHORS.some(a => a[0] === s.anchor) ? s.anchor : "bid_due", days = Number(s.days) || 0;
+    return {title:s.title.trim(), deal_id:deal.id, assignee_id:rolePerson(deal, s.role), due:addDays(deal[anchor], days), anchor, offset_days:days,
+      sort:++sort, rfp_role:s.role || "owner", done:false};
+  });
+  if (!rows.length) { toast("Every step of that checklist is already on this deal."); return []; }
+  const made = await insertTasks(rows);
+  tellTasks(made, deal, "set up");
+  return made;
+}
+// a date on the deal moved: open checklist tasks hanging off it move too
+async function shiftChecklist(before, after) {
+  const moves = [];
+  for (const [a] of RFP_ANCHORS) {
+    if ((before[a] || null) === (after[a] || null)) continue;
+    for (const t of dealTasks(after.id)) if (!t.done && t.anchor === a && t.offset_days != null) {
+      const due = addDays(after[a], t.offset_days); if (due !== (t.due || null)) moves.push([t, due]);
+    }
+  }
+  if (!moves.length) return;
+  const res = await Promise.all(moves.map(([t, due]) => sb.from("tasks").update({due}).eq("id", t.id)));
+  let n = 0; res.forEach((r, i) => { if (!r.error) { moves[i][0].due = moves[i][1]; n++; } });
+  toast("Moved " + plural(n, "checklist date") + " to match");
+  render();
+}
+// give open checklist tasks to whoever now holds each role on the deal team
+async function rematchRoles(deal) {
+  const moves = dealTasks(deal.id).filter(t => !t.done && t.rfp_role && t.assignee_id !== rolePerson(deal, t.rfp_role));
+  if (!moves.length) { toast("Everything already matches the deal team."); return; }
+  const out = [];
+  for (const t of moves) { const who = rolePerson(deal, t.rfp_role);
+    const {error} = await sb.from("tasks").update({assignee_id:who}).eq("id", t.id); if (!error) { t.assignee_id = who; out.push(t); } }
+  toast("Reassigned " + plural(out.length, "task")); tellTasks(out, deal, "passed");
+  render(); refreshDrawer();
+}
+
+// ---- import: Task, Deal, Assigned to, Due (a date, or -10 = 10 days before bid due), Days, From, Notes, Done
+const TASK_COLS = [["task", ["task", "title", "step", "to do", "todo", "action", "what"]], ["deal", ["deal", "opportunity", "pursuit", "rfp #", "rfp no", "rfp"]],
+  ["who", ["assigned to", "assigned", "assignee", "owner", "who", "responsible"]],
+  ["days", ["days from date", "days before", "days", "offset"]], ["from", ["from date", "relative to", "from", "anchor"]], ["due", ["due date", "due", "date", "when"]],
+  ["notes", ["notes", "details", "description", "comments"]], ["done", ["done", "status", "complete"]]];
+function taskCols(head) {
+  const lh = head.map(x => String(x || "").toLowerCase().trim()), used = new Set(), m = {};
+  for (const [k, keys] of TASK_COLS) {
+    let i = -1;
+    for (const w of keys) { i = lh.findIndex((x, j) => !used.has(j) && x === w); if (i >= 0) break; }
+    if (i < 0) for (const w of keys) { i = lh.findIndex((x, j) => !used.has(j) && x.includes(w)); if (i >= 0) break; }
+    if (i >= 0) { used.add(i); m[k] = i; }
+  }
+  return m;
+}
+function anchorOf(v) { v = (v || "").toLowerCase();
+  if (/question|rfi/.test(v)) return "questions_due"; if (/pre.?bid|site|walk|conference/.test(v)) return "prebid_on";
+  if (/releas|issu|publish|out/.test(v)) return "rfp_released"; return "bid_due"; }
+function roleOf(v) { v = (v || "").toLowerCase().trim();
+  if (/^(se|sales ?eng)/.test(v)) return "sales_engineer"; if (/estimat/.test(v)) return "estimator";
+  if (/^co.?(am|account)/.test(v)) return "account_manager"; if (/^(am|account ?manager|owner|rep|sales ?rep)$/.test(v)) return "owner";
+  if (/^support$/.test(v)) return "support"; return null; }
+// rows → task rows; `deal` set when importing into one deal (its Deal column is then ignored)
+function parseTaskRows(rows, deal) {
+  const m = taskCols(rows[0] || []), get = (r, k) => m[k] != null ? String(r[m[k]] || "").trim() : "";
+  if (m.task == null) return {error:"Couldn't find a Task column. Use the RFIP task template, or name the columns Task, Deal, Assigned to, Due, Notes."};
+  const out = [], noDeal = new Set(), noWho = new Set(); let skipped = 0;
+  const findDeal = v => { const x = v.toLowerCase(); if (!x) return null;
+    return S.deals.find(d => (d.name || "").trim().toLowerCase() === x) || S.deals.find(d => (d.rfp_no || "").trim().toLowerCase() === x) || undefined; };
+  for (const r of rows.slice(1)) {
+    const title = get(r, "task"); if (!title) { skipped++; continue; }
+    let dl = deal || null;
+    if (!deal) { const dv = get(r, "deal"); const f = findDeal(dv); if (f === undefined) noDeal.add(dv); else dl = f; }
+    const w = get(r, "who"), wl = w.toLowerCase(), role = roleOf(w);
+    let who = null, rfp_role = null;
+    if (w) { const p = S.profiles.find(p => p.active && ((p.email || "").toLowerCase() === wl || (p.full_name || "").toLowerCase() === wl));
+      if (p) who = p.id; else if (role) { rfp_role = role; who = dl ? rolePerson(dl, role) : S.me.id; } else noWho.add(w); }
+    if (!who) who = dl ? dl.owner_id : S.me.id;
+    let due = null, anchor = null, offset_days = null;
+    const dv = get(r, "due"), days = get(r, "days");
+    const rel = /^[+-]?\d{1,3}$/.test(days) ? Number(days) : /^[+-]?\d{1,3}$/.test(dv) ? Number(dv) : null;
+    if (rel != null && dl) { anchor = anchorOf(get(r, "from")); offset_days = rel; due = addDays(dl[anchor], rel); }
+    else due = normDate(dv);
+    const done = /^(y|yes|x|done|true|complete|completed|1)$/i.test(get(r, "done"));
+    out.push({row:{title, deal_id:dl ? dl.id : null, assignee_id:who, due, anchor, offset_days, rfp_role, notes:get(r, "notes") || null, done, done_at: done ? new Date().toISOString() : null}, deal:dl});
+  }
+  return {rows:out, noDeal:[...noDeal].filter(Boolean), noWho:[...noWho], skipped, cols:m};
+}
+async function taskTemplate(deal) {
+  let X; try { X = await loadXLSX(); } catch (e) { toast(e.message); return; }
+  const tpl = S.rfpTpl.find(t => t.is_default) || S.rfpTpl[0];
+  const head = ["Task", "Deal", "Assigned to", "Due", "Days from date", "From date", "Notes", "Done"];
+  const name = deal ? deal.name : "Camping World Stadium CNS";
+  const rows = tpl ? tpl.steps.map(s => [s.title, name, rfpRoleLabel(s.role), "", s.days, anchorLabel(s.anchor), "", ""])
+    : [["Go/no-go decision", name, "Account manager", "", -21, "Bid due", "", ""], ["Submit questions", name, "Account manager", "", 0, "Questions due", "", ""]];
+  rows.push(["Call the GC about bonding", name, S.me.full_name || S.me.email, todayStr(), "", "", "Example of a task with a fixed date", ""]);
+  const wb = X.utils.book_new();
+  const ws = X.utils.aoa_to_sheet([head, ...rows]); ws["!cols"] = [{wch:46}, {wch:30}, {wch:22}, {wch:12}, {wch:14}, {wch:20}, {wch:36}, {wch:8}];
+  X.utils.book_append_sheet(wb, ws, "Tasks");
+  const how = X.utils.aoa_to_sheet([["How to use"], [""],
+    ["Task", "What needs doing. Required."], ["Deal", "The deal's name or RFP # exactly as in RFIP. Ignored when you import from inside a deal."],
+    ["Assigned to", "A person's full name or email, or a role: Account manager, Sales engineer, Estimator, Co-account manager. Roles go to whoever holds them on the deal team."],
+    ["Due", "A date (10/24/2026), or leave blank and use the next two columns."],
+    ["Days from date", "-10 means 10 days before the From date; 0 is the same day. These tasks move when that date changes on the deal."],
+    ["From date", "Bid due (default), Questions due, Pre-bid / site walk, or RFP released."],
+    ["Notes", "Optional."], ["Done", "Yes to bring it in already finished."]]);
+  how["!cols"] = [{wch:18}, {wch:110}];
+  X.utils.book_append_sheet(wb, how, "How to use");
+  X.writeFile(wb, deal ? "RFIP tasks - " + deal.name.replace(/[\\/:*?"<>|]/g, "").slice(0, 60) + ".xlsx" : "RFIP Task Import Template.xlsx");
+}
+function openTaskImport(deal) {
+  const st = {parsed:null, name:""};
+  const body = h("div");
+  const draw = () => {
+    const kids = [h("p", {class:"muted small", style:"margin:0 0 10px"},
+        deal ? "Add tasks to " + deal.name + " from Excel or CSV. Columns: Task, Assigned to (a name or a role like Sales engineer), Due (a date) or Days from date (-10 = 10 days before bid due), Notes."
+             : "Add sales tasks from Excel or CSV. Columns: Task, Deal (name or RFP #), Assigned to, Due, Notes. Tasks with no deal become your own follow-ups."),
+      h("div", {style:"display:flex;gap:8px;flex-wrap:wrap;align-items:center"},
+        h("input", {type:"file", accept:".xlsx,.xls,.csv,text/csv", "aria-label":"Task spreadsheet", onchange: async e => {
+          const f = e.target.files[0]; if (!f) return; st.name = f.name;
+          try { const rows = await readSheet(f, ["Tasks", "RFP checklist", "Checklist"]); st.parsed = rows.length < 2 ? {error:"That sheet has no data rows."} : parseTaskRows(rows, deal); }
+          catch (err) { st.parsed = {error:err.message || "Couldn't read that file."}; }
+          draw(); }}),
+        h("button", {class:"btn small", type:"button", onclick:() => taskTemplate(deal)}, "Download template"))];
+    const x = st.parsed;
+    if (x && x.error) kids.push(h("p", {class:"bad-t", style:"margin-top:10px"}, x.error));
+    else if (x) {
+      const dated = x.rows.filter(r => r.row.due).length, rel = x.rows.filter(r => r.row.anchor).length;
+      const relNoDeal = !deal && x.cols.days != null && x.rows.some(r => !r.deal);
+      kids.push(h("div", {class:"panel", style:"margin-top:12px"}, h("b", null, st.name),
+        h("ul", {style:"margin:6px 0 0;padding-left:18px"},
+          h("li", null, plural(x.rows.length, "task") + (deal ? "" : " across " + plural(new Set(x.rows.filter(r => r.deal).map(r => r.deal.id)).size, "deal"))),
+          h("li", null, plural(dated, "task") + " with a due date" + (rel ? " (" + rel + " follow a deal date)" : "")),
+          x.noDeal.length ? h("li", {class:"bad-t"}, "Deals not found, those tasks come in with no deal: " + x.noDeal.slice(0, 8).join(", ") + (x.noDeal.length > 8 ? "…" : "")) : null,
+          x.noWho.length ? h("li", {class:"bad-t"}, "People not matched, given to " + (deal ? personName(deal.owner_id) : "you") + ": " + x.noWho.join(", ")) : null,
+          relNoDeal ? h("li", {class:"muted"}, "Days from date only works on tasks that are on a deal.") : null,
+          x.skipped ? h("li", {class:"muted"}, plural(x.skipped, "blank row") + " skipped") : null)),
+        h("div", {class:"tbl-wrap", style:"margin-top:10px;max-height:320px;overflow:auto"}, h("table", null,
+          h("thead", null, h("tr", null, ["Task", deal ? null : "Deal", "Assigned to", "Due"].filter(Boolean).map(t => h("th", null, t)))),
+          h("tbody", null, x.rows.slice(0, 200).map(r => h("tr", null, h("td", null, r.row.title), deal ? null : h("td", null, r.deal ? r.deal.name : h("span", {class:"muted"}, "—")),
+            h("td", null, personName(r.row.assignee_id) + (r.row.rfp_role ? " (" + rfpRoleLabel(r.row.rfp_role) + ")" : "")),
+            h("td", null, r.row.due ? fmtDate(r.row.due) : h("span", {class:"muted"}, "No date"))))))));
+    }
+    body.replaceChildren(...kids);
+  };
+  draw();
+  openDrawer({title: deal ? "Import tasks · " + deal.name : "Import tasks", body, foot:[
+    h("button", {class:"btn spacer", onclick:() => { closeDrawer(); if (deal) openDeal(deal.id, "r"); }}, "Cancel"),
+    h("button", {class:"btn primary", onclick: async e => {
+      const x = st.parsed; if (!x || x.error || !x.rows.length) { toast("Pick a task spreadsheet first."); return; }
+      const btn = e.currentTarget; btn.disabled = true;
+      try {
+        const sortFor = new Map();
+        const rows = x.rows.map(r => { const id = r.row.deal_id; if (id && !sortFor.has(id)) sortFor.set(id, Math.max(0, ...dealTasks(id).map(t => t.sort || 0)));
+          return S.rfpOn ? Object.assign({}, r.row, {sort: id ? sortFor.set(id, sortFor.get(id) + 1).get(id) : null})
+                         : {title:r.row.title, deal_id:r.row.deal_id, assignee_id:r.row.assignee_id, due:r.row.due, notes:r.row.notes, done:r.row.done, done_at:r.row.done_at}; });
+        const made = await insertTasks(rows);
+        const byDeal = new Map(); made.forEach(t => byDeal.set(t.deal_id || "", (byDeal.get(t.deal_id || "") || []).concat(t)));
+        for (const [id, ts] of byDeal) tellTasks(ts, id ? byId(S.deals, id) : null, "imported");
+        toast("Imported " + plural(made.length, "task")); closeDrawer(); render();
+        if (deal) setTimeout(() => openDeal(deal.id, "r"), 150);
+      } catch (err) { toast("Import stopped: " + friendly(err)); await loadTable("tasks"); render(); }
+      btn.disabled = false; }}, "Import")]});
+}
+
+// the deal's RFP tab: key dates, checklist, addenda
+function rfpTab(src, draft) {
+  const box = h("div");
+  if (!src) { box.append(h("div", {class:"muted"}, "Save the deal first, then set the RFP dates and start the checklist.")); return box; }
+  const cur = byId(S.deals, src.id) || src;
+  if (!Array.isArray(draft.addenda)) draft.addenda = [];
+  box.append(h("div", {class:"section-h"}, "Key dates"),
+    h("div", {class:"form"}, fld(draft, "rfp_released", "RFP released", "date"), fld(draft, "questions_due", "Questions due", "date"),
+      fld(draft, "prebid_on", "Pre-bid / site walk", "date"), fld(draft, "bid_due", "Bid due", "date")),
+    h("p", {class:"muted", style:"font-size:12px;margin:6px 0 0"}, "Save the deal to keep date changes. Open checklist tasks move with the date they're counted from."));
+
+  const ts = dealTasks(cur.id).sort((a, b) => (a.done - b.done) || ((a.sort || 999) - (b.sort || 999)) || (a.due || "9999").localeCompare(b.due || "9999"));
+  const done = ts.filter(t => t.done).length, late = ts.filter(t => !t.done && daysUntil(t.due) < 0).length;
+  box.append(h("div", {class:"section-h", style:"margin-top:18px"}, "Checklist"));
+  if (ts.length) box.append(h("div", {class:"gauge", style:"margin-bottom:10px"},
+    h("div", {class:"gbar"}, h("i", {style:"width:" + Math.round(done / ts.length * 100) + "%;background:" + (late ? "var(--bad)" : "var(--go)")})),
+    h("span", {class:"muted", style:"font-size:13px"}, done + " of " + ts.length + " done" + (late ? " · " + late + " overdue" : ""))));
+  const hasChecklist = ts.some(t => t.anchor);
+  if (S.rfpTpl.length) {
+    const pick = h("select", {class:"inp", "aria-label":"Checklist", style:"max-width:240px"}, S.rfpTpl.map(t => h("option", {value:t.id, selected:t.is_default}, t.name + " (" + (t.steps || []).length + " steps)")));
+    box.append(h("div", {class:"rfp-start"}, pick, h("button", {class:"btn" + (hasChecklist ? "" : " primary"), onclick: async e => {
+      const tpl = S.rfpTpl.find(t => t.id === pick.value); if (!tpl) return;
+      const btn = e.currentTarget; btn.disabled = true;
+      // use the dates on screen: save them first if they changed
+      const patch = {}; for (const [a] of RFP_ANCHORS) if ((draft[a] || null) !== (cur[a] || null)) patch[a] = draft[a] || null;
+      let deal = cur;
+      if (Object.keys(patch).length) {
+        const {data, error} = await sb.from("deals").update(patch).eq("id", cur.id).select().single();
+        if (error) { toast(friendly(error)); btn.disabled = false; return; }
+        const before = {...cur}; Object.assign(cur, data); Object.assign(src, patch); deal = cur;
+        await shiftChecklist(before, cur);
+      }
+      if (!deal.bid_due) toast("No bid due date yet: tasks counted from it come in without a date until you set one.");
+      try { const made = await startChecklist(deal, tpl); if (made.length) toast("Added " + plural(made.length, "checklist task")); }
+      catch (err) { toast(friendly(err)); }
+      btn.disabled = false; render(); refreshDrawer();
+    }}, hasChecklist ? "Add missing steps" : "Start RFP checklist")),
+    !hasChecklist ? h("p", {class:"muted", style:"font-size:12px;margin:4px 0 10px"}, "Makes a task for each step, due a set number of days before bid due (or questions due, the site walk), assigned by role on the deal team. Anyone without a role on the team falls back to the account manager.") : null);
+  }
+  box.append(h("div", {class:"rfp-actions"},
+    h("button", {class:"btn small", onclick:() => openTask(null, {deal_id:cur.id, assignee_id:S.me.id})}, "+ Task"),
+    h("button", {class:"btn small", onclick:() => openTaskImport(cur)}, "Import tasks"),
+    h("button", {class:"btn small", onclick:() => taskTemplate(cur)}, "Download template"),
+    ts.some(t => t.rfp_role && !t.done) ? h("button", {class:"btn small", title:"Give open checklist tasks to whoever now holds each role on the deal team", onclick:() => rematchRoles(cur)}, "Match to deal team") : null));
+  box.append(ts.length ? h("div", null, ts.map(t => {
+    const row = taskRow(t);
+    if (t.anchor || t.rfp_role) row.querySelector(".meta").append(h("span", {class:"muted"}, [t.rfp_role ? rfpRoleLabel(t.rfp_role) : null, t.anchor && t.offset_days != null ? daysText(t.offset_days, t.anchor) : null].filter(Boolean).join(" · ")));
+    return row; })) : h("div", {class:"muted"}, "No tasks on this deal yet."));
+
+  // addenda
+  const ad = h("div");
+  const drawAd = () => {
+    const list = draft.addenda;
+    const no = h("input", {class:"inp", placeholder:"#", "aria-label":"Addendum number", style:"max-width:70px"});
+    const dt = h("input", {class:"inp", type:"date", "aria-label":"Addendum date", style:"max-width:160px", value:todayStr()});
+    const what = h("input", {class:"inp", placeholder:"What changed (e.g. bid date moved, new drawings)", "aria-label":"What changed"});
+    ad.replaceChildren(
+      list.length ? h("div", null, list.map((a, i) => h("div", {class:"task" + (a.ack ? " done" : "")},
+        h("input", {type:"checkbox", checked:!!a.ack, "aria-label":"Acknowledged", title:"Acknowledged in the bid", onchange: e => {
+          a.ack = e.target.checked; a.ack_by = a.ack ? S.me.id : null; a.ack_on = a.ack ? todayStr() : null; drawAd(); }}),
+        h("div", {class:"body"}, h("div", {style:"font-weight:500"}, "Addendum " + (a.no || i + 1) + (a.note ? " · " + a.note : "")),
+          h("div", {class:"meta"}, h("span", null, a.date ? fmtDate(a.date) : "No date"),
+            a.ack ? h("span", {class:"chip go"}, "Acknowledged" + (a.ack_by ? " by " + personName(a.ack_by) : "")) : h("span", {class:"chip warn"}, "Not acknowledged"))),
+        h("button", {class:"btn small", "aria-label":"Remove addendum", onclick:() => { list.splice(i, 1); drawAd(); }}, "×")))) : h("div", {class:"muted"}, "No addenda logged."),
+      h("div", {class:"qa-row", style:"margin-top:8px"}, no, dt, what, h("button", {class:"btn small", type:"button", onclick:() => {
+        if (!what.value.trim() && !no.value.trim()) { what.focus(); return; }
+        list.push({no:no.value.trim() || String(list.length + 1), date:dt.value || null, note:what.value.trim(), ack:false}); drawAd(); }}, "Add")),
+      h("p", {class:"muted", style:"font-size:12px;margin:6px 0 0"}, "Saved with the deal. Use Save below."));
+  };
+  drawAd();
+  box.append(h("div", {class:"section-h", style:"margin-top:18px"}, "Addenda"), ad);
+  return box;
+}
+
+// Settings: the checklists everyone starts from (admins edit)
+function rfpTemplatesPanel() {
+  const box = h("div", {class:"panel"});
+  const admin = isAdmin();
+  let curId = (S.rfpTpl.find(t => t.is_default) || S.rfpTpl[0] || {}).id || null, d = null;
+  const load = () => { const t = S.rfpTpl.find(x => x.id === curId); d = t ? JSON.parse(JSON.stringify(t)) : {name:"", steps:[], is_default:false}; };
+  const draw = () => {
+    const rows = d.steps.map((s, i) => h("div", {class:"rfp-step"},
+      h("input", {class:"inp", value:s.title || "", "aria-label":"Step " + (i + 1), readonly:!admin, oninput: e => { s.title = e.target.value; }}),
+      h("select", {class:"inp", "aria-label":"Who", disabled:!admin, onchange: e => { s.role = e.target.value; }}, RFP_ROLES.map(([v, t]) => h("option", {value:v, selected:(s.role || "owner") === v}, t))),
+      h("input", {class:"inp mono", type:"number", value:s.days ?? 0, "aria-label":"Days", title:"Negative = before the date", readonly:!admin, oninput: e => { s.days = Number(e.target.value) || 0; }}),
+      h("select", {class:"inp", "aria-label":"From date", disabled:!admin, onchange: e => { s.anchor = e.target.value; }}, RFP_ANCHORS.map(([v, t]) => h("option", {value:v, selected:(s.anchor || "bid_due") === v}, t))),
+      admin ? h("div", {class:"rfp-mv"},
+        h("button", {class:"btn small", "aria-label":"Move up", disabled:i === 0, onclick:() => { d.steps.splice(i - 1, 0, d.steps.splice(i, 1)[0]); draw(); }}, "↑"),
+        h("button", {class:"btn small", "aria-label":"Remove", onclick:() => { d.steps.splice(i, 1); draw(); }}, "×")) : h("span")));
+    const file = h("input", {type:"file", accept:".xlsx,.xls,.csv,text/csv", style:"display:none", onchange: async e => {
+      const f = e.target.files[0]; if (!f) return;
+      try {
+        const all = await readSheet(f, ["Tasks", "RFP checklist", "Checklist"]); const m = taskCols(all[0] || []);
+        if (m.task == null) { toast("Couldn't find a Task column."); return; }
+        const g = (r, k) => m[k] != null ? String(r[m[k]] || "").trim() : "";
+        const steps = all.slice(1).filter(r => g(r, "task")).map(r => { const dv = g(r, "days") || g(r, "due");
+          return {title:g(r, "task"), role:roleOf(g(r, "who")) || "owner", days:/^[+-]?\d{1,3}$/.test(dv) ? Number(dv) : 0, anchor:anchorOf(g(r, "from"))}; });
+        d.steps.push(...steps); toast("Added " + plural(steps.length, "step") + ". Check them, then Save."); draw();
+      } catch (err) { toast(err.message || "Couldn't read that file."); } }});
+    box.replaceChildren(
+      h("div", {class:"toolbar", style:"margin-bottom:4px"}, h("h3", {style:"margin:0 auto 0 0"}, "RFP checklists"),
+        S.rfpTpl.length ? h("select", {class:"inp", "aria-label":"Checklist", style:"max-width:220px", onchange: e => { curId = e.target.value || null; load(); draw(); }},
+          S.rfpTpl.map(t => h("option", {value:t.id, selected:t.id === curId}, t.name + (t.is_default ? " (default)" : ""))), admin ? h("option", {value:"", selected:!curId}, "+ New checklist") : null) : null),
+      h("p", {class:"hint"}, admin ? "The steps a deal's \"Start RFP checklist\" creates. Days are counted from the date you pick: -10 is ten days before it. Who is a role on the deal team." : "Set by an admin. Start one from a deal's RFP tab."),
+      admin ? h("div", {class:"form", style:"margin-bottom:8px"}, fld(d, "name", "Checklist name", "text"),
+        h("div", {class:"field"}, h("label", null, "Default"), h("label", {class:"muted", style:"display:flex;gap:6px;align-items:center;font-size:13px"},
+          h("input", {type:"checkbox", checked:!!d.is_default, onchange: e => { d.is_default = e.target.checked; }}), "Picked first on new deals"))) : null,
+      h("div", {class:"rfp-step lab"}, h("span", null, "Step"), h("span", null, "Who"), h("span", null, "Days"), h("span", null, "From"), h("span")),
+      ...rows,
+      admin ? h("div", {class:"toolbar", style:"margin:10px 0 0;gap:8px"},
+        h("button", {class:"btn small", onclick:() => { d.steps.push({title:"", role:"owner", days:0, anchor:"bid_due"}); draw(); }}, "+ Step"),
+        h("button", {class:"btn small", onclick:() => file.click()}, "Import steps from Excel"), file,
+        h("button", {class:"btn small", onclick:() => taskTemplate(null)}, "Download template"),
+        curId ? h("button", {class:"btn small danger", onclick: async () => {
+          if (!confirm("Delete the " + d.name + " checklist? Tasks already made from it stay.")) return;
+          if (await run(sb.from("rfp_templates").delete().eq("id", curId), "Checklist deleted")) { await loadRfpTemplates(); curId = (S.rfpTpl[0] || {}).id || null; load(); draw(); } }}, "Delete") : null,
+        h("button", {class:"btn primary", style:"margin-left:auto", onclick: async () => {
+          d.steps = d.steps.filter(s => (s.title || "").trim()).map(s => ({title:s.title.trim(), role:s.role || "owner", days:Number(s.days) || 0, anchor:s.anchor || "bid_due"}));
+          if (!(d.name || "").trim()) { toast("Name the checklist."); return; }
+          if (!d.steps.length) { toast("Add at least one step."); return; }
+          const row = {name:d.name.trim(), steps:d.steps, is_default:!!d.is_default, updated_by:S.me.id, updated_at:new Date().toISOString()};
+          if (row.is_default) await sb.from("rfp_templates").update({is_default:false}).neq("id", curId || "00000000-0000-0000-0000-000000000000");
+          const res = curId ? await run(sb.from("rfp_templates").update(row).eq("id", curId).select().single(), "Checklist saved")
+                            : await run(sb.from("rfp_templates").insert(row).select().single(), "Checklist added");
+          if (res) { curId = res.id; await loadRfpTemplates(); load(); draw(); }
+        }}, "Save checklist")) : null);
+  };
+  load(); draw();
+  return box;
 }
 
 // ---------------------------------------------------------------- drawer
@@ -1438,6 +1779,7 @@ function openDeal(id, startTab, prefill, copiedFrom) {
     if (!STAGE[draft.stage].open && !draft.close_date) draft.close_date = todayStr();
     const payload = {};
     for (const k of DEAL_FIELDS) payload[k] = k === "services" ? (draft.services || []) : k === "gng" ? draft.gng : nullify(draft[k]);
+    if (S.rfpOn) for (const k of RFP_FIELDS) payload[k] = k === "addenda" ? (Array.isArray(draft.addenda) ? draft.addenda : []) : nullify(draft[k]);
     payload.name = payload.name.trim();
     if (src && !canManage(src)) delete payload.owner_id;
     const btn = e.currentTarget; btn.disabled = true;
@@ -1446,6 +1788,7 @@ function openDeal(id, startTab, prefill, copiedFrom) {
     btn.disabled = false;
     if (!res) return;
     const i = S.deals.findIndex(d => d.id === res.id); if (i >= 0) S.deals[i] = res; else S.deals.push(res);
+    if (src && S.rfpOn) shiftChecklist(src, res);
     if (!src && copiedFrom) {
       // bring the deal team over, and leave a note on both deals so the history links up
       const team = S.members.filter(m => m.deal_id === copiedFrom && m.user_id !== res.owner_id)
@@ -1465,7 +1808,8 @@ function openDeal(id, startTab, prefill, copiedFrom) {
   if (src) foot.splice(foot.length - 2, 0, h("button", {class:"btn", title:"Start a new deal for repeat work with this customer", onclick:() => copyDeal(src)}, "Copy"));
 
   openDrawer({title: src ? src.name : copiedFrom ? "Copy of " + ((byId(S.deals, copiedFrom) || {}).name || "deal") : "New deal", start:startTab,
-    tabs:[["d","Details",details],["g","Go/no-go",gng],["p","Deal team",people],["n","Notes",notes],["t","Tasks",tasks],
+    tabs:[["d","Details",details],["g","Go/no-go",gng],["p","Deal team",people],["n","Notes",notes],
+      S.rfpOn ? ["r","RFP & tasks" + (src && dealTasks(src.id).length ? " (" + dealTasks(src.id).filter(t => !t.done).length + ")" : ""),() => rfpTab(src, draft)] : ["t","Tasks",tasks],
       src && ("sharepoint_status" in src || "sharepoint_url" in src) ? ["f","Files",() => dealFilesTab(byId(S.deals, src.id) || src)] : null,
       src ? ["m","Meetings",() => meetingsBox({deal_id:src.id}, {subject:src.name, account_id:src.account_id,
         people:[src.owner_id, ...S.members.filter(x => x.deal_id === src.id).map(x => x.user_id)],
@@ -1486,6 +1830,8 @@ function simpleDrawer(table, key, id, defaults, title, fields, extra, moreTabs) 
     const req = table === "tasks" ? "title" : "name";
     if (!(draft[req] || "").trim()) { toast("Add a " + req + " first."); return; }
     const payload = {}; for (const [k, v] of Object.entries(draft)) if (!["id","created_at","updated_at","created_by"].includes(k)) payload[k] = nullify(typeof v === "string" ? v.trim() : v);
+    // a checklist task given its own date stops following the deal's dates
+    if (table === "tasks" && src && src.anchor && (payload.due || null) !== (src.due || null)) { payload.anchor = null; payload.offset_days = null; }
     const btn = e.currentTarget; btn.disabled = true;
     const res = src ? await run(sb.from(table).update(payload).eq("id", src.id).select().single(), "Saved")
                     : await run(sb.from(table).insert(payload).select().single(), "Added");
@@ -1750,7 +2096,7 @@ function viewSettings() {
         g.criteria = g.criteria.filter(c => c.name.trim());
         if (await run(sb.from("gng_config").update({config:g, updated_at:new Date().toISOString()}).eq("id", true), "Criteria saved")) { S.gng = g; render(); }
       }}, "Save criteria")) : null),
-    importPanel(), exportPanel()));
+    importPanel(), S.rfpOn ? rfpTemplatesPanel() : null, exportPanel()));
   return wrap;
 }
 function parseCSV(text) {

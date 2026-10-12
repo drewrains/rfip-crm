@@ -710,3 +710,12 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
 .qa-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}.qa-row .inp{flex:1 1 140px;min-width:0}
 .new-more{display:none}
 @media (min-width:900px){.bar .new-more{display:flex;gap:6px}.bar .new-more[hidden]{display:none}.bar .new-more .btn{flex:1}}
+
+/* RFP checklist on deals, checklist templates in Settings */
+.rfp-start{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px}
+.rfp-actions{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 10px}
+.rfp-step{display:grid;grid-template-columns:minmax(0,1fr) 150px 64px 160px 64px;gap:6px;margin-bottom:6px;align-items:center}
+.rfp-step.lab{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px}
+.rfp-step .inp{min-width:0;padding:6px 8px}
+.rfp-mv{display:flex;gap:4px}
+@media (max-width:700px){.rfp-step{grid-template-columns:1fr 1fr}.rfp-step input:first-child{grid-column:1/-1}.rfp-step.lab{display:none}}
