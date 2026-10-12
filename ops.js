@@ -8,6 +8,10 @@ window.RFIP_OPS_INIT = core => {
 const {h, sb, S, money, fmtDate, fmtDateTime, daysUntil, todayStr, run, toast, friendly, openDrawer, closeDrawer, fld, deleteButton,
   render, go, person, personName, activePeople, isAdmin, byId, acctName, emptyState, plural, nullify, spState, spLoad, spUpload, spDelete, notify, meetingsBox, readSheet: readBook, normDate} = core;
 const tell = (...a) => { if (notify) notify(...a); };
+const goTo = core.goTo || (v => go(v));
+// the projects list opened from a dashboard number: behind schedule, margin slipping
+const FLAGS = {behind:["Behind schedule", p => !!calc(p).lateDays], fade:["Margin below budget", p => calc(p).fcM < calc(p).estM - .005]};
+const projectsWhere = (flag, phase) => { O.flag = flag || ""; O.phase = phase || "active"; O.dept = O.dept || ""; go("ops-projects"); };
 
 // ---------------------------------------------------------------- data
 const TABLES = {projects:"projects", handoffs:"handoffs", depts:"departments", costs:"cost_lines", labor:"labor_weeks", ms:"milestones",
@@ -17,7 +21,7 @@ const TABLES = {projects:"projects", handoffs:"handoffs", depts:"departments", c
 // added later than the rest; if a database hasn't been given these yet, the rest of operations still works
 const OPTIONAL = new Set(["items", "exps", "clinks", "insts", "members", "reqs", "issues"]);
 const KEY_OF = Object.fromEntries(Object.entries(TABLES).map(([k, t]) => [t, k]));
-const O = {missing:false, detail:null, q:"", dept:"", pm:"", phase:"active", hand:true, mpMode:"week", mpDate:null, mpDept:""};
+const O = {missing:false, detail:null, q:"", dept:"", pm:"", phase:"active", flag:"", hand:true, mpMode:"week", mpDate:null, mpDept:""};
 try { const m = localStorage.getItem("rfipops.mpMode"); if (m) O.mpMode = m; } catch (e) {}
 for (const k of Object.keys(TABLES)) O[k] = [];
 O.dir = []; O.docFolder = ""; O.wuWeek = null; O.off = new Set(); O.taskWho = "me"; O.reqView = "open"; O.reqDept = ""; O.issView = "open"; O.issDept = ""; O.sum = {by:"pm", id:""}; O.tl = {mode:"projects", span:6, start:null, dept:"", pm:"", open:new Set(), group:"dept", cal:null, show:{bars:true, ms:true, tasks:true, issues:true}};
@@ -81,11 +85,14 @@ const PHASES = [["mobilizing","Mobilizing","acc"],["in_progress","In progress","
 const phaseName = p => (PHASES.find(x => x[0] === p) || PHASES[1])[1];
 const chip = (cls, text, title) => h("span", {class:"chip" + (cls ? " " + cls : ""), title:title || null}, text);
 const phaseChip = p => { const x = PHASES.find(y => y[0] === p) || PHASES[1]; return chip(x[2], x[1]); };
-function tile(label, value, note, cls) {
-  return h("div", {class:"o-tile" + (cls ? " " + cls : "")}, h("div", {class:"k"}, label), h("div", {class:"v"}, value), note ? h("div", {class:"s"}, note) : null);
+function tile(label, value, note, cls, onclick) {
+  const kids = [h("div", {class:"k"}, label), h("div", {class:"v"}, value), note ? h("div", {class:"s"}, note) : null];
+  return onclick ? h("button", {type:"button", class:"o-tile click" + (cls ? " " + cls : ""), title:"Open " + label.toLowerCase(), onclick}, ...kids)
+                 : h("div", {class:"o-tile" + (cls ? " " + cls : "")}, ...kids);
 }
+const anchorOf = t => typeof t === "string" ? t.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") : null;
 function panel(title, sub, ...body) {
-  return h("section", {class:"o-panel"}, h("header", null, h("h3", null, title), sub ? h("span", {class:"muted"}, sub) : null), ...body);
+  return h("section", {class:"o-panel", "data-anchor":anchorOf(title)}, h("header", null, h("h3", null, title), sub ? h("span", {class:"muted"}, sub) : null), ...body);
 }
 const svgNS = "http://www.w3.org/2000/svg";
 function svg(tag, attrs, ...kids) {
@@ -232,15 +239,16 @@ function daysSafe(deptKey) {
 
 // ---------------------------------------------------------------- strip
 function strip(el) {
+  if (S.view !== "ops-projects") O.flag = "";   // a dashboard filter only lasts while you're on that list
   el.hidden = ["ops-overview", "ops-manpower", "ops-expenses", "ops-timeline", "ops-summary"].includes(S.view);
   if (el.hidden) return;
   if (!role() || (S.view === "handoffs" && S.section !== "ops")) {
     const mine = O.handoffs.filter(x => x.status !== "cancelled");
     el.replaceChildren(
-      core.metric("Waiting on sales", String(mine.filter(x => ["packet", "kicked_back"].includes(x.status)).length), "packet to finish or fix"),
-      core.metric("Kicked back", String(mine.filter(x => x.status === "kicked_back").length), "ops needs more information", mine.some(x => x.status === "kicked_back")),
-      core.metric("In ops review", String(mine.filter(x => x.status === "review").length), "submitted, waiting on a PM"),
-      core.metric("Accepted", String(mine.filter(x => x.status === "accepted").length), "now projects"));
+      core.metric("Waiting on sales", String(mine.filter(x => ["packet", "kicked_back"].includes(x.status)).length), "packet to finish or fix", false, () => goTo("handoffs", "waiting-on-sales")),
+      core.metric("Kicked back", String(mine.filter(x => x.status === "kicked_back").length), "ops needs more information", mine.some(x => x.status === "kicked_back"), () => goTo("handoffs", "waiting-on-sales")),
+      core.metric("In ops review", String(mine.filter(x => x.status === "review").length), "submitted, waiting on a PM", false, () => goTo("handoffs", "in-ops-review")),
+      core.metric("Accepted", String(mine.filter(x => x.status === "accepted").length), "now projects", false, () => goTo("handoffs", "accepted")));
     return;
   }
   const ps = active(), cs = ps.map(calc);
@@ -250,12 +258,12 @@ function strip(el) {
   const safeAll = O.depts.map(d => daysSafe(d.key)).filter(v => v != null);
   const showMoney = role() !== "field";
   el.replaceChildren(...[
-    core.metric("Backlog", showMoney ? compact(sum(cs, c => c.backlog)) : String(ps.length), showMoney ? plural(ps.length, "active project") : "active projects"),
-    showMoney ? core.metric("Ready to bill", compact(sum(cs, c => c.ready)), "earned, not invoiced") : null,
-    showMoney ? core.metric("Margin forecast", tot ? pct(sum(cs, c => c.total * c.fcM) / tot) : "—", tot ? "budget " + pct(sum(cs, c => c.total * c.estM) / tot) : "", tot && sum(cs, c => c.total * c.fcM) / tot < sum(cs, c => c.total * c.estM) / tot - .02) : null,
-    core.metric("Labor productivity", prod == null ? "—" : prod.toFixed(2), "earned ÷ worked hours", prod != null && prod < .9),
-    role() === "field" ? null : core.metric("Handoffs waiting", String(openHandoffs().length), compact(sum(openHandoffs(), handoffValue)) + " won, not started", openHandoffs().some(x => x.status === "kicked_back")),
-    core.metric("Days safe", safeAll.length ? String(Math.min(...safeAll)) : "—", "since last recordable")].filter(Boolean));
+    core.metric("Backlog", showMoney ? compact(sum(cs, c => c.backlog)) : String(ps.length), showMoney ? plural(ps.length, "active project") : "active projects", false, () => projectsWhere()),
+    showMoney ? core.metric("Ready to bill", compact(sum(cs, c => c.ready)), "earned, not invoiced", false, () => go("ops-billing")) : null,
+    showMoney ? core.metric("Margin forecast", tot ? pct(sum(cs, c => c.total * c.fcM) / tot) : "—", tot ? "budget " + pct(sum(cs, c => c.total * c.estM) / tot) : "", tot && sum(cs, c => c.total * c.fcM) / tot < sum(cs, c => c.total * c.estM) / tot - .02, () => projectsWhere("fade")) : null,
+    core.metric("Labor productivity", prod == null ? "—" : prod.toFixed(2), "earned ÷ worked hours", prod != null && prod < .9, () => projectsWhere("", "in_progress")),
+    role() === "field" ? null : core.metric("Handoffs waiting", String(openHandoffs().length), compact(sum(openHandoffs(), handoffValue)) + " won, not started", openHandoffs().some(x => x.status === "kicked_back"), () => go("ops-handoffs")),
+    core.metric("Days safe", safeAll.length ? String(Math.min(...safeAll)) : "—", "since last recordable", false, role() === "field" ? null : () => goTo("ops-overview", "departments"))].filter(Boolean));
 }
 
 // ---------------------------------------------------------------- overview
@@ -289,11 +297,11 @@ function viewOverview() {
   const safe = O.depts.map(d => [d.key, daysSafe(d.key)]).filter(x => x[1] != null).sort((a, b) => a[1] - b[1]);
   const near = O.safety.filter(e => e.kind === "near_miss" && daysUntil(e.event_date) >= -30).length;
   wrap.append(h("div", {class:"o-tiles"},
-    tile("Backlog", compact(backlog), capMo ? (backlog / capMo).toFixed(1) + " months of work · " + ((backlog + hoV) / capMo).toFixed(1) + " with handoffs" : ""),
-    tile("Margin forecast", pct(fcM), (fcM < estM - .005 ? "Down from " : "Budget ") + pct(estM) + (fcM < estM - .005 ? " · about " + compact(sum(cs, c => Math.max(0, c.fade))) + " at risk" : ""), fcM < estM - .02 ? "bad" : ""),
-    tile("Labor productivity", prod == null ? "—" : prod.toFixed(2), "Earned hours per hour worked · target 1.00", prod != null && prod < .95 ? "bad" : ""),
-    tile("Behind schedule", behind + " of " + ps.length, "Projects with a milestone 5+ days late", behind ? "warn" : ""),
-    tile("Safety", safe.length ? safe[0][1] + " days" : "—", safe.length ? "Since last recordable (" + safe[0][0] + ") · " + near + (near === 1 ? " near-miss" : " near-misses") + " in 30 days" : "")));
+    tile("Backlog", compact(backlog), capMo ? (backlog / capMo).toFixed(1) + " months of work · " + ((backlog + hoV) / capMo).toFixed(1) + " with handoffs" : "", "", () => projectsWhere()),
+    tile("Margin forecast", pct(fcM), (fcM < estM - .005 ? "Down from " : "Budget ") + pct(estM) + (fcM < estM - .005 ? " · about " + compact(sum(cs, c => Math.max(0, c.fade))) + " at risk" : ""), fcM < estM - .02 ? "bad" : "", () => projectsWhere("fade")),
+    tile("Labor productivity", prod == null ? "—" : prod.toFixed(2), "Earned hours per hour worked · target 1.00", prod != null && prod < .95 ? "bad" : "", () => projectsWhere("", "in_progress")),
+    tile("Behind schedule", behind + " of " + ps.length, "Projects with a milestone 5+ days late", behind ? "warn" : "", () => projectsWhere("behind")),
+    tile("Safety", safe.length ? safe[0][1] + " days" : "—", safe.length ? "Since last recordable (" + safe[0][0] + ") · " + near + (near === 1 ? " near-miss" : " near-misses") + " in 30 days" : "", "", () => goTo("ops-overview", "departments"))));
 
   // capacity + risks
   const weeks = weeksAhead(8);
@@ -414,7 +422,9 @@ function viewProjects() {
     h("select", {"aria-label":"Phase", id:"o-phase", onchange: e => { O.phase = e.target.value; render(); }},
       [["active", "Active"], ["all", "All phases"], ...PHASES.map(x => [x[0], x[1]])].map(([v, t]) => h("option", {value:v, selected:O.phase === v}, t)))));
   const q = O.q.trim().toLowerCase();
-  const list = O.projects.filter(p => (!O.dept || p.department === O.dept) && (!O.pm || p.pm_id === O.pm)
+  const flag = FLAGS[O.flag];
+  if (flag) wrap.append(h("div", {class:"flag-bar"}, "Showing only: ", h("b", null, flag[0]), h("button", {class:"btn small", onclick:() => { O.flag = ""; render(); }}, "Show all projects")));
+  const list = O.projects.filter(p => (!flag || flag[1](p)) && (!O.dept || p.department === O.dept) && (!O.pm || p.pm_id === O.pm)
     && (O.phase === "all" ? true : O.phase === "active" ? p.phase !== "closed" : p.phase === O.phase)
     && (!q || [p.name, p.number, acctName(p.account_id), personName(p.pm_id)].join(" ").toLowerCase().includes(q)))
     .sort((a, b) => (calc(a).fcM - calc(a).estM) - (calc(b).fcM - calc(b).estM) || a.number.localeCompare(b.number));

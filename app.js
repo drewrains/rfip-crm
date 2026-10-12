@@ -582,7 +582,18 @@ function renderNow() {
   $("#view").replaceChildren(fn());
   if (keep) { const k = document.getElementById(keep); if (k && k.tagName === "INPUT" && k.type === "search") { k.focus(); try { k.setSelectionRange(k.value.length, k.value.length); } catch (e) {} } }
 }
-function metric(k, v, s, alert) { return h("div", {class:"metric" + (alert ? " alert" : "")}, h("div", {class:"k"}, k), h("div", {class:"v"}, v), h("div", {class:"s"}, s)); }
+// a number at the top of a page; with `onclick` it opens the list behind the number
+function metric(k, v, s, alert, onclick) {
+  const kids = [h("div", {class:"k"}, k), h("div", {class:"v"}, v), h("div", {class:"s"}, s)];
+  return onclick ? h("button", {type:"button", class:"metric click" + (alert ? " alert" : ""), title:"Open " + k.toLowerCase(), onclick}, ...kids)
+                 : h("div", {class:"metric" + (alert ? " alert" : "")}, ...kids);
+}
+// go to a page and scroll to one of its sections (panels carry data-anchor)
+function goTo(view, anchor) {
+  go(view);
+  if (anchor) setTimeout(() => { const el = document.querySelector('[data-anchor="' + anchor + '"]'); if (el) { el.scrollIntoView({behavior:"smooth", block:"start"}); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1600); } }, 160);
+}
+const dealsWhere = f => { S.stageFilter = f; S.ownerFilter = S.ownerFilter || ""; go("deals"); };
 function stats(deals) {
   const yr = String(new Date().getFullYear());
   const open = deals.filter(isOpen);
@@ -600,12 +611,12 @@ function renderStrip() {
   const st = stats(S.deals); const yr = new Date().getFullYear();
   const overdue = S.tasks.filter(t => !t.done && daysUntil(t.due) < 0 && (isAdmin() ? true : t.assignee_id === S.me.id)).length;
   $("#strip").replaceChildren(
-    metric(isAdmin() ? "Open pipeline" : isManager() ? "Team open pipeline" : "My open pipeline", money(st.pipe, true), plural(st.open.length, "open deal")),
-    metric("Weighted", money(st.wtd, true), "value × stage probability"),
-    metric("Bids due ≤14 days", String(st.due.length), "by bid due date"),
-    metric("Awaiting go/no-go", String(st.pendingGng.length), "lead & qualifying"),
-    metric("Won " + yr, money(st.wonV, true), plural(st.won.length, "deal") + (st.winRate != null ? " · " + st.winRate + "% win rate" : "")),
-    metric("Overdue tasks", String(overdue), isAdmin() ? "across the team" : "assigned to you", overdue > 0));
+    metric(isAdmin() ? "Open pipeline" : isManager() ? "Team open pipeline" : "My open pipeline", money(st.pipe, true), plural(st.open.length, "open deal"), false, () => go("pipeline")),
+    metric("Weighted", money(st.wtd, true), "value × stage probability", false, () => dealsWhere("open")),
+    metric("Bids due ≤14 days", String(st.due.length), "by bid due date", false, () => dealsWhere("due14")),
+    metric("Awaiting go/no-go", String(st.pendingGng.length), "lead & qualifying", false, () => dealsWhere("gng")),
+    metric("Won " + yr, money(st.wonV, true), plural(st.won.length, "deal") + (st.winRate != null ? " · " + st.winRate + "% win rate" : ""), false, () => dealsWhere("wonyr")),
+    metric("Overdue tasks", String(overdue), isAdmin() ? "across the team" : "assigned to you", overdue > 0, () => { if (!isAdmin()) S.ownerFilter = S.me.id; go("tasks"); }));
 }
 function emptyState(title, text, btn) { return h("div", {class:"empty"}, h("b", null, title), h("div", null, text), btn ? h("div", {style:"margin-top:12px"}, btn) : null); }
 
@@ -899,9 +910,11 @@ async function moveStage(id, stage) {
 function viewDeals() {
   const wrap = h("div");
   const sf = h("select", {"aria-label":"Stage", id:"stagef", onchange: e => { S.stageFilter = e.target.value; render(); }},
-    [["open","Open deals"],["all","All stages"], ...STAGES.map(s => [s.id, s.name])].map(([v, t]) => h("option", {value:v, selected:S.stageFilter === v}, t)));
+    [["open","Open deals"],["all","All stages"], ...STAGES.map(s => [s.id, s.name]), ["due14","Bids due in 14 days"], ["gng","Awaiting go/no-go"], ["wonyr","Won this year"]].map(([v, t]) => h("option", {value:v, selected:S.stageFilter === v}, t)));
   wrap.append(dealToolbar("Deals", sf));
-  const ds = filterDeals(S.deals).filter(d => S.stageFilter === "all" ? true : S.stageFilter === "open" ? isOpen(d) : d.stage === S.stageFilter)
+  const SPECIAL = {all:() => true, open:isOpen, due14:d => { const n = daysUntil(d.bid_due); return isOpen(d) && n != null && n >= 0 && n <= 14; },
+    gng:d => isOpen(d) && !(d.gng && d.gng.decision) && ["lead","qualifying"].includes(d.stage), wonyr:d => d.stage === "won" && (d.close_date || "").startsWith(String(new Date().getFullYear()))};
+  const ds = filterDeals(S.deals).filter(d => SPECIAL[S.stageFilter] ? SPECIAL[S.stageFilter](d) : d.stage === S.stageFilter)
     .sort((a, b) => (a.bid_due || "9999").localeCompare(b.bid_due || "9999"));
   if (!ds.length) { wrap.append(h("div", {class:"tbl-wrap"}, emptyState(S.deals.length ? "No deals match these filters" : "No deals yet", S.deals.length ? "Clear the search or change the filters." : "Add a deal to start tracking your pipeline."))); return wrap; }
   const tot = ds.reduce((a, d) => a + (Number(d.value) || 0), 0);
@@ -2262,7 +2275,7 @@ function exportPanel() {
 // ---------------------------------------------------------------- operations side
 if (window.RFIP_OPS_INIT) {
   OPS = window.RFIP_OPS_INIT({h, sb, S, cfg, money, fmtDate, fmtDateTime, daysUntil, todayStr, run, toast, friendly, status, openDrawer, closeDrawer, refreshDrawer,
-    fld, deleteButton, render, renderNow, go, person, personName, activePeople, peopleOptions, isAdmin, byId, acctName, dealName, openDeal, emptyState,
+    fld, deleteButton, render, renderNow, go, goTo, person, personName, activePeople, peopleOptions, isAdmin, byId, acctName, dealName, openDeal, emptyState,
     plural, nullify, metric, loadTable, STAGE, readSheet, normDate, spState, spLoad, spUpload, spDelete, notify, meetingsBox, fnCall, previewFile});
 }
 

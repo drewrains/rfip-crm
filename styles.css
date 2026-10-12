@@ -719,3 +719,14 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
 .rfp-step .inp{min-width:0;padding:6px 8px}
 .rfp-mv{display:flex;gap:4px}
 @media (max-width:700px){.rfp-step{grid-template-columns:1fr 1fr}.rfp-step input:first-child{grid-column:1/-1}.rfp-step.lab{display:none}}
+
+/* dashboard numbers that open the list behind them */
+button.metric.click,button.o-tile.click{font:inherit;color:inherit;text-align:left;cursor:pointer;border:0;width:100%}
+button.o-tile.click{border:1px solid var(--line)}
+button.metric.click:hover,button.o-tile.click:hover{background:var(--hover,var(--bg));box-shadow:inset 0 -2px 0 var(--accent)}
+button.metric.click:focus-visible,button.o-tile.click:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+button.metric.click .k::after,button.o-tile.click .k::after{content:" ›";opacity:.6}
+.flag-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:var(--data-soft);color:var(--ink,inherit);border-radius:6px;padding:8px 12px;font-size:14px}
+.flag-bar .btn{margin-left:auto}
+.o-panel.flash{animation:flashp 1.6s ease-out}
+@keyframes flashp{0%{box-shadow:0 0 0 3px var(--accent)}100%{box-shadow:0 0 0 0 transparent}}
