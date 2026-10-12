@@ -550,7 +550,7 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
 .wu-iss li{margin:2px 0}
 
 /* timeline (Gantt) */
-.tl-full{width:calc(100vw - 32px);max-width:none;margin-left:calc(50% - 50vw + 16px)}
+.tl-full{width:calc(100vw - var(--side,0px) - 32px);max-width:none;margin-left:calc(50% - (100vw - var(--side,0px)) / 2 + 16px)}
 .tl-wrap{overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px;max-height:calc(100vh - 230px)}
 .tl{--lab:270px;min-width:calc(var(--lab) + var(--tl-w));position:relative}
 .tl-row{display:grid;grid-template-columns:var(--lab) minmax(var(--tl-w),1fr);min-height:38px;border-bottom:1px solid var(--line)}
@@ -682,3 +682,25 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
 
 /* theme toggle */
 #themeBtn{min-width:34px}
+
+/* ---------------------------------------------------------------- side bar (wide screens) */
+@media (min-width:900px){
+  :root{--side:224px}
+  #app{padding-left:var(--side)}
+  header.bar{position:fixed;top:0;left:0;bottom:0;width:var(--side);border-bottom:0;border-right:1px solid var(--line);overflow-y:auto;padding-top:env(safe-area-inset-top,0px)}
+  .bar .wrap{flex-direction:column;align-items:stretch;flex-wrap:nowrap;gap:14px;min-height:100%;padding:16px 12px;max-width:none}
+  .bar .brand{padding:0 6px}
+  .bar .brand .env{margin-left:8px}
+  .bar .sections{display:flex}.bar .sections[hidden]{display:none!important}
+  .bar .sections button{flex:1}
+  nav.tabs{flex-direction:column;flex-wrap:nowrap;gap:1px;flex:0 0 auto}
+  nav.tabs button{text-align:left;padding:8px 10px;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  nav.tabs button[aria-current="page"]{box-shadow:inset 3px 0 0 var(--accent)}
+  .bar .me{margin-top:auto;flex-direction:column;align-items:stretch;gap:6px;padding-top:12px;border-top:1px solid var(--line)}
+  .bar .me .btn{width:100%;justify-content:center}
+  .bar .me #themeBtn{width:auto;align-self:flex-start}
+  #meName:not(:empty)::after{content:""}
+  #signOut{display:flex;flex-direction:column;gap:2px;align-items:center}
+  #signOut #meName{font-weight:600}
+}
+@media print{#app{padding-left:0!important}}
