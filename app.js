@@ -570,6 +570,7 @@ function renderNow() {
   $("#sections").replaceChildren(...[["sales","Sales"],["ops","Operations"]].map(([id, name]) => h("button", {"aria-pressed": String(S.section === id), onclick:() => { if (S.section !== id) setSection(id); }}, name)));
   document.title = "RFIP" + (S.section === "ops" ? " · Operations" : " · Sales");
   $("#newDeal").hidden = S.section === "ops";
+  if ($("#newMore")) $("#newMore").hidden = S.section === "ops" || !hasSales();
   $("#envTag").hidden = cfg.environment !== "test";
   $("#tabs").replaceChildren(...views.map(([id, name]) => h("button", {"aria-current": S.view === id || (OPS && OPS.parentView(S.view) === id) ? "page" : null,
     onclick: () => { S.q = ""; go(id); }}, name)));
@@ -1279,15 +1280,44 @@ function openDeal(id, startTab, prefill, copiedFrom) {
   const manage = !src || canManage(src);
 
   const details = () => {
-    const contactBox = h("div", {style:"display:contents"});
-    const drawContacts = () => contactBox.replaceChildren(fld(draft, "contact_id", "Primary contact", "select", {options:contactOptions(draft.account_id)}));
-    drawContacts();
+    const contactBox = h("div", {style:"display:contents"}), acctBox = h("div", {style:"display:contents"});
+    // add a customer or a contact right here instead of leaving the deal to do it
+    const quickAdd = (label, fields, save) => {
+      const box = h("div", {class:"qa"}), open = h("button", {class:"linkish small", type:"button"}, "+ New " + label);
+      const err = h("span", {class:"bad-t small"});
+      open.onclick = () => {
+        const inputs = fields.map(([k, ph, type]) => h("input", {class:"inp", type:type || "text", placeholder:ph, "aria-label":ph, "data-k":k}));
+        const go = async () => { const v = Object.fromEntries(inputs.map(i => [i.dataset.k, i.value.trim()])); err.textContent = ""; const m = await save(v); if (m) err.textContent = m; else box.replaceChildren(open); };
+        inputs.forEach(i => i.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); go(); } }));
+        box.replaceChildren(h("div", {class:"qa-row"}, ...inputs, h("button", {class:"btn small primary", type:"button", onclick:go}, "Add"),
+          h("button", {class:"btn small", type:"button", onclick:() => box.replaceChildren(open)}, "Cancel")), err);
+        setTimeout(() => inputs[0].focus(), 0);
+      };
+      box.append(open); return box;
+    };
+    const addContact = quickAdd("contact", [["name", "Name"], ["email", "Email", "email"], ["phone", "Phone", "tel"]], async v => {
+      if (!v.name) return "Add a name.";
+      const {data, error} = await sb.from("contacts").insert({name:v.name, email:v.email || null, phone:v.phone || null, account_id:draft.account_id || null, created_by:S.me.id}).select().single();
+      if (error) return friendly(error);
+      S.contacts.push(data); draft.contact_id = data.id; drawContacts(); toast("Contact added");
+    });
+    const drawContacts = () => { const f = fld(draft, "contact_id", "Primary contact", "select", {options:contactOptions(draft.account_id)}); f.append(addContact); contactBox.replaceChildren(f); };
+    const addAcct = quickAdd("account", [["name", "Customer name"]], async v => {
+      if (!v.name) return "Add the customer's name.";
+      const same = S.accounts.find(a => (a.name || "").trim().toLowerCase() === v.name.toLowerCase());
+      if (same) { draft.account_id = same.id; drawAcct(); drawContacts(); toast("Already in RFIP. Picked " + same.name); return; }
+      const {data, error} = await sb.from("accounts").insert({name:v.name, created_by:S.me.id}).select().single();
+      if (error) return friendly(error);
+      S.accounts.push(data); draft.account_id = data.id; draft.contact_id = null; drawAcct(); drawContacts(); toast("Account added. Fill in its details later from Accounts.");
+    });
+    const drawAcct = () => { const f = fld(draft, "account_id", "Account", "select", {options:acctOptions(), blank:"Choose an account", onchange:drawContacts}); f.append(addAcct); acctBox.replaceChildren(f); };
+    drawAcct(); drawContacts();
     const outcomeBox = h("div", {style:"display:contents"});
     const drawOutcome = () => outcomeBox.replaceChildren(...[outcomeFields(draft)].filter(Boolean));
     drawOutcome();
     return h("div", {class:"form"},
       fld(draft, "name", "Deal name", "text", {full:true, placeholder:"e.g. Camping World Stadium CNS"}),
-      fld(draft, "account_id", "Account", "select", {options:acctOptions(), blank:"Choose an account", onchange:drawContacts}),
+      acctBox,
       contactBox,
       fld(draft, "stage", "Stage", "select", {options:STAGES.map(s => [s.id, s.name]), blank:false, onchange:() => drawOutcome()}),
       fld(draft, "owner_id", "Account manager", "select", {options:peopleOptions(), blank:false, readonly: src ? !(manage || canAssign()) : !canAssign()}),
@@ -1608,6 +1638,7 @@ function openTask(id, defaults) {
     fld(d, "notes", "Notes", "textarea", {full:true})]);
 }
 $("#newDeal").addEventListener("click", () => openDeal());
+{ const na = $("#newAccount"), nc = $("#newContact"); if (na) na.addEventListener("click", () => openAccount()); if (nc) nc.addEventListener("click", () => openContact()); }
 
 // ---------------------------------------------------------------- team (admins)
 const OPS_COLS = () => !!(OPS && S.profiles.length && "ops_role" in S.profiles[0]);

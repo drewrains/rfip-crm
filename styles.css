@@ -704,3 +704,9 @@ th.plan-tl{font-weight:500;color:var(--muted);font-size:12px}
   #signOut #meName{font-weight:600}
 }
 @media print{#app{padding-left:0!important}}
+
+/* quick add inside the deal form */
+.qa{margin-top:4px}.qa .linkish{font-size:13px}
+.qa-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}.qa-row .inp{flex:1 1 140px;min-width:0}
+.new-more{display:none}
+@media (min-width:900px){.bar .new-more{display:flex;gap:6px}.bar .new-more[hidden]{display:none}.bar .new-more .btn{flex:1}}
