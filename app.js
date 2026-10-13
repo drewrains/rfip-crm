@@ -146,19 +146,26 @@ async function run(promise, okMsg) {
   } catch (e) { toast(friendly(e)); return null; }
 }
 
+// Scored as a percent, or (scale "points") as points out of the total of the weights, e.g. 300.
+// Weights are the most points a criterion can earn; a 5 earns all of it, a 3 earns 3/5.
+// A deal that isn't fully scored yet is projected from the criteria scored so far.
+const gngPoints = () => S.gng.scale === "points";
+const gngMax = (g = S.gng) => (g.criteria || []).reduce((a, k) => a + (Number(k.weight) || 0), 0);
+const gngFmt = v => v == null ? "—" : gngPoints() ? v + " pts" : v + "%";
 function gngScore(d) {
   const c = S.gng.criteria || []; const sc = (d.gng && d.gng.scores) || {}; let tw = 0, got = 0, n = 0;
   for (const k of c) { const v = Number(sc[k.id]); if (v >= 1 && v <= 5) { tw += Number(k.weight) || 0; got += (v/5) * (Number(k.weight) || 0); n++; } }
-  return {pct: tw ? Math.round(got/tw*100) : null, scored:n, total:c.length};
+  const max = gngMax(), pct = tw ? Math.round(got/tw*100) : null, pts = tw ? Math.round(got/tw*max) : null;
+  return {pct, pts, max, val: gngPoints() ? pts : pct, scored:n, total:c.length};
 }
 function gngChip(d) {
   const dec = d.gng && d.gng.decision;
   if (dec === "go") return h("span", {class:"chip go"}, "GO");
   if (dec === "nogo") return h("span", {class:"chip bad"}, "NO-GO");
   if (dec === "hold") return h("span", {class:"chip warn"}, "HOLD");
-  const s = gngScore(d); if (s.pct == null) return null;
-  const t = S.gng.threshold; const cls = s.pct >= t.go ? "go" : s.pct >= t.review ? "warn" : "bad";
-  return h("span", {class:"chip " + cls, title:"Go/no-go score, not yet decided"}, s.pct + "%");
+  const s = gngScore(d); if (s.val == null) return null;
+  const t = S.gng.threshold; const cls = s.val >= t.go ? "go" : s.val >= t.review ? "warn" : "bad";
+  return h("span", {class:"chip " + cls, title:"Go/no-go score" + (gngPoints() ? " out of " + s.max : "") + ", not yet decided"}, gngFmt(s.val));
 }
 
 // ---------------------------------------------------------------- auth
@@ -716,14 +723,15 @@ function viewDashboard() {
   grid.append(h("div", {class:"panel"}, h("h3", null, "Why we passed"), h("p", {class:"hint"}, Y + " · no-bid reasons"), bars(tally(cur.nobid, d => d.outcome_reason || "Not recorded"), String)));
 
   // go/no-go vs results
-  const t = S.gng.threshold; const buckets = [["Scored GO (" + t.go + "%+)", s => s != null && s >= t.go], ["Scored review (" + t.review + "–" + (t.go - 1) + "%)", s => s != null && s >= t.review && s < t.go],
-    ["Scored below " + t.review + "%", s => s != null && s < t.review], ["Not scored", s => s == null]];
+  const t = S.gng.threshold; const u = gngPoints() ? " pts" : "%";
+  const buckets = [["Scored GO (" + t.go + u + "+)", s => s != null && s >= t.go], ["Scored review (" + t.review + "–" + (t.go - 1) + u + ")", s => s != null && s >= t.review && s < t.go],
+    ["Scored below " + t.review + u, s => s != null && s < t.review], ["Not scored", s => s == null]];
   const decidedAll = deals.filter(d => d.stage === "won" || d.stage === "lost");
   grid.append(h("div", {class:"panel wide"}, h("h3", null, "Is go/no-go predicting wins?"),
     h("p", {class:"hint"}, "All won and lost deals to date, grouped by their go/no-go score. If high scores win more often, the criteria are working; if not, adjust the weights."),
     h("div", {class:"tbl-wrap", style:"border:0"}, h("table", null,
       h("thead", null, h("tr", null, h("th", null, "Score"), ...["Won","Lost","Win rate"].map(x => h("th", {class:"num"}, x)))),
-      h("tbody", null, buckets.map(([label, test]) => { const ds = decidedAll.filter(d => test(gngScore(d).pct)); const w = ds.filter(d => d.stage === "won").length;
+      h("tbody", null, buckets.map(([label, test]) => { const ds = decidedAll.filter(d => test(gngScore(d).val)); const w = ds.filter(d => d.stage === "won").length;
         return h("tr", null, h("td", null, label), h("td", {class:"num"}, String(w)), h("td", {class:"num"}, String(ds.length - w)), h("td", {class:"num"}, ds.length ? Math.round(w / ds.length * 100) + "%" : "—")); }))))));
 
   // current open pipeline
@@ -1691,15 +1699,16 @@ function openDeal(id, startTab, prefill, copiedFrom) {
     const box = h("div");
     const draw = () => {
       const s = gngScore(draft); const t = S.gng.threshold;
-      const color = s.pct == null ? "var(--muted)" : s.pct >= t.go ? "var(--go)" : s.pct >= t.review ? "var(--warn)" : "var(--bad)";
-      const rec = s.pct == null ? "Score each criterion 1–5" : s.pct >= t.go ? "Recommendation: GO" : s.pct >= t.review ? "Recommendation: discuss before committing" : "Recommendation: NO-GO";
+      const color = s.val == null ? "var(--muted)" : s.val >= t.go ? "var(--go)" : s.val >= t.review ? "var(--warn)" : "var(--bad)";
+      const rec = s.val == null ? "Score each criterion 1–5" : s.val >= t.go ? "Recommendation: GO" : s.val >= t.review ? "Recommendation: discuss before committing" : "Recommendation: NO-GO";
+      const P = gngPoints(), partial = s.val != null && s.scored < s.total;
       box.replaceChildren(
-        h("div", {class:"gauge"}, h("div", {class:"big", style:"color:" + color}, s.pct == null ? "—" : s.pct + "%"),
+        h("div", {class:"gauge"}, h("div", {class:"big", style:"color:" + color}, s.val == null ? "—" : P ? [String(s.val), h("small", {class:"of"}, " / " + s.max)] : s.pct + "%"),
           h("div", {style:"flex:1;min-width:160px"}, h("div", {style:"font-weight:600;margin-bottom:6px"}, rec),
             h("div", {class:"gbar"}, h("i", {style:"width:" + (s.pct || 0) + "%;background:" + color})),
-            h("div", {class:"muted", style:"font-size:12px;margin-top:4px"}, s.scored + " of " + s.total + " criteria scored · Go at " + t.go + "%, review at " + t.review + "%"))),
+            h("div", {class:"muted", style:"font-size:12px;margin-top:4px"}, s.scored + " of " + s.total + " criteria scored" + (P && partial ? " (score projected from those)" : "") + " · Go at " + t.go + (P ? "" : "%") + ", review at " + t.review + (P ? " of " + s.max + " points" : "%")))),
         h("div", null, (S.gng.criteria || []).map(c => { const v = Number(draft.gng.scores[c.id]) || 0;
-          return h("div", {class:"crit"}, h("div", null, h("div", null, c.name), h("div", {class:"w"}, "Weight " + c.weight)),
+          return h("div", {class:"crit"}, h("div", null, h("div", null, c.name), h("div", {class:"w"}, gngPoints() ? "Up to " + c.weight + " points" + (v ? " · earns " + Math.round(v / 5 * c.weight) : "") : "Weight " + c.weight)),
             h("div", {class:"score", role:"group", "aria-label":c.name}, [1,2,3,4,5].map(n => h("button", {type:"button", "aria-pressed": String(v === n),
               onclick:() => { draft.gng.scores[c.id] = v === n ? null : n; draw(); }}, String(n))))); })),
         h("div", {class:"form", style:"margin-top:14px"},
@@ -2092,19 +2101,31 @@ function viewSettings() {
   wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Go/no-go & import")));
   const g = JSON.parse(JSON.stringify(S.gng)); const admin = isAdmin();
   const critBox = h("div");
-  const drawCrit = () => critBox.replaceChildren(
-    h("div", {class:"crit-edit lab"}, h("span", null, "Criterion"), h("span", null, "Weight"), h("span")),
+  const thrBox = h("div", {class:"form", style:"margin-top:10px"});
+  const drawThr = () => { const P = g.scale === "points", max = gngMax(g);
+    thrBox.replaceChildren(
+      h("div", {class:"field"}, h("label", {for:"f-gscale"}, "Score as"), h("select", {id:"f-gscale", disabled:!admin, onchange: e => {
+        const to = e.target.value, m = gngMax(g) || 100;   // keep the same bar when switching
+        if (to === "points" && g.scale !== "points") { g.threshold.go = Math.round(g.threshold.go / 100 * m); g.threshold.review = Math.round(g.threshold.review / 100 * m); }
+        if (to !== "points" && g.scale === "points") { g.threshold.go = Math.round(g.threshold.go / m * 100); g.threshold.review = Math.round(g.threshold.review / m * 100); }
+        g.scale = to === "points" ? "points" : "percent"; drawCrit(); }},
+        h("option", {value:"percent", selected:!P}, "Percent (0–100%)"), h("option", {value:"points", selected:P}, "Points (out of the total of the weights)"))),
+      h("div", {class:"field"}, h("label", null, "Total"), h("div", {class:"mono", style:"padding:8px 0"}, P ? max + " points" + (max !== 300 ? " (the team's scale is 300)" : "") : "Weights total " + max)),
+      fld(g.threshold, "go", P ? "Go at or above (points)" : "Go at or above %", "number", {readonly:!admin}),
+      fld(g.threshold, "review", P ? "Review at or above (points)" : "Review at or above %", "number", {readonly:!admin})); };
+  const drawCrit = () => { drawThr(); critBox.replaceChildren(
+    h("div", {class:"crit-edit lab"}, h("span", null, "Criterion"), h("span", null, g.scale === "points" ? "Points" : "Weight"), h("span")),
     ...g.criteria.map((c, i) => h("div", {class:"crit-edit"},
       h("input", {value:c.name, "aria-label":"Criterion " + (i + 1), readonly:!admin, oninput: e => { c.name = e.target.value; }}),
-      h("input", {type:"number", min:"0", value:c.weight, "aria-label":"Weight", class:"mono", readonly:!admin, oninput: e => { c.weight = Number(e.target.value) || 0; }}),
-      admin ? h("button", {class:"btn small", "aria-label":"Remove", onclick:() => { g.criteria.splice(i, 1); drawCrit(); }}, "×") : h("span"))));
+      h("input", {type:"number", min:"0", value:c.weight, "aria-label":"Weight", class:"mono", readonly:!admin, oninput: e => { c.weight = Number(e.target.value) || 0; }, onchange:() => drawThr()}),
+      admin ? h("button", {class:"btn small", "aria-label":"Remove", onclick:() => { g.criteria.splice(i, 1); drawCrit(); }}, "×") : h("span")))); };
   drawCrit();
   wrap.append(h("div", {class:"settings"},
     h("div", {class:"panel"}, h("h3", null, "Go/no-go criteria"),
-      h("p", {class:"hint"}, admin ? "Edit the criteria and weights the team scores each pursuit on. Every deal's score updates when you save." : "Set by an admin. Score deals on the Go/no-go tab of each deal."),
+      h("p", {class:"hint"}, admin ? "Edit the criteria and weights the team scores each pursuit on. In points, a criterion's weight is the most it can earn: a 5 earns all of it, a 3 earns three fifths. Every deal's score updates when you save." : "Set by an admin. Score deals on the Go/no-go tab of each deal."),
       critBox,
       admin ? h("div", {class:"toolbar", style:"margin:10px 0 0"}, h("button", {class:"btn small", onclick:() => { g.criteria.push({id:"c" + Date.now().toString(36), name:"New criterion", weight:10}); drawCrit(); }}, "+ Criterion")) : null,
-      h("div", {class:"form", style:"margin-top:10px"}, fld(g.threshold, "go", "Go at or above %", "number", {readonly:!admin}), fld(g.threshold, "review", "Review at or above %", "number", {readonly:!admin})),
+      thrBox,
       admin ? h("div", {style:"margin-top:12px;display:flex;justify-content:flex-end"}, h("button", {class:"btn primary", onclick: async () => {
         g.criteria = g.criteria.filter(c => c.name.trim());
         if (await run(sb.from("gng_config").update({config:g, updated_at:new Date().toISOString()}).eq("id", true), "Criteria saved")) { S.gng = g; render(); }
@@ -2259,7 +2280,7 @@ function exportPanel() {
   const dl = type => {
     let head, rows;
     if (type === "deals") { head = ["Deal","Account","Stage","Value","Probability","Bid due","Close date","Account manager","Sales engineer","Deal team","RFP #","Vertical","Services","Go/no-go score","Decision","Outcome reason","Won by","Their price","Outcome notes"];
-      rows = S.deals.map(d => [d.name, acctName(d.account_id), STAGE[d.stage].name, d.value, prob(d), d.bid_due, d.close_date, personName(d.owner_id), seNames(d.id), S.members.filter(m => m.deal_id === d.id).map(m => personName(m.user_id) + " (" + dealRoleLabel(m.role) + ")").join("; "), d.rfp_no, d.vertical, (d.services || []).join("; "), gngScore(d).pct, (d.gng && d.gng.decision) || "", d.outcome_reason, d.winning_competitor, d.winning_price, d.outcome_notes]); }
+      rows = S.deals.map(d => [d.name, acctName(d.account_id), STAGE[d.stage].name, d.value, prob(d), d.bid_due, d.close_date, personName(d.owner_id), seNames(d.id), S.members.filter(m => m.deal_id === d.id).map(m => personName(m.user_id) + " (" + dealRoleLabel(m.role) + ")").join("; "), d.rfp_no, d.vertical, (d.services || []).join("; "), gngScore(d).val, (d.gng && d.gng.decision) || "", d.outcome_reason, d.winning_competitor, d.winning_price, d.outcome_notes]); }
     else if (type === "accounts") { head = ["Account","Type","Vertical","City","State","Website"]; rows = S.accounts.map(a => [a.name, a.type, a.vertical, a.city, a.state, a.website]); }
     else if (type === "contacts") { head = ["Name","Title","Account","Email","Phone"]; rows = S.contacts.map(c => [c.name, c.title, acctName(c.account_id), c.email, c.phone]); }
     else { head = ["Task","Due","Assigned to","Deal","Done"]; rows = S.tasks.map(t => [t.title, t.due, personName(t.assignee_id), dealName(t.deal_id), t.done ? "yes" : ""]); }

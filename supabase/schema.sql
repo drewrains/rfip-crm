@@ -130,15 +130,15 @@ create table if not exists public.gng_config (
   updated_at timestamptz not null default now()
 );
 insert into public.gng_config (id, config) values (true, '{
-  "threshold": {"go": 70, "review": 55},
+  "scale": "points", "threshold": {"go": 210, "review": 165},
   "criteria": [
-    {"id":"fit","name":"Fits our service lines and self-perform crews","weight":22},
-    {"id":"relationship","name":"Relationship with the owner or GC","weight":18},
-    {"id":"margin","name":"Margin potential","weight":16},
-    {"id":"capacity","name":"Crew and PM capacity in the schedule window","weight":14},
-    {"id":"win","name":"Realistic chance to win against the field","weight":12},
-    {"id":"strategic","name":"Strategic value: vertical, reference, follow-on work","weight":10},
-    {"id":"risk","name":"Contract, bonding, licensing and schedule risk (5 = low risk)","weight":8}
+    {"id":"fit","name":"Fits our service lines and self-perform crews","weight":66},
+    {"id":"relationship","name":"Relationship with the owner or GC","weight":54},
+    {"id":"margin","name":"Margin potential","weight":48},
+    {"id":"capacity","name":"Crew and PM capacity in the schedule window","weight":42},
+    {"id":"win","name":"Realistic chance to win against the field","weight":36},
+    {"id":"strategic","name":"Strategic value: vertical, reference, follow-on work","weight":30},
+    {"id":"risk","name":"Contract, bonding, licensing and schedule risk (5 = low risk)","weight":24}
   ]}'::jsonb)
 on conflict (id) do nothing;
 

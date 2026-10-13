@@ -730,3 +730,4 @@ button.metric.click .k::after,button.o-tile.click .k::after{content:" ›";opaci
 .flag-bar .btn{margin-left:auto}
 .o-panel.flash{animation:flashp 1.6s ease-out}
 @keyframes flashp{0%{box-shadow:0 0 0 3px var(--accent)}100%{box-shadow:0 0 0 0 transparent}}
+.gauge .big .of{font-size:18px;font-weight:600;color:var(--muted)}
