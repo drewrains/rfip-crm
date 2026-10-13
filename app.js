@@ -355,6 +355,68 @@ function notify(ids, subject, text, link) {
   fnCall("outlook", {action:"notify", to, subject, text, link}).then(r => { if (r && r.error) console.warn("Alert email:", r.error); });
 }
 // links in emails and invites: #deal=<id> or #project=<id>
+// ---------------------------------------------------------------- notifications (the bell)
+// notifications.sql fills these from the database when a task is assigned or completed
+S.notes = []; S.notesOn = false;
+let notifTimer = null, toastBatch = [], toastTimer = null;
+// a checklist can hand someone a dozen tasks at once: one toast for the batch
+function notifToast(n) {
+  toastBatch.push(n); clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { const b = toastBatch; toastBatch = [];
+    toast(b.length === 1 ? b[0].title + (b[0].body ? ": " + b[0].body : "") : plural(b.length, "new notification") + ". Open the bell to see them."); }, 700);
+}
+async function loadNotifs() {
+  const {data, error} = await sb.from("notifications").select("*").order("created_at", {ascending:false}).limit(50);
+  S.notesOn = !error; S.notes = data || []; drawBell();
+}
+const agoText = ts => { const m = Math.round((Date.now() - new Date(ts)) / 60000);
+  return m < 1 ? "just now" : m < 60 ? m + " min ago" : m < 1440 ? Math.round(m / 60) + " hr ago" : m < 2880 ? "yesterday" : fmtDate(ts.slice(0, 10)); };
+function drawBell() {
+  const b = $("#bellBtn"); if (!b) return;
+  b.hidden = !S.notesOn;
+  const n = S.notes.filter(x => !x.read_at).length, badge = b.querySelector(".badge");
+  badge.hidden = !n; badge.textContent = n > 9 ? "9+" : String(n);
+  b.title = n ? plural(n, "unread notification") : "Notifications";
+  const p = document.getElementById("notifPanel"); if (p) fillNotifPanel(p);
+}
+async function markRead(ids) {
+  ids = ids.filter(Boolean); if (!ids.length) return;
+  const now = new Date().toISOString(); S.notes.forEach(x => { if (ids.includes(x.id)) x.read_at = now; }); drawBell();
+  await sb.from("notifications").update({read_at:now}).in("id", ids);
+}
+function followLink(link) {
+  if (link === "#tasks") { S.section = "sales"; go("tasks"); return; }
+  if (link && link.startsWith("#")) { history.replaceState(null, "", location.pathname + location.search + link); renderNow(); openFromHash(); }
+}
+function fillNotifPanel(p) {
+  const unread = S.notes.filter(x => !x.read_at);
+  p.replaceChildren(
+    h("div", {class:"np-head"}, h("b", null, "Notifications"),
+      unread.length ? h("button", {class:"linkish", onclick:() => markRead(unread.map(x => x.id))}, "Mark all read") : null),
+    S.notes.length ? h("div", {class:"np-list"}, S.notes.map(x => h("button", {class:"np-item" + (x.read_at ? "" : " unread"), onclick:() => {
+        closeNotifPanel(); markRead([x.id]); followLink(x.link); }},
+      h("span", {class:"np-ic " + (x.kind === "task_done" ? "done" : "new")}, x.kind === "task_done" ? "✓" : "＋"),
+      h("span", {class:"np-txt"}, h("b", null, x.title), x.body ? h("span", null, x.body) : null, h("small", null, agoText(x.created_at))))))
+      : h("div", {class:"muted", style:"padding:18px 14px"}, "Nothing yet. You'll hear here when someone gives you a task or finishes one you're waiting on."));
+}
+function closeNotifPanel() {
+  const p = document.getElementById("notifPanel"); if (p) p.remove();
+  const b = $("#bellBtn"); if (b) b.setAttribute("aria-expanded", "false");
+  document.removeEventListener("mousedown", notifOutside, true); document.removeEventListener("keydown", notifEsc);
+}
+function notifOutside(e) { const p = document.getElementById("notifPanel"); if (p && !p.contains(e.target) && !e.target.closest("#bellBtn")) closeNotifPanel(); }
+function notifEsc(e) { if (e.key === "Escape") closeNotifPanel(); }
+{ const b = $("#bellBtn"); if (b) b.addEventListener("click", () => {
+  if (document.getElementById("notifPanel")) { closeNotifPanel(); return; }
+  const r = b.getBoundingClientRect(), p = h("div", {id:"notifPanel", class:"notif-panel", role:"dialog", "aria-label":"Notifications"});
+  const w = Math.min(360, window.innerWidth - 16);
+  p.style.width = w + "px";
+  p.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + "px";
+  p.style.top = (r.bottom + 6 + w > window.innerHeight && r.top > window.innerHeight / 2 ? Math.max(8, r.top - 6 - Math.min(480, window.innerHeight - 16)) : r.bottom + 6) + "px";
+  fillNotifPanel(p); document.body.append(p); b.setAttribute("aria-expanded", "true");
+  setTimeout(() => { document.addEventListener("mousedown", notifOutside, true); document.addEventListener("keydown", notifEsc); }, 0);
+}); }
+
 function openFromHash() {
   if (location.hash === "#expense") { history.replaceState(null, "", location.pathname + location.search); if (OPS && OPS.startExpense) { S.section = hasOps() ? "ops" : "sales"; OPS.startExpense(); } return; }
   const m = location.hash.match(/^#(deal|project|request|expense)=([0-9a-f-]{36})$/);
@@ -513,7 +575,7 @@ async function freshToken() {
   } catch (e) { console.warn("token refresh failed", e); return true; }
 }
 async function loadAll() {
-  await Promise.all(Object.keys(TABLES).map(loadTable).concat([loadGng(), loadRfpTemplates()], OPS ? [OPS.load()] : []));
+  await Promise.all(Object.keys(TABLES).map(loadTable).concat([loadGng(), loadRfpTemplates(), loadNotifs()], OPS ? [OPS.load()] : []));
   const me = byId(S.profiles, S.me.id); if (me) S.me = me;
 }
 async function loadGng() {
@@ -536,6 +598,9 @@ function subscribe() {
     .on("postgres_changes", {event:"*", schema:"public"}, p => {
       if (OPS && OPS.tables.includes(p.table)) { OPS.changed(p.table); return; }
       if (p.table === "rfp_templates") { loadRfpTemplates().then(() => { render(); refreshDrawer(); }); return; }
+      if (p.table === "notifications") {
+        if (p.eventType === "INSERT" && p.new && p.new.user_id === S.me.id) notifToast(p.new);
+        clearTimeout(notifTimer); notifTimer = setTimeout(loadNotifs, 400); return; }
       const key = map[p.table];
       if (key === "notes") { if (openNotes && p.new && p.new.deal_id === openNotes.dealId) openNotes.reload(); return; }
       if (key) { scheduleReload(key); if (key === "members") scheduleReload("deals"); }
