@@ -132,13 +132,13 @@ create table if not exists public.gng_config (
 insert into public.gng_config (id, config) values (true, '{
   "threshold": {"go": 70, "review": 55},
   "criteria": [
-    {"id":"fit","name":"Fits our service lines and self-perform crews","weight":20},
-    {"id":"relationship","name":"Relationship with the owner or GC","weight":15},
-    {"id":"win","name":"Realistic chance to win against the field","weight":15},
-    {"id":"margin","name":"Margin potential","weight":15},
-    {"id":"capacity","name":"Crew and PM capacity in the schedule window","weight":15},
-    {"id":"risk","name":"Contract, bonding, licensing and schedule risk (5 = low risk)","weight":10},
-    {"id":"strategic","name":"Strategic value: vertical, reference, follow-on work","weight":10}
+    {"id":"fit","name":"Fits our service lines and self-perform crews","weight":22},
+    {"id":"relationship","name":"Relationship with the owner or GC","weight":18},
+    {"id":"margin","name":"Margin potential","weight":16},
+    {"id":"capacity","name":"Crew and PM capacity in the schedule window","weight":14},
+    {"id":"win","name":"Realistic chance to win against the field","weight":12},
+    {"id":"strategic","name":"Strategic value: vertical, reference, follow-on work","weight":10},
+    {"id":"risk","name":"Contract, bonding, licensing and schedule risk (5 = low risk)","weight":8}
   ]}'::jsonb)
 on conflict (id) do nothing;
 
