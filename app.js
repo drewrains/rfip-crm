@@ -395,7 +395,7 @@ function fillNotifPanel(p) {
       unread.length ? h("button", {class:"linkish", onclick:() => markRead(unread.map(x => x.id))}, "Mark all read") : null),
     S.notes.length ? h("div", {class:"np-list"}, S.notes.map(x => h("button", {class:"np-item" + (x.read_at ? "" : " unread"), onclick:() => {
         closeNotifPanel(); markRead([x.id]); followLink(x.link); }},
-      h("span", {class:"np-ic " + (x.kind === "task_done" ? "done" : "new")}, x.kind === "task_done" ? "✓" : "＋"),
+      h("span", {class:"np-ic " + (x.kind === "task_done" ? "done" : x.kind === "task_ready" ? "ready" : "new")}, x.kind === "task_done" ? "✓" : x.kind === "task_ready" ? "▶" : "＋"),
       h("span", {class:"np-txt"}, h("b", null, x.title), x.body ? h("span", null, x.body) : null, h("small", null, agoText(x.created_at))))))
       : h("div", {class:"muted", style:"padding:18px 14px"}, "Nothing yet. You'll hear here when someone gives you a task or finishes one you're waiting on."));
 }

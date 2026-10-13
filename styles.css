@@ -748,3 +748,13 @@ button.metric.click .k::after,button.o-tile.click .k::after{content:" ›";opaci
 .np-txt b{font-weight:600}
 .np-txt span{overflow-wrap:anywhere}
 .np-txt small{color:var(--muted);font-size:11.5px}
+
+/* plan predecessors */
+.plan-tbl .plan-n{width:34px;text-align:right;font-size:12px}
+.plan-after{font-size:12.5px;color:var(--muted)}
+.plan-after.waiting{color:var(--warn);font-weight:600}
+.pred-pick{max-height:220px;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:4px 0;background:var(--bg)}
+.pred-opt{display:flex;gap:6px;align-items:baseline;padding:4px 8px;font-size:13.5px;cursor:pointer}
+.pred-opt:hover{background:var(--panel)}
+.pred-opt input{margin:0}
+.np-ic.ready{background:var(--warn-soft);color:var(--warn)}

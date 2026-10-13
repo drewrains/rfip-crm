@@ -1987,6 +1987,42 @@ function planTree(pid) {
 const descendants = (id, kids) => { const out = [], st = [...(kids.get(id) || [])]; while (st.length) { const x = st.pop(); out.push(x); st.push(...(kids.get(x.id) || [])); } return out; };
 const parentPath = i => { const out = []; let cur = i.parent_id ? byId(O.items, i.parent_id) : null, n = 0; while (cur && n++ < 12) { out.unshift(cur.title); cur = cur.parent_id ? byId(O.items, cur.parent_id) : null; } return out.join(" › "); };
 const canTick = (i, p) => (p && canPlan(p)) || i.assignee_id === S.me.id;
+
+// ---- predecessors (plan_predecessors.sql): a task "starts after" other tasks in the same plan, plus lag days
+const predOn = () => !O.items.length || O.items.some(i => "predecessors" in i);
+const predsOf = i => (i.predecessors || []).map(id => byId(O.items, id)).filter(Boolean);
+const succsOf = i => O.items.filter(x => (x.predecessors || []).includes(i.id));
+const waitingOn = i => predsOf(i).filter(x => x.status !== "done");
+const endOf = i => i.due_date || i.start_date;
+// the first day a task can start: the day after the last thing it waits on ends, plus its lag
+function earliestStart(preds, lag) {
+  const ends = preds.map(endOf).filter(Boolean).sort();
+  return ends.length ? addDays(ends[ends.length - 1], 1 + (Number(lag) || 0)) : null;
+}
+// move a task to start on `start`, keeping its length; only ever later
+function pushTo(i, start) {
+  if (!start || (i.start_date && i.start_date >= start)) return null;
+  if (i.start_date && i.due_date) return {start_date:start, due_date:addDays(start, Math.max(0, dayDiff(i.start_date, i.due_date)))};
+  if (i.due_date) return {start_date:start, due_date:i.due_date < start ? start : i.due_date};
+  return {start_date:start};
+}
+// after a task's dates change: walk everything waiting on it (and on those) and push them later where needed
+async function cascadeFrom(ids) {
+  const cur = new Map(O.items.map(i => [i.id, {...i}])), queue = [...ids], moved = new Map(); let guard = 0;
+  while (queue.length && guard++ < 2000) {
+    const id = queue.shift();
+    for (const s of [...cur.values()].filter(x => (x.predecessors || []).includes(id) && x.status !== "done")) {
+      const patch = pushTo(s, earliestStart((s.predecessors || []).map(x => cur.get(x)).filter(Boolean), s.lag_days));
+      if (!patch) continue;
+      Object.assign(s, patch); moved.set(s.id, Object.assign(moved.get(s.id) || {}, patch)); queue.push(s.id);
+    }
+  }
+  if (!moved.size) return 0;
+  const res = await Promise.all([...moved].map(([id, patch]) => sb.from("plan_items").update(patch).eq("id", id)));
+  const bad = res.filter(r => r.error).length;
+  if (bad) toast(plural(bad, "later task") + " couldn't be moved: " + friendly(res.find(r => r.error).error));
+  return moved.size - bad;
+}
 async function setItemStatus(i, status) {
   const was = i.status;
   if (await run(sb.from("plan_items").update({status}).eq("id", i.id), status === "done" ? "Marked done" : "Reopened")) {
@@ -2007,16 +2043,23 @@ function planPanel(p, edit) {
   const t0 = dates[0], t1 = dates[dates.length - 1], span = t0 && t1 ? Math.max(1, dayDiff(t0, t1)) : 0;
   const pos = d => span ? Math.max(0, Math.min(100, dayDiff(t0, d) / span * 100)) : 0;
   const todayPos = span && TODAY >= t0 && TODAY <= t1 ? pos(TODAY) : null;
+  const P = predOn(), rowNo = new Map(rows.map((r, k) => [r.i.id, k + 1]));
+  const afterCell = i => { const ps = predsOf(i); if (!ps.length) return h("td", {class:"muted"}, "");
+    const open = ps.filter(x => x.status !== "done");
+    return h("td", {class:"nowrap plan-after" + (open.length && i.status !== "done" ? " waiting" : ""), title:(open.length && i.status !== "done" ? "Waiting on: " : "After: ") + ps.map(x => x.title).join(", ") + (i.lag_days ? " (+" + i.lag_days + " days)" : "")},
+      ps.map(x => "#" + rowNo.get(x.id)).join(", ") + (i.lag_days ? " +" + i.lag_days + "d" : "")); };
   const body = rows.length ? h("div", {class:"tbl-wrap flat"}, h("table", {class:"plan-tbl"},
-    h("thead", null, h("tr", null, h("th", {class:"plan-ck"}, h("span", {class:"sr"}, "Done")), h("th", null, "Phase / task"), h("th", null, "Assigned to"), h("th", null, "Start"), h("th", null, "Due"),
+    h("thead", null, h("tr", null, h("th", {class:"plan-ck"}, h("span", {class:"sr"}, "Done")), P ? h("th", {class:"plan-n"}, "#") : null, h("th", null, "Phase / task"), P ? h("th", {title:"Starts after these tasks"}, "After") : null, h("th", null, "Assigned to"), h("th", null, "Start"), h("th", null, "Due"),
       h("th", null, "Status"), h("th", {class:"plan-tl"}, t0 ? fmtDate(t0) + " – " + fmtDate(t1) : "Timeline"), edit ? h("th", null, h("span", {class:"sr"}, "Add")) : null)),
     h("tbody", null, rows.map(({i, depth}) => {
       const sub = descendants(i.id, kids), nd = sub.filter(x => x.status === "done").length;
       const s = i.start_date || i.due_date, e = i.due_date || i.start_date;
       return h("tr", {class:"plan-r d" + Math.min(depth, 3) + (i.status === "done" ? " is-done" : "") + (isLate(i) ? " is-late" : "")},
         h("td", {class:"plan-ck"}, canTick(i, p) ? h("input", {type:"checkbox", "aria-label":"Done: " + i.title, checked:i.status === "done", onchange: ev => setItemStatus(i, ev.target.checked ? "done" : "in_progress")}) : null),
+        P ? h("td", {class:"plan-n mono muted"}, String(rowNo.get(i.id))) : null,
         h("td", {class:"plan-t", style:"padding-left:" + (8 + depth * 22) + "px"}, h("button", {class:"linkish", onclick:() => openPlanItem(p, i)}, i.title),
           sub.length ? h("small", {class:"muted"}, " · " + nd + " of " + sub.length + " done") : null),
+        P ? afterCell(i) : null,
         h("td", null, i.assignee_id ? personName(i.assignee_id) : h("span", {class:"muted"}, "—")),
         h("td", {class:"mono nowrap"}, i.start_date ? fmtDate(i.start_date) : ""),
         h("td", {class:"mono nowrap" + (isLate(i) ? " bad-t" : "")}, i.due_date ? fmtDate(i.due_date) : ""),
@@ -2049,10 +2092,11 @@ async function addStarterPlan(p) {
 // A row's level is its deepest filled name column; phase and task names carry down so they
 // don't need repeating. Phases already on the plan with the same name are reused.
 const PLAN_COLS = {phase:["phase"], task:["task"], sub:["sub-task","subtask","sub task"], who:["assigned to","assigned","assignee","owner","who"],
-  start:["start"], due:["due","finish","end"], status:["status"], notes:["notes","note","comments"]};
+  start:["start"], due:["due","finish","end"], status:["status"], notes:["notes","note","comments"],
+  pred:["predecessors","predecessor","starts after","depends on","after"], lag:["lag"]};
 function planCols(head) {
   const lh = head.map(x => (x || "").toLowerCase().trim()), used = new Set(), m = {};
-  for (const k of ["sub", "phase", "task", "who", "start", "due", "status", "notes"])
+  for (const k of ["pred", "lag", "sub", "phase", "task", "who", "start", "due", "status", "notes"])
     for (const key of PLAN_COLS[k]) { const i = lh.findIndex((x, j) => !used.has(j) && (x === key || x.startsWith(key))); if (i >= 0) { m[k] = i; used.add(i); break; } }
   return m;
 }
@@ -2064,7 +2108,7 @@ function parsePlanRows(rows, p) {
   if (m.phase == null && m.task == null) return {error:"Couldn't find a Phase or Task column. Use the RFIP project plan template, or name the columns Phase, Task, Sub-task, Assigned to, Start, Due, Status, Notes."};
   const people = opsPeople(), findWho = v => { const x = v.toLowerCase(); if (!x) return null;
     const hit = people.find(q => (q.email || "").toLowerCase() === x || (q.full_name || "").toLowerCase() === x); return hit ? hit.id : undefined; };
-  const nodes = [], unmatched = new Set(); let ph = null, tk = null, bad = 0;
+  const nodes = [], unmatched = new Set(), byRow = []; let ph = null, tk = null, bad = 0;
   const node = (level, title, parent) => { const n = {level, title, parent, row:null}; nodes.push(n); return n; };
   const phaseFor = t => nodes.find(n => n.level === 0 && n.title.toLowerCase() === t.toLowerCase()) || node(0, t, null);
   for (const r of rows.slice(1)) {
@@ -2078,8 +2122,23 @@ function parsePlanRows(rows, p) {
     const w = get(r, "who"), wid = findWho(w); if (wid === undefined) unmatched.add(w);
     const sd = normDate(get(r, "start")), dd = normDate(get(r, "due"));
     n.row = {assignee_id:wid || null, start_date:sd, due_date:dd && sd && dd < sd ? sd : dd, status:planStatus(get(r, "status")), notes:get(r, "notes") || null};
+    n.predRaw = get(r, "pred"); const lg = parseInt(get(r, "lag"), 10); if (lg) n.lag = lg;
+    byRow.push(n);
   }
-  return {nodes, unmatched:[...unmatched], skipped:bad, cols:m};
+  // predecessors: row numbers (1 = first task row; "3FS+2" style lag is fine) or task names
+  const linked = [];
+  for (const n of nodes) {
+    if (!n.predRaw) continue;
+    const preds = [];
+    for (const tok of n.predRaw.split(/[,;]/).map(x => x.trim()).filter(Boolean)) {
+      const m = tok.match(/^#?(\d+)\s*(?:fs)?\s*(?:([+-])\s*(\d+)\s*(?:d|days?)?)?$/i);
+      const hit = m ? byRow[Number(m[1]) - 1] : nodes.find(x => x !== n && x.title.toLowerCase() === tok.toLowerCase());
+      if (m && m[3] && !n.lag) n.lag = (m[2] === "-" ? -1 : 1) * Number(m[3]);
+      if (hit && hit !== n) preds.push(hit);
+    }
+    if (preds.length) { n.preds = [...new Set(preds)]; linked.push(n); }
+  }
+  return {nodes, unmatched:[...unmatched], skipped:bad, cols:m, linked:linked.length};
 }
 async function runPlanImport(p, parsed) {
   const have = itemsOf(p.id);
@@ -2099,6 +2158,14 @@ async function runPlanImport(p, parsed) {
       if (error) throw error;
       data.forEach((d, j) => { part[j].n.id = d.id; }); made += data.length;
     }
+  }
+  // then hook up "starts after" and push dates where a task would start before what it waits on ends
+  const withPreds = parsed.nodes.filter(n => n.preds && n.id && n.id !== "pending");
+  if (withPreds.length && predOn()) {
+    await Promise.all(withPreds.map(n => sb.from("plan_items").update({predecessors:n.preds.map(x => x.id).filter(x => x && x !== "pending"), lag_days:n.lag || 0}).eq("id", n.id)));
+    await reload("items");
+    const n2 = await cascadeFrom(withPreds.flatMap(n => n.preds.map(x => x.id)));
+    if (n2) toast("Moved " + plural(n2, "task") + " later so each starts after what it waits on");
   }
   const byWho = new Map();
   for (const n of parsed.nodes) if (n.row && n.row.assignee_id && n.row.assignee_id !== S.me.id && n.row.status !== "done")
@@ -2128,6 +2195,7 @@ function openPlanImport(p) {
           h("li", null, plural(c[0], "phase") + (reuse ? " (" + reuse + " already on the plan, reused)" : "")),
           h("li", null, plural(c[1], "task") + (c[2] ? " and " + plural(c[2], "sub-task") : "")),
           h("li", null, plural(x.nodes.filter(n => n.row && n.row.assignee_id).length, "item") + " assigned"),
+          x.linked ? h("li", null, plural(x.linked, "task") + " with predecessors") : null,
           x.unmatched.length ? h("li", {class:"bad-t"}, "Not matched, left unassigned: " + x.unmatched.join(", ") + ". Names must match someone with an operations role in RFIP (full name or email).") : null,
           x.skipped ? h("li", {class:"muted"}, plural(x.skipped, "blank row") + " skipped") : null)));
     }
@@ -2150,6 +2218,23 @@ function openPlanItem(p, it, parentId) {
   const bad = it ? new Set([it.id, ...descendants(it.id, tree.kids).map(x => x.id)]) : new Set();
   const parents = tree.rows.filter(r => !bad.has(r.i.id)).map(r => [r.i.id, " ".repeat(r.depth) + r.i.title]);
   const crumbs = it && it.parent_id ? parentPath(it) : parentId ? parentPath({parent_id:parentId}) : "";
+  // predecessors: any other task in this plan except its own phase above it, what's under it, and anything already waiting on it
+  const P = predOn();
+  d.predecessors = [...(d.predecessors || [])]; d.lag_days = d.lag_days || 0;
+  const ancestors = new Set(); { let c = d.parent_id && byId(O.items, d.parent_id), n = 0; while (c && n++ < 12) { ancestors.add(c.id); c = c.parent_id && byId(O.items, c.parent_id); } }
+  const waitsOnMe = new Set(); if (it) { const st = [it.id]; while (st.length) { const id = st.pop(); for (const x of itemsOf(p.id)) if ((x.predecessors || []).includes(id) && !waitsOnMe.has(x.id)) { waitsOnMe.add(x.id); st.push(x.id); } } }
+  const numOf = new Map(tree.rows.map((r, k) => [r.i.id, k + 1]));
+  const choices = tree.rows.filter(r => !bad.has(r.i.id) && !ancestors.has(r.i.id) && !waitsOnMe.has(r.i.id));
+  const hint = h("p", {class:"muted small", style:"margin:4px 0 0"});
+  const drawHint = () => { const e = earliestStart(d.predecessors.map(id => byId(O.items, id)).filter(Boolean), d.lag_days);
+    hint.textContent = e ? "Can start " + fmtDate(e) + " at the earliest" + (d.start_date && d.start_date < e ? ". Saving moves the start to then and keeps the task's length." : ".") : "Pick the tasks that have to finish before this one can start."; };
+  const predBox = P ? h("div", {class:"field full"}, h("label", null, "Starts after"),
+    choices.length ? h("div", {class:"pred-pick", role:"group", "aria-label":"Starts after"}, choices.map(r => h("label", {class:"pred-opt", style:"padding-left:" + (6 + r.depth * 14) + "px"},
+      h("input", {type:"checkbox", checked:d.predecessors.includes(r.i.id), disabled:ro, onchange: e => {
+        d.predecessors = e.target.checked ? [...d.predecessors, r.i.id] : d.predecessors.filter(x => x !== r.i.id); drawHint(); }}),
+      h("span", {class:"mono muted"}, "#" + numOf.get(r.i.id)), " ", r.i.title, r.i.due_date ? h("small", {class:"muted"}, " · ends " + fmtDate(r.i.due_date)) : null)))
+      : h("div", {class:"muted small"}, "Add other tasks to the plan first."), hint) : null;
+  if (P) drawHint();
   const fields = [
     crumbs ? h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Under: " + crumbs) : null,
     fld(d, "title", "What needs doing", "text", {full:true, readonly:ro, placeholder:"e.g. Pull cable to IDF 2"}),
@@ -2157,6 +2242,7 @@ function openPlanItem(p, it, parentId) {
     fld(d, "assignee_id", "Assigned to", "select", {options:opsPeople().map(x => [x.id, x.full_name || x.email]), blank:"Nobody yet", readonly:ro}),
     fld(d, "status", "Status", "select", {options:PLAN_ST.map(x => [x[0], x[1]]), blank:false}),
     fld(d, "start_date", "Start", "date", {readonly:ro}), fld(d, "due_date", "Due", "date", {readonly:ro}),
+    predBox, P ? (() => { const f = fld(d, "lag_days", "Lag after those (days)", "number", {readonly:ro}); f.querySelector("input").addEventListener("input", drawHint); return f; })() : null,
     fld(d, "notes", "Notes", "textarea", {full:true}),
     ro ? h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "You can update the status and notes. " + personName(p.pm_id) + " (the PM) or someone the project is shared with changes the rest of the plan.") : null].filter(Boolean);
   drawerForm((it ? "" : "New ") + (d.parent_id ? "task" : "phase or task").replace(/^./, m => m.toUpperCase()) + " · " + p.number, d, fields, async () => {
@@ -2165,7 +2251,17 @@ function openPlanItem(p, it, parentId) {
     const row = ro ? {status:d.status, notes:nullify((d.notes || "").trim())}
       : {project_id:p.id, title:d.title.trim(), parent_id:nullify(d.parent_id), assignee_id:nullify(d.assignee_id), start_date:nullify(d.start_date), due_date:nullify(d.due_date), status:d.status, notes:nullify((d.notes || "").trim())};
     if (!it && !ro) row.sort = Math.max(0, ...itemsOf(p.id).filter(x => (x.parent_id || null) === row.parent_id).map(x => x.sort)) + 1;
+    let pushed = null;
+    if (P && !ro && (d.predecessors.length || Number(d.lag_days) || (it && "predecessors" in it))) {
+      row.predecessors = d.predecessors; row.lag_days = Math.max(-365, Math.min(365, Math.round(Number(d.lag_days) || 0)));
+      const patch = pushTo(row, earliestStart(d.predecessors.map(id => byId(O.items, id)).filter(Boolean), row.lag_days));
+      if (patch && row.status !== "done") { Object.assign(row, patch); pushed = patch.start_date; }
+    }
     const ok = await saveRow("plan_items", row, it && it.id);
+    if (ok && P && !ro && (!it || it.start_date !== row.start_date || it.due_date !== row.due_date)) {
+      const n = await cascadeFrom([ok.id]); if (n) { await reload("items"); render(); }
+      if (pushed || n) toast((pushed ? "Starts " + fmtDate(pushed) + " to follow what it waits on" : "Saved") + (n ? " · moved " + plural(n, "later task") + " to match" : ""));
+    }
     if (ok && it && row.status === "done" && it.status !== "done") tellItemDone(Object.assign({}, it, row));
     if (ok && row.status !== "done" && row.assignee_id && row.assignee_id !== S.me.id && (!it || it.assignee_id !== row.assignee_id))
       tell([row.assignee_id], "New task on " + p.number + ": " + row.title, (S.me.full_name || S.me.email) + " assigned you a task on " + p.number + " " + p.name +
@@ -2195,7 +2291,8 @@ function viewTasks() {
     return h("li", {class:"task-r" + (i.status === "done" ? " is-done" : "")},
       canTick(i, p.id ? p : null) ? h("input", {type:"checkbox", "aria-label":"Done: " + i.title, checked:i.status === "done", onchange: ev => setItemStatus(i, ev.target.checked ? "done" : "in_progress")}) : h("span"),
       h("div", {class:"task-main"}, h("button", {class:"linkish", onclick:() => p.id && openPlanItem(p, i)}, i.title),
-        h("small", null, [p.number ? p.number + " · " + p.name : "", path].filter(Boolean).join(" · "))),
+        h("small", null, [p.number ? p.number + " · " + p.name : "", path].filter(Boolean).join(" · ")),
+        i.status !== "done" && waitingOn(i).length ? h("small", {class:"warn-t"}, "Waiting on: " + waitingOn(i).map(x => x.title + (x.assignee_id ? " (" + personName(x.assignee_id) + ")" : "")).join(", ")) : null),
       who !== "me" ? h("span", {class:"muted small"}, i.assignee_id ? personName(i.assignee_id) : "Unassigned") : null,
       planChip(i.status),
       h("span", {class:"mono small nowrap" + (isLate(i) ? " bad-t" : "")}, i.due_date ? (isLate(i) ? dayDiff(i.due_date, TODAY) + "d late · " : "") + fmtDate(i.due_date) : "—"),
