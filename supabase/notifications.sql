@@ -103,3 +103,22 @@ do $$ begin
     alter publication supabase_realtime add table public.notifications;
   end if;
 end $$;
+
+-- Whoever a task is assigned to can check it off, even when they aren't on that deal's team
+-- (an ops PM given a sales task, say). They still can't move it onto a deal they can't see.
+drop policy if exists tasks_update on public.tasks;
+create policy tasks_update on public.tasks for update to authenticated
+  using (public.is_admin() or (public.is_active_user() and (assignee_id = auth.uid() or created_by = auth.uid()
+         or public.reports_to_me(assignee_id) or (deal_id is not null and public.can_see_deal(deal_id)))))
+  with check (public.is_active_user() and (deal_id is null or public.can_see_deal(deal_id) or assignee_id = auth.uid()));
+create or replace function public.guard_task_deal() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.deal_id is distinct from old.deal_id and new.deal_id is not null and not public.can_see_deal(new.deal_id) then
+    raise exception 'You can only move a task onto a deal you''re on.';
+  end if;
+  return new;
+end $$;
+revoke execute on function public.guard_task_deal() from public, anon, authenticated;
+drop trigger if exists tasks_guard_deal on public.tasks;
+create trigger tasks_guard_deal before update of deal_id on public.tasks for each row execute function public.guard_task_deal();

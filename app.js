@@ -422,7 +422,9 @@ function openFromHash() {
   const m = location.hash.match(/^#(deal|project|request|expense)=([0-9a-f-]{36})$/);
   if (!m) return;
   history.replaceState(null, "", location.pathname + location.search);
-  if (m[1] === "deal") { if (byId(S.deals, m[2])) openDeal(m[2]); else toast("That deal isn't available to you."); }
+  if (m[1] === "deal") { if (byId(S.deals, m[2])) openDeal(m[2]);
+    else if (S.tasks.some(t => t.deal_id === m[2] && t.assignee_id === S.me.id)) { S.section = "sales"; S.ownerFilter = S.me.id; go("tasks"); toast("You're not on that deal's team, so here are your tasks."); }
+    else toast("That deal isn't available to you."); }
   else if (m[1] === "expense") { if (OPS && OPS.openExpense) { S.section = hasOps() ? "ops" : "sales"; OPS.openExpense(m[2]); } }
   else if (m[1] === "request") { if (OPS && OPS.openRequest) { S.section = "ops"; OPS.openRequest(m[2]); } }
   else if (OPS && OPS.openProject) { S.section = "ops"; OPS.openProject(m[2]); }
@@ -1049,7 +1051,8 @@ function taskRow(t) {
       h("button", {class:"linkish title", style:"color:inherit;font-weight:500", onclick:() => openTask(t.id)}, t.title),
       h("div", {class:"meta"}, t.due ? (t.done ? h("span", null, fmtDate(t.due)) : dueChip(t.due)) : h("span", null, "No date"),
         t.assignee_id ? h("span", null, personName(t.assignee_id)) : null,
-        t.deal_id ? h("button", {class:"linkish", onclick:() => openDeal(t.deal_id)}, dealName(t.deal_id) || "Deal") : null)));
+        t.deal_id ? (byId(S.deals, t.deal_id) ? h("button", {class:"linkish", onclick:() => openDeal(t.deal_id)}, dealName(t.deal_id))
+          : h("span", {class:"muted", title:"You're not on this deal's team"}, "Deal task")) : null)));
 }
 async function toggleTask(t, done) {
   t.done = done; render(); refreshDrawer();
