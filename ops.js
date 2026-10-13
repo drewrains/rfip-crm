@@ -1988,8 +1988,17 @@ const descendants = (id, kids) => { const out = [], st = [...(kids.get(id) || []
 const parentPath = i => { const out = []; let cur = i.parent_id ? byId(O.items, i.parent_id) : null, n = 0; while (cur && n++ < 12) { out.unshift(cur.title); cur = cur.parent_id ? byId(O.items, cur.parent_id) : null; } return out.join(" › "); };
 const canTick = (i, p) => (p && canPlan(p)) || i.assignee_id === S.me.id;
 async function setItemStatus(i, status) {
-  if (await run(sb.from("plan_items").update({status}).eq("id", i.id), status === "done" ? "Marked done" : "Reopened")) { await reload("items"); render(); }
+  const was = i.status;
+  if (await run(sb.from("plan_items").update({status}).eq("id", i.id), status === "done" ? "Marked done" : "Reopened")) {
+    if (status === "done" && was !== "done") tellItemDone(i);
+    await reload("items"); render(); }
   else render();
+}
+// email the people waiting on a plan task when it's finished: who created it, the project's PM, who it was assigned to
+function tellItemDone(i) {
+  const p = byId(O.projects, i.project_id); if (!p) return;
+  tell([i.created_by, p.pm_id, i.assignee_id], "Task done on " + p.number + ": " + i.title,
+    (S.me.full_name || S.me.email) + " completed a task on " + p.number + " " + p.name + ":\n\n" + i.title, "#project=" + p.id);
 }
 function planPanel(p, edit) {
   const {rows, kids} = planTree(p.id);
@@ -2157,7 +2166,8 @@ function openPlanItem(p, it, parentId) {
       : {project_id:p.id, title:d.title.trim(), parent_id:nullify(d.parent_id), assignee_id:nullify(d.assignee_id), start_date:nullify(d.start_date), due_date:nullify(d.due_date), status:d.status, notes:nullify((d.notes || "").trim())};
     if (!it && !ro) row.sort = Math.max(0, ...itemsOf(p.id).filter(x => (x.parent_id || null) === row.parent_id).map(x => x.sort)) + 1;
     const ok = await saveRow("plan_items", row, it && it.id);
-    if (ok && row.assignee_id && row.assignee_id !== S.me.id && (!it || it.assignee_id !== row.assignee_id))
+    if (ok && it && row.status === "done" && it.status !== "done") tellItemDone(Object.assign({}, it, row));
+    if (ok && row.status !== "done" && row.assignee_id && row.assignee_id !== S.me.id && (!it || it.assignee_id !== row.assignee_id))
       tell([row.assignee_id], "New task on " + p.number + ": " + row.title, (S.me.full_name || S.me.email) + " assigned you a task on " + p.number + " " + p.name +
         (row.due_date ? ", due " + fmtDate(row.due_date) : "") + ":\n\n" + row.title + (row.notes ? "\n\n" + row.notes : ""), "#project=" + p.id);
     return ok;

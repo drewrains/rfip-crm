@@ -1056,7 +1056,14 @@ function taskRow(t) {
 }
 async function toggleTask(t, done) {
   t.done = done; render(); refreshDrawer();
-  await run(sb.from("tasks").update({done, done_at: done ? new Date().toISOString() : null}).eq("id", t.id));
+  const ok = await run(sb.from("tasks").update({done, done_at: done ? new Date().toISOString() : null}).eq("id", t.id));
+  if (ok && done) tellTaskDone(t);
+}
+// email the people waiting on a task when it's finished: who created it, the deal's account manager, who it was assigned to
+function tellTaskDone(t) {
+  const d = t.deal_id && byId(S.deals, t.deal_id);
+  notify([t.created_by, d && d.owner_id, t.assignee_id], "Task done: " + t.title,
+    (S.me.full_name || S.me.email) + " completed a task" + (d ? " on " + d.name : "") + ":\n\n" + t.title, d ? "#deal=" + d.id : "");
 }
 function viewTasks() {
   const wrap = h("div");
@@ -1928,7 +1935,8 @@ function simpleDrawer(table, key, id, defaults, title, fields, extra, moreTabs) 
     btn.disabled = false;
     if (!res) return;
     const i = S[key].findIndex(x => x.id === res.id); if (i >= 0) S[key][i] = res; else S[key].push(res);
-    if (table === "tasks" && res.assignee_id && res.assignee_id !== S.me.id && (!src || src.assignee_id !== res.assignee_id))
+    if (table === "tasks" && src && res.done && !src.done) tellTaskDone(res);
+    if (table === "tasks" && res.assignee_id && res.assignee_id !== S.me.id && !res.done && (!src || src.assignee_id !== res.assignee_id))
       notify([res.assignee_id], "New task: " + res.title, (S.me.full_name || S.me.email) + " gave you a task" + (res.due ? ", due " + fmtDate(res.due) : "") + ":\n\n" + res.title +
         (res.deal_id && byId(S.deals, res.deal_id) ? "\nDeal: " + byId(S.deals, res.deal_id).name : "") + (res.notes ? "\n\n" + res.notes : ""), res.deal_id ? "#deal=" + res.deal_id : "");
     if (table === "accounts" && src && src.name !== res.name) sb.functions.invoke("sharepoint", {body:{action:"rename_customer", account_id:res.id, old_name:src.name}});
