@@ -61,7 +61,8 @@ function changed(table) {
 
 // ---------------------------------------------------------------- who can do what
 const role = () => !S.me ? null : S.me.role === "admin" ? "admin" : (S.me.ops_role || null);
-const seesAll = () => ["admin", "viewer"].includes(role());
+// leads and PMs an admin marked "Sees all projects" (ops_sees_all.sql) see every job but edit only their own
+const seesAll = () => ["admin", "viewer"].includes(role()) || !!(S.me && S.me.ops_sees_all);
 const canEdit = p => { const r = role(); return r === "admin" || p.pm_id === S.me.id || (r === "lead" && p.department === S.me.department); };
 // the project plan can also be built by anyone the project is shared with
 const canPlan = p => canEdit(p) || (O.members || []).some(m => m.project_id === p.id && m.profile_id === S.me.id);
@@ -305,7 +306,7 @@ function viewOverview() {
 
   // capacity + risks
   const weeks = weeksAhead(8);
-  const myDepts = role() === "lead" ? [S.me.department] : deptKeys();
+  const myDepts = role() === "lead" && !seesAll() ? [S.me.department] : deptKeys();
   const load = weeks.map((wk, i) => ({wk, booked: sum(myDepts.map(k => crewLoad(k, weeks)[i].booked), x => x), need: sum(myDepts.map(k => crewLoad(k, weeks)[i].need), x => x)}));
   const avail = sum(O.depts.filter(d => myDepts.includes(d.key)), d => d.techs);
   const over = load.filter(x => x.booked > avail), low = load.filter(x => x.booked < avail * .6);
@@ -1532,7 +1533,7 @@ function tlSpanOf(p) {
 }
 // who sees which jobs on the timeline: admins, viewers and department leads see every active job;
 // a PM sees the jobs they run and the ones shared with them
-const tlJobs = () => role() === "pm" ? O.projects.filter(p => p.pm_id === S.me.id || (O.members || []).some(m => m.project_id === p.id && m.profile_id === S.me.id)) : jobs();
+const tlJobs = () => role() === "pm" && !seesAll() ? O.projects.filter(p => p.pm_id === S.me.id || (O.members || []).some(m => m.project_id === p.id && m.profile_id === S.me.id)) : jobs();
 function tlProjects(r, sc) {
   const t = O.tl;
   const pool = tlJobs().filter(p => p.phase !== "closed" && (!t.dept || p.department === t.dept) && (!t.pm || p.pm_id === t.pm))
