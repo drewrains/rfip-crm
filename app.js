@@ -1062,8 +1062,10 @@ function taskRow(t) {
       h("button", {class:"linkish title", style:"color:inherit;font-weight:500", onclick:() => openTask(t.id)}, t.title),
       h("div", {class:"meta"}, t.due ? (t.done ? h("span", null, fmtDate(t.due)) : dueChip(t.due)) : h("span", null, "No date"),
         t.assignee_id ? h("span", null, personName(t.assignee_id)) : null,
-        t.deal_id ? (byId(S.deals, t.deal_id) ? h("button", {class:"linkish", onclick:() => openDeal(t.deal_id)}, dealName(t.deal_id))
-          : h("span", {class:"muted", title:"You're not on this deal's team"}, "Deal task")) : null)));
+        t.deal_id && !byId(S.deals, t.deal_id) ? h("span", {class:"muted", title:"You're not on this deal's team"}, "Deal task") : null)),
+    // one click to the deal it belongs to
+    t.deal_id && byId(S.deals, t.deal_id) ? h("button", {class:"go-to", title:"Open " + dealName(t.deal_id), onclick:() => openDeal(t.deal_id)},
+      h("span", null, dealName(t.deal_id)), h("b", {"aria-hidden":"true"}, "›")) : null);
 }
 async function toggleTask(t, done) {
   t.done = done; render(); refreshDrawer();
@@ -1935,7 +1937,7 @@ function openDeal(id, startTab, prefill, copiedFrom) {
 function simpleDrawer(table, key, id, defaults, title, fields, extra, moreTabs) {
   const src = id ? byId(S[key], id) : null; if (id && !src) return;
   const draft = JSON.parse(JSON.stringify(src || defaults || {}));
-  const body = h("div", null, h("div", {class:"form"}, fields(draft)), extra ? extra(src) : null);
+  const body = h("div", null, h("div", {class:"form"}, fields(draft).filter(Boolean)), extra ? extra(src) : null);
   const foot = [];
   if (src) foot.push(deleteButton(async () => { if (await run(sb.from(table).delete().eq("id", src.id), "Deleted")) { S[key] = S[key].filter(x => x.id !== src.id); render(); closeDrawer(); } }));
   foot.push(h("button", {class:"btn" + (src ? "" : " spacer"), onclick:() => closeDrawer()}, "Cancel"));
@@ -2091,6 +2093,8 @@ function openContact(id, defaults) {
 }
 function openTask(id, defaults) {
   simpleDrawer("tasks", "tasks", id, Object.assign({done:false, assignee_id:S.me.id}, defaults || {}), "Task", d => [
+    id && d.deal_id && byId(S.deals, d.deal_id) ? h("div", {class:"field full"}, h("button", {class:"btn go-to-btn", type:"button", onclick:() => openDeal(d.deal_id, "r")},
+      "Open the deal: " + dealName(d.deal_id) + " ›")) : null,
     fld(d, "title", "Task", "text", {full:true}),
     fld(d, "due", "Due", "date"),
     fld(d, "assignee_id", "Assigned to", "select", {options:peopleOptions()}),

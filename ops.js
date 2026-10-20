@@ -2329,6 +2329,7 @@ function openPlanItem(p, it, parentId) {
       : h("div", {class:"muted small"}, "Add other tasks to the plan first."), hint) : null;
   if (P) drawHint();
   const fields = [
+    !(S.view === "ops-project" && O.detail === p.id) ? h("div", {class:"field full"}, h("button", {class:"btn go-to-btn", type:"button", onclick:() => openProject(p.id)}, "Open the project: " + p.number + " · " + p.name + " ›")) : null,
     crumbs ? h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Under: " + crumbs) : null,
     fld(d, "title", "What needs doing", "text", {full:true, readonly:ro, placeholder:"e.g. Pull cable to IDF 2"}),
     fld(d, "parent_id", "Sits under", "select", {options:parents, blank:"Top level (a phase)", full:true, readonly:ro}),
@@ -2384,7 +2385,7 @@ function viewTasks() {
     return h("li", {class:"task-r" + (i.status === "done" ? " is-done" : "")},
       canTick(i, p.id ? p : null) ? h("input", {type:"checkbox", "aria-label":"Done: " + i.title, checked:i.status === "done", onchange: ev => setItemStatus(i, ev.target.checked ? "done" : "in_progress")}) : h("span"),
       h("div", {class:"task-main"}, h("button", {class:"linkish", onclick:() => p.id && openPlanItem(p, i)}, i.title),
-        h("small", null, [p.number ? p.number + " · " + p.name : "", path].filter(Boolean).join(" · ")),
+        h("small", null, byId(O.projects, i.project_id) ? h("button", {class:"linkish", title:"Open the project", onclick:() => openProject(i.project_id)}, p.number + " · " + p.name) : (p.number ? p.number + " · " + p.name : ""), path ? " · " + path : ""),
         i.status !== "done" && waitingOn(i).length ? h("small", {class:"warn-t"}, "Waiting on: " + waitingOn(i).map(x => x.title + (x.assignee_id ? " (" + personName(x.assignee_id) + ")" : "")).join(", ")) : null),
       who !== "me" ? h("span", {class:"muted small"}, i.assignee_id ? personName(i.assignee_id) : "Unassigned") : null,
       planChip(i.status),
@@ -2960,6 +2961,7 @@ function openIssue(p, it, preset) {
     // on a new issue for a customer with several sites, it can apply to all of them
     !it && p && p.id && acct && siblings > 1 && canPlanAccount(acct) ? fld(d, "scope", "Applies to", "select", {full:true, blank:false,
       options:[["one", p.number + " · " + p.name + " only"], ["all", allSites(acct) + " (" + siblings + " active)"]]}) : null,
+    it && p && p.id && byId(O.projects, p.id) && !(S.view === "ops-project" && O.detail === p.id) ? h("div", {class:"field full"}, h("button", {class:"btn go-to-btn", type:"button", onclick:() => openProject(p.id)}, "Open the project: " + p.number + " · " + p.name + " ›")) : null,
     wideAcct ? h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, h("b", null, allSites(wideAcct)), " · shows on every one of their projects and on their dashboard's issue log") : null,
     fld(d, "title", "Issue", "text", {full:true, readonly:!full, placeholder:"e.g. Ceiling access blocked in IDF 3"}),
     fld(d, "details", "Details", "textarea", {full:true, readonly:!full}),
