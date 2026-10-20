@@ -600,9 +600,12 @@ function costPanel(p, c, edit) {
   };
   const rows = [];
   // labor
-  const lab = {sell: p.labor_sell == null ? null : Number(p.labor_sell), bud:c.hb * c.rate, spent:c.hu * c.rate, fc:c.projH * c.rate,
+  const sr = p.labor_sell_rate == null ? null : Number(p.labor_sell_rate);
+  const lab = {sell: sr != null ? c.hb * sr : p.labor_sell == null ? null : Number(p.labor_sell), bud:c.hb * c.rate, spent:c.hu * c.rate, fc:c.projH * c.rate,
     spentNote: num(Math.round(c.hu)) + " of " + num(c.hb) + " hrs"};
-  rows.push(row(h("span", null, h("b", null, "Labor"), h("small", {class:"muted"}, " · " + num(c.hb) + " hrs at $" + c.rate + "/hr cost" + (c.projH > c.hb + 1 ? " · heading for " + num(Math.round(c.projH)) + " hrs" : ""))),
+  rows.push(row(h("span", null, h("b", null, "Labor"),
+      h("small", {class:"muted"}, " · " + num(c.hb) + " hrs · cost $" + num(c.rate) + "/hr" + (sr != null ? " · sell $" + num(sr) + "/hr" : "")
+        + (c.projH > c.hb + 1 ? " · heading for " + num(Math.round(c.projH)) + " hrs" : ""))),
     lab, "cat", edit ? () => openLabor(p) : null));
   // cost lines by type
   const lineVals = l => { const bud = Number(l.budget) || 0, act = Number(l.actual) || 0;
@@ -643,12 +646,23 @@ function costPanel(p, c, edit) {
     edit ? h("div", {class:"o-actions"}, h("button", {class:"btn small", onclick:() => openCost(p)}, "+ Cost line")) : null);
 }
 function openLabor(p) {
-  const d = {labor_sell: p.labor_sell == null ? null : Number(p.labor_sell), hours_budget:Number(p.hours_budget) || 0, labor_rate:Number(p.labor_rate) || 68};
+  const d = {hours_budget:Number(p.hours_budget) || 0, labor_rate:Number(p.labor_rate) || 68,
+    labor_sell_rate: p.labor_sell_rate != null ? Number(p.labor_sell_rate) : p.labor_sell != null && Number(p.hours_budget) ? Math.round(Number(p.labor_sell) / Number(p.hours_budget) * 100) / 100 : null};
+  const out = h("div", {class:"lab-sum", style:"grid-column:1/-1"});
+  const draw = () => { const hrs = Number(d.hours_budget) || 0, cr = Number(d.labor_rate) || 0, sr = d.labor_sell_rate == null || d.labor_sell_rate === "" ? null : Number(d.labor_sell_rate);
+    out.replaceChildren(h("div", null, "Labor cost ", h("b", null, core.money(Math.round(hrs * cr)))),
+      h("div", null, "Labor sell ", h("b", null, sr == null ? "—" : core.money(Math.round(hrs * sr)))),
+      h("div", null, "Labor margin ", h("b", null, sr ? core.money(Math.round(hrs * (sr - cr))) + " · " + Math.round((sr - cr) / sr * 1000) / 10 + "%" : "—"))); };
+  const watch = f => { f.querySelector("input").addEventListener("input", draw); return f; };
+  draw();
   drawerForm("Labor · " + p.number, d, [
-    fld(d, "labor_sell", "Labor sell price (what the customer pays for labor)", "number", {full:true}),
-    fld(d, "hours_budget", "Budgeted hours", "number"), fld(d, "labor_rate", "Cost rate ($/hr, loaded)", "number"),
-    h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Spent to date comes from the weekly labor hours. Changing the budget here changes the project's labor budget everywhere.")],
-    () => saveRow("projects", {labor_sell:nullify(d.labor_sell), hours_budget:Number(d.hours_budget) || 0, labor_rate:Number(d.labor_rate) || 68}, p.id));
+    watch(fld(d, "hours_budget", "Budgeted hours", "number")),
+    watch(fld(d, "labor_rate", "Cost rate ($/hr, loaded)", "number")),
+    watch(fld(d, "labor_sell_rate", "Sell rate ($/hr, what we charge)", "number")),
+    out,
+    h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Spent to date is the weekly labor hours at the cost rate. Changing hours or the cost rate changes the project's labor budget everywhere.")],
+    () => { const hrs = Number(d.hours_budget) || 0, sr = d.labor_sell_rate == null || d.labor_sell_rate === "" ? null : Number(d.labor_sell_rate);
+      return saveRow("projects", {hours_budget:hrs, labor_rate:Number(d.labor_rate) || 68, labor_sell_rate:sr, labor_sell: sr == null ? null : Math.round(hrs * sr * 100) / 100}, p.id); });
 }
 const CO_ST = [["not_priced", "Not priced", "bad"], ["pending", "Waiting on customer", "warn"], ["approved", "Approved", "go"], ["rejected", "Rejected", ""]];
 function coPanel(p, c, edit, showMoney) {

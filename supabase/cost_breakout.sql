@@ -11,3 +11,6 @@
 
 alter table public.projects add column if not exists labor_sell numeric(14,2);
 alter table public.cost_lines add column if not exists sell numeric(14,2);
+
+-- labor is sold by the hour: cost rate (labor_rate) and sell rate; labor_sell = budgeted hours × sell rate
+alter table public.projects add column if not exists labor_sell_rate numeric(10,2);
