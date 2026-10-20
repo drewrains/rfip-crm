@@ -1913,7 +1913,7 @@ function viewUpdates() {
 }
 
 // ---------------------------------------------------------------- documents
-const FOLDERS = [["contract", "Contract and PO", true], ["scope", "Scope and estimate", true], ["submittals", "Submittals"], ["drawings", "Drawings"],
+const FOLDERS = [["contract", "Contract and PO", true], ["scope", "Scope and estimate", true], ["vendor_quotes", "Vendor quotes", true], ["submittals", "Submittals"], ["drawings", "Drawings"],
   ["change_orders", "Change orders"], ["pay_apps", "Pay apps", true], ["field", "Field photos and daily reports"], ["tests", "Test results"], ["closeout", "Closeout"], ["safety", "Safety"]];
 const folderName = k => (FOLDERS.find(f => f[0] === k) || [k, k])[1];
 const canReadFolder = (p, k) => { const f = FOLDERS.find(x => x[0] === k); return !(f && f[2]) || (role() && role() !== "field"); };

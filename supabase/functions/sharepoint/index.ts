@@ -32,12 +32,12 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const SALES = ["01 RFP and Bid Docs", "02 Site Walk and Photos", "03 Drawings and Specs", "04 Estimate and Pricing", "05 Proposal",
-  "06 Contract and PO", "07 Correspondence"];
+  "06 Contract and PO", "07 Correspondence", "08 Vendor Quotes"];
 const OPS = ["01 Handoff Packet", "02 Submittals", "03 Drawings and As-Builts", "04 Change Orders", "05 Field Photos and Daily Reports",
   "06 Test Results", "07 Pay Apps", "08 Closeout", "09 Safety"];
 // the project Documents folders (documents.folder) and where each one lives in SharePoint
 const PROJECT_FOLDERS: Record<string, [string, string]> = {
-  contract: ["Sales", "06 Contract and PO"], scope: ["Sales", "04 Estimate and Pricing"],
+  contract: ["Sales", "06 Contract and PO"], scope: ["Sales", "04 Estimate and Pricing"], vendor_quotes: ["Sales", "08 Vendor Quotes"],
   submittals: ["Operations", "02 Submittals"], drawings: ["Operations", "03 Drawings and As-Builts"],
   change_orders: ["Operations", "04 Change Orders"], pay_apps: ["Operations", "07 Pay Apps"],
   field: ["Operations", "05 Field Photos and Daily Reports"], tests: ["Operations", "06 Test Results"],
