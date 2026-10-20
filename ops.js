@@ -2852,7 +2852,9 @@ function viewSummary() {
   }
   const R = all.filter(p => (S2.by === "pm" ? p.pm_id : p.account_id) === S2.id).map(sumRow)
     .sort((a, b) => (b.sched === "off_track") - (a.sched === "off_track") || b.late.length - a.late.length || (a.p.end_date || "9999").localeCompare(b.p.end_date || "9999"));
-  const issues = R.flatMap(r => r.iss).sort(issSort), reqs = R.flatMap(r => r.reqs);
+  // by customer: their all-site issues belong in the report too
+  const wideIss = S2.by === "customer" ? O.issues.filter(i => issWide(i) && i.account_id === S2.id && issOpen(i)) : [];
+  const issues = R.flatMap(r => r.iss).concat(wideIss).sort(issSort), reqs = R.flatMap(r => r.reqs);
   const custReqs = S2.by === "customer" ? O.reqs.filter(r => r.account_id === S2.id && reqOpen(r) && !r.project_id) : [];
   wrap.append(h("div", {class:"sum-head"}, h("button", {class:"linkish back no-print", onclick:() => { S2.id = ""; render(); }}, S2.by === "pm" ? "← Everyone's projects" : "← All customers"),
     h("div", {class:"eyebrow"}, S2.by === "pm" ? "Project manager" : "Customer"), h("h2", null, name(S2.id)),
@@ -2881,7 +2883,8 @@ function viewSummary() {
         h("td", {class:"no-print nowrap"}, edit && needsUpdate(p) ? h("button", {class:"btn small" + (r.st.u ? "" : " primary"), onclick:() => openUpdate(p, reportWeek())}, r.st.u ? "Edit update" : "Write update") : null,
           " ", canPlan(p) && featureOn("issues") ? h("button", {class:"btn small", onclick:() => openIssue(p, null)}, "+ Issue") : null));
     }))))));
-  if (featureOn("issues")) wrap.append(panel("Open issues", plural(issues.length, "issue") + " across these projects", issueTable(issues, true)));
+  if (featureOn("issues")) wrap.append(panel("Open issues", plural(issues.length, "issue") + " across these projects" + (wideIss.length ? " (" + wideIss.length + " for all sites)" : ""), issueTable(issues, true),
+    S2.by === "customer" && canPlanAccount(S2.id) ? h("div", {class:"o-actions no-print"}, h("button", {class:"btn small", onclick:() => openIssue(null, null, {account_id:S2.id})}, "+ Issue for all sites")) : null));
   if (featureOn("reqs") && (reqs.length || custReqs.length)) wrap.append(panel("Open customer requests", plural(reqs.length + custReqs.length, "request"),
     h("ul", {class:"sum-reqs"}, reqs.concat(custReqs).map(q => h("li", null, h("button", {class:"linkish", onclick:() => openRequest(q)}, reqRef(q) + " · " + q.title),
       h("span", {class:"muted small"}, " " + (proj(q.project_id).number || acctName(q.account_id) || "") + " · " + q.requester_name + " · " + reqAge(q)), " ", reqChip(q.status))))));
