@@ -151,7 +151,11 @@ function calc(p) {
   const nlBud = sum(cl, c => c.budget), nlFc = sum(cl, c => c.forecast ?? c.budget), nlAct = sum(cl, c => c.actual);
   const ex = O.exps.filter(e => e.project_id === p.id);
   const expAppr = sum(ex.filter(e => e.status === "approved"), e => e.amount), expPend = sum(ex.filter(e => ["submitted", "pm_approved"].includes(e.status)), e => e.amount);
-  const budCost = hb * rate + nlBud, fcCost = projH * rate + nlFc + expAppr;
+  // travel: travel cost lines plus approved lodging / per diem / travel / fuel expenses, counted once
+  const TRAVEL_EXP = ["lodging", "meals", "travel", "fuel"];
+  const tl = cl.filter(c => c.code === "travel"), travelExp = sum(ex.filter(e => e.status === "approved" && TRAVEL_EXP.includes(e.category)), e => e.amount);
+  const travelSpent = sum(tl, c => c.actual) + travelExp, travelFc = Math.max(sum(tl, c => c.forecast ?? c.budget), travelSpent);
+  const budCost = hb * rate + nlBud, fcCost = projH * rate + (nlFc - sum(tl, c => c.forecast ?? c.budget)) + travelFc + (expAppr - travelExp);
   const bills = O.bills.filter(b => b.project_id === p.id);
   const billed = sum(bills.filter(b => b.kind === "billed"), b => b.amount);
   const earned = total * done;
@@ -163,7 +167,7 @@ function calc(p) {
   const roster = scheduleRoster(p.id);
   const staffed = new Set(O.asg.filter(a => a.project_id === p.id && a.work_date >= TODAY && a.work_date <= addDays(TODAY, 14)).map(a => a.tech_id)).size;
   const r = {
-    cos, coAppr, coPend, unpriced, total, done, ex, expAppr, expPend, lw, hu, hb, rate, projH, cl, nlBud, nlFc, nlAct, budCost, fcCost,
+    cos, coAppr, coPend, unpriced, total, done, ex, expAppr, expPend, tl, travelExp, travelSpent, travelFc, lw, hu, hb, rate, projH, cl, nlBud, nlFc, nlAct, budCost, fcCost,
     estM: total ? (total - budCost) / total : 0, fcM: total ? (total - fcCost) / total : 0, fade: fcCost - budCost,
     bills, billed, earned, ready: Math.max(0, earned - billed), backlog: Math.max(0, total - earned), left: Math.max(0, total - billed),
     retH: billed * (Number(p.retainage_pct) || 0) / 100,
@@ -577,7 +581,7 @@ function milestonesPanel(p, c, edit) {
 // Cost to complete, broken out the way the job was sold: for labor and each cost line, what we sell it for,
 // what it was budgeted to cost, what's spent so far, what's left to spend and where the margin is heading.
 // Sell prices come from cost_breakout.sql (projects.labor_sell, cost_lines.sell); without them the sell columns stay blank.
-const COST_CODES = [["material", "Material"], ["subcontract", "Subcontract"], ["equipment", "Equipment and lifts"], ["other", "Other"]];
+const COST_CODES = [["material", "Material"], ["subcontract", "Subcontract"], ["equipment", "Equipment and lifts"], ["travel", "Travel"], ["other", "Other"]];
 function costPanel(p, c, edit) {
   const sellOn = "labor_sell" in p;
   const money = v => v == null ? "—" : (v < 0 ? "−" : "") + core.money(Math.abs(Math.round(Number(v) || 0)));
@@ -612,7 +616,17 @@ function costPanel(p, c, edit) {
     return {sell: l.sell == null ? null : Number(l.sell), bud, spent:act, fc: l.forecast != null ? Number(l.forecast) : Math.max(bud, act)}; };
   const recv = sum(c.mats, m => (Number(m.unit_cost) || 0) * (Number(m.received) || 0)), ordered = sum(c.mats, m => (Number(m.unit_cost) || 0) * (Number(m.qty_ordered) || 0));
   for (const [code, name] of COST_CODES) {
-    const ls = c.cl.filter(l => (l.code || "other") === code); if (!ls.length) continue;
+    const ls = c.cl.filter(l => (l.code || "other") === code);
+    if (code === "travel") {   // always shown: hotels, per diem, mileage, flights
+      const sellT = ls.some(l => l.sell != null) ? sum(ls, l => Number(l.sell) || 0) : null;
+      const o = {sell:sellT, bud: ls.length ? sum(ls, l => Number(l.budget) || 0) : 0, spent:c.travelSpent, fc:c.travelFc,
+        spentNote: c.travelExp ? compact(c.travelExp) + " from approved lodging, per diem, travel and fuel expenses" : null};
+      rows.push(row(h("span", null, h("b", null, "Travel"), h("small", {class:"muted"}, " · hotels, per diem, mileage, flights")), o, "cat",
+        edit ? () => ls.length === 1 ? openCost(p, ls[0]) : ls.length ? null : openCost(p, null, {code:"travel", label:"Travel"}) : null));
+      if (ls.length > 1) ls.forEach(l => rows.push(row(h("span", {class:"sub"}, l.label), lineVals(l), "sub", edit ? () => openCost(p, l) : null)));
+      continue;
+    }
+    if (!ls.length) continue;
     const vs = ls.map(lineVals), tot = k => vs.some(v => v[k] != null) ? sum(vs, v => v[k] || 0) : null;
     const note = code === "material" && (recv || ordered) ? compact(recv) + " received · " + compact(ordered) + " ordered (materials list)" : null;
     if (ls.length === 1) rows.push(row(h("span", null, h("b", null, name), ls[0].label && ls[0].label.toLowerCase() !== name.toLowerCase() ? h("small", {class:"muted"}, " · " + ls[0].label) : null),
@@ -622,8 +636,9 @@ function costPanel(p, c, edit) {
       ls.forEach((l, k) => rows.push(row(h("span", {class:"sub"}, l.label), vs[k], "sub", edit ? () => openCost(p, l) : null)));
     }
   }
-  if (c.ex.length) rows.push(row(h("span", null, h("b", null, "Field expenses"), c.expPend ? h("small", {class:"muted"}, " · " + compact(c.expPend) + " waiting on approval") : null),
-    {sell:null, bud:0, spent:c.expAppr, fc:c.expAppr}, "cat"));
+  const otherExp = c.expAppr - c.travelExp;
+  if (c.ex.length && (otherExp || c.expPend)) rows.push(row(h("span", null, h("b", null, "Other field expenses"), c.expPend ? h("small", {class:"muted"}, " · " + compact(c.expPend) + " waiting on approval") : null),
+    {sell:null, bud:0, spent:otherExp, fc:otherExp}, "cat"));
   // sell side that isn't tied to a cost line
   const allocated = (lab.sell || 0) + sum(c.cl, l => Number(l.sell) || 0);
   if (sellOn && c.coAppr) rows.push(row(h("span", null, h("b", null, "Approved change orders"), h("small", {class:"muted"}, " · add their cost to the lines above")), {sell:c.coAppr, bud:null, spent:null, fc:null}, "cat"));
@@ -840,12 +855,12 @@ function openMilestone(p, m) {
       return saveRow("milestones", row, m && m.id); },
     m ? del("milestones", m.id) : null);
 }
-function openCost(p, l) {
-  const d = l ? {...l} : {code:"other", label:"", budget:0, committed:null, actual:0, forecast:null, sort:9};
+function openCost(p, l, init) {
+  const d = l ? {...l} : Object.assign({code:"other", label:"", budget:0, committed:null, actual:0, forecast:null, sort:9}, init || {});
   drawerForm(l ? l.label : "New cost line", d, [
-    fld(d, "label", "Cost code", "text", {full:true}), fld(d, "code", "Type", "select", {options:[["material","Material"],["subcontract","Subcontract"],["equipment","Equipment"],["other","Other"]], blank:false}),
+    fld(d, "label", "Cost code", "text", {full:true}), fld(d, "code", "Type", "select", {options:[["material","Material"],["subcontract","Subcontract"],["equipment","Equipment"],["travel","Travel"],["other","Other"]], blank:false}),
     "labor_sell" in p ? fld(d, "sell", "Sell price (what the customer pays for this)", "number", {full:true}) : null,
-    fld(d, "budget", "Budget cost", "number"), fld(d, "committed", "Committed (POs and subcontracts)", "number"), fld(d, "actual", "Spent to date", "number"),
+    fld(d, "budget", "Budget cost", "number"), fld(d, "committed", "Committed (POs and subcontracts)", "number"), fld(d, "actual", d.code === "travel" ? "Spent to date (not counting approved expenses, which add automatically)" : "Spent to date", "number"),
     fld(d, "forecast", "Forecast cost at completion (blank = budget)", "number")].filter(Boolean),
     () => { if (!(d.label || "").trim()) { toast("Name the cost line."); return false; }
       const row = {project_id:p.id, code:d.code, label:d.label.trim(), budget:Number(d.budget) || 0, committed:nullify(d.committed), actual:Number(d.actual) || 0, forecast:nullify(d.forecast), sort:d.sort || 9};
