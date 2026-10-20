@@ -46,6 +46,20 @@ section > h2{font-size:15px;margin:0;padding:12px 16px;border-bottom:1px solid v
 section > h2 span{font-weight:400;color:var(--muted);font-size:13px}
 section .more{padding:10px 16px;border-top:1px solid var(--line);font-size:14px}section .more a{color:var(--accent,#c8102e);text-decoration:none;font-weight:600}
 #isslog{margin:16px 0}
+.rptlink{font-weight:600;text-decoration:none}
+.rp-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.rp-sum{display:flex;flex-wrap:wrap;gap:8px 26px;margin:14px 0 4px;font-size:14px;color:var(--muted)}.rp-sum b{font-family:var(--f-display);font-size:26px;color:var(--fg);margin-right:4px}
+.rp-wrap{overflow-x:auto}
+table.rp{width:100%;border-collapse:collapse;font-size:13.5px}
+table.rp th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:600;padding:8px 10px;border-bottom:1px solid var(--line);background:var(--sunk)}
+table.rp td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+table.rp tr:last-child td{border-bottom:0}
+table.rp .sm{font-size:12px;color:var(--muted)}table.rp .clamp{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;max-width:260px}
+table.rp .mono{font-family:var(--f-mono);font-size:12.5px;white-space:nowrap}table.rp .nowrap{white-space:nowrap}
+.rp-pct{min-width:90px}.rp-pct span{font-weight:600}.rp-pct .meter{margin-top:4px}
+.warn-t{color:var(--warn);font-weight:600}.bad-t{color:var(--bad)}
+@media print{header,.no-print,.reqbar,#toReport{display:none!important}body{background:#fff;font-size:12px}main.wrap{padding:0;max-width:none}
+  section{break-inside:auto;border-color:#ccc}table.rp tr{break-inside:avoid}.chip{border:1px solid #ccc}@page{size:landscape;margin:12mm}}
 .rows{list-style:none;margin:0;padding:0}
 .rows li{padding:12px 16px;border-top:1px solid var(--line)}
 .rows li:first-child{border-top:0}
@@ -264,7 +278,8 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
     main.innerHTML = `
       <div class="eyebrow">Project dashboard</div>
       <h1>${esc(d.customer)}</h1>
-      <div class="meta"><span>Every project RFIP is running for you, with live progress and weekly updates.</span></div>
+      <div class="meta"><span>Every project RFIP is running for you, with live progress and weekly updates.</span>
+        <a href="#" id="toReport" class="rptlink">Status report (one page, printable) →</a></div>
       <div class="hero four">
         <div class="tile"><div class="k">Active projects</div><div class="v">${active.length}</div><div class="s">${done.length ? done.length + " completed" : ""}</div></div>
         <div class="tile"><div class="k">Average complete</div><div class="v">${avg}%</div><div class="meter" role="img" aria-label="${avg}% average complete"><i style="width:${avg}%"></i></div></div>
@@ -298,6 +313,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
     if (qi) qi.oninput = e => { st.q = e.target.value; const pos = e.target.selectionStart; renderList(); const n = document.getElementById("q"); n.focus(); n.setSelectionRange(pos, pos); };
     main.querySelectorAll(".pcard").forEach(b => b.onclick = e => openProject(b.dataset.id, false, !!e.target.closest("[data-iss]")));
     const it = document.getElementById("issTile"); if (it) it.onclick = () => { const sec = document.getElementById("isslog"); if (sec && !issOpenAll.length) go("issues"); else if (sec) sec.scrollIntoView({behavior:"smooth"}); else go("issues"); };
+    const tr = document.getElementById("toReport"); if (tr) tr.onclick = e => { e.preventDefault(); go("report"); };
     const ia = document.getElementById("isslogAll"); if (ia) ia.onclick = e => { e.preventDefault(); go("issues"); };
     main.querySelectorAll("#isslog a.pj").forEach(x => x.onclick = e => { e.preventDefault(); e.stopPropagation(); openProject(x.dataset.p, false, true); });
     const nb = document.getElementById("newreq"); if (nb) nb.onclick = () => go("new");
@@ -316,7 +332,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
   const wireBack = () => { const b = document.getElementById("back"); if (b) b.onclick = e => { e.preventDefault(); go(""); }; };
   function go(v, noPush, pre) {
     if (!noPush) history.pushState({v}, "", "?a=" + a + (v ? "&v=" + v : ""));
-    if (v === "new") renderForm(pre); else if (v === "requests") renderRequests(); else if (v === "issues") renderIssues(); else renderList();
+    if (v === "new") renderForm(pre); else if (v === "requests") renderRequests(); else if (v === "issues") renderIssues(); else if (v === "report") renderReport(); else renderList();
     window.scrollTo(0, 0);
   }
   function renderRequests() {
@@ -413,6 +429,53 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
     const sec = document.getElementById("issues"); if (toIssues && sec) sec.scrollIntoView({behavior:"smooth", block:"start"});
   }
   // every open issue across the customer's projects
+  // one-page status report across every active project, for meetings: print it or save it as a PDF
+  function renderReport() {
+    document.title = "Status report · " + d.customer + " · RFIP";
+    const active = all.filter(p => p.phase !== "closed");
+    const doneRecent = all.filter(p => p.phase === "closed");
+    const s2 = p => p.latest && SCHED[p.latest.schedule] ? p.latest.schedule : null;
+    const withUpd = active.filter(s2), onTrack = withUpd.filter(p => s2(p) === "on_track").length;
+    const avg = active.length ? Math.round(active.reduce((t, p) => t + (Number(p.pct_complete) || 0), 0) / active.length) : 0;
+    const issOpen2 = d.issues ? d.issues.filter(i => i.status !== "closed") : null;
+    const openFor = p => issOpen2 ? issOpen2.filter(i => i.project_id === p.id).length : Number(p.open_issues) || 0;
+    const wide = issOpen2 ? issOpen2.filter(i => !i.project_id) : [];
+    const order = {off_track:0, at_risk:1, on_track:2};
+    const rows = active.slice().sort((x, y) => ((order[s2(x)] ?? 3) - (order[s2(y)] ?? 3)) || (x.end_date || "9999").localeCompare(y.end_date || "9999") || x.number.localeCompare(y.number));
+    const issRows = (issOpen2 || []).map(i => ({i, pj: i.project_id ? all.find(p => p.id === i.project_id) : "all"})).filter(r => r.pj)
+      .sort((x, y) => ((y.i.due && y.i.due < today) - (x.i.due && x.i.due < today)) || ((x.i.priority === "high" ? 0 : 1) - (y.i.priority === "high" ? 0 : 1)) || ((x.pj === "all" ? 0 : 1) - (y.pj === "all" ? 0 : 1)));
+    const pctBar = p => { const v = Math.max(0, Math.min(100, Math.round(Number(p.pct_complete) || 0))); return `<div class="rp-pct"><span>${v}%</span><div class="meter"><i style="width:${v}%"></i></div></div>`; };
+    main.innerHTML = `<div class="rp-top no-print"><a class="back" href="#" id="back">← Dashboard</a><button class="btn primary" id="print">Print / save as PDF</button></div>
+      <div class="eyebrow">Project status report · ${esc(new Date().toLocaleDateString("en-US", {month:"long", day:"numeric", year:"numeric"}))}</div>
+      <h1>${esc(d.customer)}</h1>
+      <div class="rp-sum">
+        <div><b>${active.length}</b> active project${active.length === 1 ? "" : "s"}</div>
+        <div><b>${avg}%</b> average complete</div>
+        <div><b>${withUpd.length ? onTrack + " of " + withUpd.length : "—"}</b> on schedule</div>
+        <div><b class="${issRows.some(r => r.i.due && r.i.due < today) ? "bad-t" : ""}">${issRows.length}</b> open issue${issRows.length === 1 ? "" : "s"}${wide.length ? " (" + wide.length + " all sites)" : ""}</div>
+        ${doneRecent.length ? `<div><b>${doneRecent.length}</b> completed</div>` : ""}
+      </div>
+      <section><h2>Active projects <span>${rows.length}</span></h2>
+        ${rows.length ? `<div class="rp-wrap"><table class="rp">
+          <thead><tr><th>Job</th><th>Site / project</th><th>Status</th><th>Complete</th><th>Next milestone</th><th>Planned finish</th><th>Open issues</th><th>Latest update</th></tr></thead>
+          <tbody>${rows.map(p => { const sc = s2(p), oi = openFor(p);
+            return `<tr><td class="mono">${esc(p.number)}</td>
+              <td><b>${esc(p.name)}</b>${p.pm ? `<div class="sm">PM ${esc(p.pm.name)}</div>` : ""}</td>
+              <td>${chip(PHASE[p.phase] || PHASE.in_progress)}${sc ? "<br>" + chip(SCHED[sc]) : ""}</td>
+              <td>${pctBar(p)}${p.milestones ? `<div class="sm">${p.milestones_done} of ${p.milestones} milestones</div>` : ""}</td>
+              <td>${p.next_milestone && p.next_milestone.name ? esc(p.next_milestone.name) + (p.next_milestone.planned ? `<div class="sm">${esc(short(p.next_milestone.planned))}</div>` : "") : "—"}</td>
+              <td class="nowrap">${p.end_date ? esc(short(p.end_date)) : "—"}</td>
+              <td class="${oi ? "warn-t" : ""}">${oi || "—"}</td>
+              <td>${p.latest ? `<div class="sm"><b>${esc(short(p.latest.week_start))}</b></div>${p.latest.done ? `<div class="sm clamp">${esc(p.latest.done)}</div>` : ""}` : `<span class="sm">No update yet</span>`}</td></tr>`; }).join("")}</tbody></table></div>`
+        : `<div class="empty">No active projects.</div>`}</section>
+      ${issOpen2 ? `<section><h2>Open issues across all sites <span>${issRows.length}</span></h2>
+        ${issRows.length ? `<ul class="rows">${issRows.map(r => issRow(r.i, r.pj)).join("")}</ul>` : `<div class="empty">No open issues.</div>`}</section>` : ""}
+      <p class="foot">Prepared by RFIP, Inc. · ${esc(new Date(d.as_of).toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}))} · Questions? Call 405-286-0928.</p>`;
+    document.getElementById("back").onclick = e => { e.preventDefault(); go(""); };
+    document.getElementById("print").onclick = () => window.print();
+    main.querySelectorAll("a.pj").forEach(x => x.onclick = e => { e.preventDefault(); openProject(x.dataset.p, false, true); });
+    window.scrollTo(0, 0);
+  }
   async function renderIssues() {
     document.title = "Issue log · " + d.customer + " · RFIP";
     let rows = [], closedRows = [];
@@ -442,10 +505,10 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
     window.scrollTo(0, 0);
   }
   window.onpopstate = () => { const q2 = new URLSearchParams(location.search), p = q2.get("p"), v = q2.get("v");
-    if (p) openProject(p, true); else if (v === "issues" || (reqs && (v === "new" || v === "requests"))) go(v, true); else renderList(); };
+    if (p) openProject(p, true); else if (v === "issues" || v === "report" || (reqs && (v === "new" || v === "requests"))) go(v, true); else renderList(); };
   const startP = qs.get("p"), startV = qs.get("v");
   if (startP && all.some(p => p.id === startP)) openProject(startP, true);
-  else if (startV === "issues" || (reqs && (startV === "new" || startV === "requests"))) go(startV, true);
+  else if (startV === "issues" || startV === "report" || (reqs && (startV === "new" || startV === "requests"))) go(startV, true);
   else renderList();
 })();
 </script>

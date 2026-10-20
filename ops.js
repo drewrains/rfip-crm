@@ -2826,7 +2826,13 @@ function viewSummary() {
       h("button", {"aria-pressed":String(S2.by === k), onclick:() => { S2.by = k; S2.id = ""; render(); }}, l))),
     h("select", {class:"inp", style:"max-width:280px", "aria-label":S2.by === "pm" ? "Project manager" : "Customer", onchange: e => { S2.id = e.target.value; render(); }},
       h("option", {value:""}, S2.by === "pm" ? "Everyone (all PMs)" : "All customers"), pick.map(id => h("option", {value:id, selected:S2.id === id}, name(id) + " (" + all.filter(p => (S2.by === "pm" ? p.pm_id : p.account_id) === id).length + ")"))),
-    S2.id ? h("button", {class:"btn small", onclick:() => window.print()}, "Print / PDF") : null);
+    S2.id ? h("button", {class:"btn small", onclick:() => window.print()}, "Print / PDF") : null,
+    // the customer-facing version (no money): their dashboard's status report
+    S2.id && S2.by === "customer" ? h("button", {class:"btn small", title:"The report the customer sees on their dashboard: status, progress and issues, no money", onclick: async () => {
+      const {data} = await sb.from("account_links").select("token, active").eq("account_id", S2.id).maybeSingle();
+      if (!data || !data.active) { toast("Turn on " + (acctName(S2.id) || "the customer") + "'s dashboard link first (Accounts → the customer → Customer dashboard)."); return; }
+      window.open(location.origin + location.pathname.replace(/[^/]*$/, "") + "customer.html?a=" + data.token + "&v=report", "_blank", "noopener");
+    }}, "Customer report") : null);
   wrap.append(toolbar);
   if (!all.length) { wrap.append(h("div", {class:"panel"}, emptyState("No active projects", "Projects show here once handoffs are accepted."))); return wrap; }
   const money = role() !== "field";
