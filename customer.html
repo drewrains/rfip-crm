@@ -44,6 +44,8 @@ h1{font-family:var(--f-display);font-size:clamp(28px,5vw,40px);line-height:1.05;
 section{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin-top:16px;overflow:hidden}
 section > h2{font-size:15px;margin:0;padding:12px 16px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px;align-items:baseline}
 section > h2 span{font-weight:400;color:var(--muted);font-size:13px}
+section .more{padding:10px 16px;border-top:1px solid var(--line);font-size:14px}section .more a{color:var(--accent,#c8102e);text-decoration:none;font-weight:600}
+#isslog{margin:16px 0}
 .rows{list-style:none;margin:0;padding:0}
 .rows li{padding:12px 16px;border-top:1px solid var(--line)}
 .rows li:first-child{border-top:0}
@@ -267,11 +269,19 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
         <div class="tile"><div class="k">Active projects</div><div class="v">${active.length}</div><div class="s">${done.length ? done.length + " completed" : ""}</div></div>
         <div class="tile"><div class="k">Average complete</div><div class="v">${avg}%</div><div class="meter" role="img" aria-label="${avg}% average complete"><i style="width:${avg}%"></i></div></div>
         <div class="tile"><div class="k">On schedule</div><div class="v">${withUpd.length ? onTrack + " of " + withUpd.length : "—"}</div><div class="s">From the latest weekly updates</div></div>
-        ${issN || (issAll && issAll.length) ? `<button class="tile tlink" id="issTile" aria-label="Open the issue log"><div class="k">Open issues <span aria-hidden="true">→</span></div><div class="v">${issN}</div><div class="s">${issN ? (issAll ? "Across " + issSites + (issSites === 1 ? " site or area" : " sites and areas") : "Across " + issSites + " project" + (issSites === 1 ? "" : "s")) : "See the issue log"}</div></button>`
+        ${issN || issAll ? `<button class="tile tlink" id="issTile" aria-label="Open the issue log"><div class="k">Open issues <span aria-hidden="true">→</span></div><div class="v">${issN}</div><div class="s">${issN ? (issAll ? "Across " + issSites + (issSites === 1 ? " site or area" : " sites and areas") : "Across " + issSites + " project" + (issSites === 1 ? "" : "s")) : "See the issue log"}</div></button>`
           : `<div class="tile"><div class="k">Finishing in 30 days</div><div class="v">${soon}</div><div class="s">Planned completions</div></div>`}
       </div>
       ${reqs ? `<div class="reqbar"><p><b>Problem on a project, a question, a change, or new work?</b> Send it to RFIP here and track it on this page.</p>
         <span style="display:flex;gap:8px;flex-wrap:wrap">${reqs.length ? `<button class="btn" id="myreqs">Your requests${openReqs() ? " (" + openReqs() + " open)" : ""}</button>` : ""}<button class="btn primary" id="newreq">Submit a request</button></span></div>` : ""}
+      ${issAll ? (() => {   // the issue log across every site, right on the dashboard
+        const rowsI = issOpenAll.map(i => ({i, pj: i.project_id ? all.find(p => p.id === i.project_id) : "all"})).filter(r => r.pj)
+          .sort((x, y) => ((y.i.due && y.i.due < today) - (x.i.due && x.i.due < today)) || ((x.i.priority === "high" ? 0 : 1) - (y.i.priority === "high" ? 0 : 1))
+            || ((x.pj === "all" ? 0 : 1) - (y.pj === "all" ? 0 : 1)) || (x.i.due || "9999").localeCompare(y.i.due || "9999"));
+        const closedN = issAll.length - issOpenAll.length, MAX = 8;
+        return `<section id="isslog"><h2>Issues across all sites <span>${rowsI.length ? rowsI.length + " open" : "None open"}${closedN ? " · " + closedN + " closed in the last 30 days" : ""}</span></h2>
+          ${rowsI.length ? `<ul class="rows">${rowsI.slice(0, MAX).map(r => issRow(r.i, r.pj)).join("")}</ul>` : `<div class="empty">No open issues on any of your sites.</div>`}
+          ${rowsI.length > MAX || closedN ? `<div class="more"><a href="#" id="isslogAll">${rowsI.length > MAX ? "See all " + rowsI.length + " open issues" : "See the full issue log"}${closedN ? " and recently closed" : ""} →</a></div>` : ""}</section>`; })() : ""}
       <div class="tools">
         <div class="seg" role="group" aria-label="Show">
           <button data-v="active" aria-pressed="${st.view === "active"}">Active (${active.length})</button>
@@ -287,7 +297,9 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
     const qi = document.getElementById("q");
     if (qi) qi.oninput = e => { st.q = e.target.value; const pos = e.target.selectionStart; renderList(); const n = document.getElementById("q"); n.focus(); n.setSelectionRange(pos, pos); };
     main.querySelectorAll(".pcard").forEach(b => b.onclick = e => openProject(b.dataset.id, false, !!e.target.closest("[data-iss]")));
-    const it = document.getElementById("issTile"); if (it) it.onclick = () => go("issues");
+    const it = document.getElementById("issTile"); if (it) it.onclick = () => { const sec = document.getElementById("isslog"); if (sec && !issOpenAll.length) go("issues"); else if (sec) sec.scrollIntoView({behavior:"smooth"}); else go("issues"); };
+    const ia = document.getElementById("isslogAll"); if (ia) ia.onclick = e => { e.preventDefault(); go("issues"); };
+    main.querySelectorAll("#isslog a.pj").forEach(x => x.onclick = e => { e.preventDefault(); e.stopPropagation(); openProject(x.dataset.p, false, true); });
     const nb = document.getElementById("newreq"); if (nb) nb.onclick = () => go("new");
     const mb = document.getElementById("myreqs"); if (mb) mb.onclick = () => go("requests");
   }
