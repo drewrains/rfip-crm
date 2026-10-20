@@ -574,21 +574,81 @@ function milestonesPanel(p, c, edit) {
     })) : h("div", {class:"empty"}, "No milestones yet."),
     edit ? h("div", {class:"o-actions"}, h("button", {class:"btn small", onclick:() => openMilestone(p)}, "+ Milestone")) : null);
 }
+// Cost to complete, broken out the way the job was sold: for labor and each cost line, what we sell it for,
+// what it was budgeted to cost, what's spent so far, what's left to spend and where the margin is heading.
+// Sell prices come from cost_breakout.sql (projects.labor_sell, cost_lines.sell); without them the sell columns stay blank.
+const COST_CODES = [["material", "Material"], ["subcontract", "Subcontract"], ["equipment", "Equipment and lifts"], ["other", "Other"]];
 function costPanel(p, c, edit) {
-  const laborBud = Math.round(c.hb * c.rate), laborAct = Math.round(c.hu * c.rate), laborFc = Math.round(c.projH * c.rate);
-  const money = v => core.money(Math.round(Number(v) || 0));
-  const row = (label, bud, com, act, fc, onclick) => h("tr", {class: onclick ? "click" : null, onclick},
-    h("td", null, label), h("td", {class:"num"}, money(bud)), h("td", {class:"num"}, com == null ? "—" : money(com)), h("td", {class:"num"}, money(act)), h("td", {class:"num"}, money(fc)),
-    h("td", {class:"num " + (bud - fc < -1000 ? "bad-t" : bud - fc > 1000 ? "go-t" : "")}, (bud - fc < 0 ? "−" : "") + money(Math.abs(bud - fc))));
-  return panel("Cost to complete", "Budget is the estimate accepted at handoff plus approved change orders", h("div", {class:"tbl-wrap flat"}, h("table", null,
-    h("thead", null, h("tr", null, h("th", null, "Cost code"), ["Budget", "Committed", "Actual to date", "Forecast at completion", "Variance"].map(t => h("th", {class:"num"}, t)))),
-    h("tbody", null, row("Labor (" + num(c.hb) + " hrs at $" + c.rate + ")", laborBud, null, laborAct, laborFc),
-      c.cl.map(l => row(l.label, Number(l.budget), l.committed == null ? null : Number(l.committed), Number(l.actual), Number(l.forecast ?? l.budget), edit ? () => openCost(p, l) : null)),
-      c.ex.length ? row("Field expenses (approved" + (c.expPend ? "; " + compact(c.expPend) + " waiting on approval" : "") + ")", 0, null, c.expAppr, c.expAppr) : null),
-    h("tfoot", null, h("tr", null, h("td", null, h("b", null, "Total cost")), h("td", {class:"num"}, money(c.budCost)), h("td"), h("td", {class:"num"}, money(laborAct + c.nlAct + c.expAppr)), h("td", {class:"num"}, money(c.fcCost)),
-      h("td", {class:"num " + (c.budCost - c.fcCost < -1000 ? "bad-t" : "")}, (c.budCost - c.fcCost < 0 ? "−" : "") + money(Math.abs(c.budCost - c.fcCost)))),
-      h("tr", null, h("td", null, h("b", null, "Margin")), h("td", {class:"num"}, pct(c.estM)), h("td"), h("td"), h("td", {class:"num " + (c.fcM < c.estM - .02 ? "bad-t" : "")}, pct(c.fcM)), h("td"))))),
+  const sellOn = "labor_sell" in p;
+  const money = v => v == null ? "—" : (v < 0 ? "−" : "") + core.money(Math.abs(Math.round(Number(v) || 0)));
+  const mPct = (sell, cost) => sell ? Math.round((sell - cost) / sell * 1000) / 10 + "%" : "";
+  const marginCell = (sell, cost, base) => sell == null || !sellOn ? h("td", {class:"num muted"}, "—")
+    : h("td", {class:"num " + (base != null && sell && (sell - cost) / sell < (sell - base) / sell - .02 ? "bad-t" : sell - cost < 0 ? "bad-t" : "")},
+        money(sell - cost), sell ? h("small", {class:"muted"}, " " + mPct(sell, cost)) : null);
+  // one row: label, sell, budget cost, spent, forecast cost
+  const row = (label, o, cls, onclick) => {
+    const toGo = Math.max(0, (o.fc || 0) - (o.spent || 0));
+    return h("tr", {class:[cls, onclick ? "click" : ""].filter(Boolean).join(" "), onclick, title: onclick ? "Click to edit" : null},
+      h("td", null, label),
+      sellOn ? h("td", {class:"num"}, o.sell == null ? h("span", {class:"muted"}, edit && onclick ? "set" : "—") : money(o.sell)) : null,
+      h("td", {class:"num"}, o.bud == null ? "—" : money(o.bud)),
+      sellOn ? (o.bud == null ? h("td", {class:"num muted"}, "") : marginCell(o.sell, o.bud)) : null,
+      h("td", {class:"num"}, o.spent == null ? "—" : money(o.spent), o.spentNote ? h("div", {class:"muted small"}, o.spentNote) : null),
+      h("td", {class:"num"}, o.fc == null ? "—" : money(toGo)),
+      h("td", {class:"num " + (o.bud != null && o.fc - o.bud > 1000 ? "bad-t" : "")}, o.fc == null ? "—" : money(o.fc)),
+      sellOn ? (o.fc == null ? h("td", {class:"num muted"}, "") : marginCell(o.sell, o.fc, o.bud)) : null);
+  };
+  const rows = [];
+  // labor
+  const lab = {sell: p.labor_sell == null ? null : Number(p.labor_sell), bud:c.hb * c.rate, spent:c.hu * c.rate, fc:c.projH * c.rate,
+    spentNote: num(Math.round(c.hu)) + " of " + num(c.hb) + " hrs"};
+  rows.push(row(h("span", null, h("b", null, "Labor"), h("small", {class:"muted"}, " · " + num(c.hb) + " hrs at $" + c.rate + "/hr cost" + (c.projH > c.hb + 1 ? " · heading for " + num(Math.round(c.projH)) + " hrs" : ""))),
+    lab, "cat", edit ? () => openLabor(p) : null));
+  // cost lines by type
+  const lineVals = l => { const bud = Number(l.budget) || 0, act = Number(l.actual) || 0;
+    return {sell: l.sell == null ? null : Number(l.sell), bud, spent:act, fc: l.forecast != null ? Number(l.forecast) : Math.max(bud, act)}; };
+  const recv = sum(c.mats, m => (Number(m.unit_cost) || 0) * (Number(m.received) || 0)), ordered = sum(c.mats, m => (Number(m.unit_cost) || 0) * (Number(m.qty_ordered) || 0));
+  for (const [code, name] of COST_CODES) {
+    const ls = c.cl.filter(l => (l.code || "other") === code); if (!ls.length) continue;
+    const vs = ls.map(lineVals), tot = k => vs.some(v => v[k] != null) ? sum(vs, v => v[k] || 0) : null;
+    const note = code === "material" && (recv || ordered) ? compact(recv) + " received · " + compact(ordered) + " ordered (materials list)" : null;
+    if (ls.length === 1) rows.push(row(h("span", null, h("b", null, name), ls[0].label && ls[0].label.toLowerCase() !== name.toLowerCase() ? h("small", {class:"muted"}, " · " + ls[0].label) : null),
+      Object.assign(vs[0], {spentNote:note}), "cat", edit ? () => openCost(p, ls[0]) : null));
+    else {
+      rows.push(row(h("b", null, name), {sell:tot("sell"), bud:tot("bud"), spent:tot("spent"), fc:tot("fc"), spentNote:note}, "cat"));
+      ls.forEach((l, k) => rows.push(row(h("span", {class:"sub"}, l.label), vs[k], "sub", edit ? () => openCost(p, l) : null)));
+    }
+  }
+  if (c.ex.length) rows.push(row(h("span", null, h("b", null, "Field expenses"), c.expPend ? h("small", {class:"muted"}, " · " + compact(c.expPend) + " waiting on approval") : null),
+    {sell:null, bud:0, spent:c.expAppr, fc:c.expAppr}, "cat"));
+  // sell side that isn't tied to a cost line
+  const allocated = (lab.sell || 0) + sum(c.cl, l => Number(l.sell) || 0);
+  if (sellOn && c.coAppr) rows.push(row(h("span", null, h("b", null, "Approved change orders"), h("small", {class:"muted"}, " · add their cost to the lines above")), {sell:c.coAppr, bud:null, spent:null, fc:null}, "cat"));
+  const rest = c.total - allocated - (sellOn ? c.coAppr : 0);
+  if (sellOn && Math.abs(rest) > 1) rows.push(row(h("span", {class:"muted"}, rest > 0 ? "Contract not split out yet" : "Sell prices add up to more than the contract"), {sell:rest, bud:null, spent:null, fc:null}, "cat unalloc"));
+  const spentAll = c.hu * c.rate + c.nlAct + c.expAppr;
+  const head = ["Sell price", "Budget cost", "Budget margin", "Spent to date", "Cost to complete", "Forecast cost", "Forecast margin"].filter((t, k) => sellOn || ![0, 2, 6].includes(k));
+  return panel("Cost to complete", sellOn ? "Sell vs. cost for labor and each line · budget is the estimate accepted at handoff" : "Budget is the estimate accepted at handoff plus approved change orders",
+    h("div", {class:"tbl-wrap flat"}, h("table", {class:"cost-tbl"},
+      h("thead", null, h("tr", null, h("th", null, ""), head.map(t => h("th", {class:"num"}, t)))),
+      h("tbody", null, rows),
+      h("tfoot", null, h("tr", null, h("td", null, h("b", null, "Total")),
+        sellOn ? h("td", {class:"num"}, h("b", null, money(c.total))) : null, h("td", {class:"num"}, h("b", null, money(c.budCost))),
+        sellOn ? marginCell(c.total, c.budCost) : null, h("td", {class:"num"}, h("b", null, money(spentAll))),
+        h("td", {class:"num"}, h("b", null, money(Math.max(0, c.fcCost - spentAll)))), h("td", {class:"num"}, h("b", null, money(c.fcCost))),
+        sellOn ? marginCell(c.total, c.fcCost, c.budCost) : null),
+        !sellOn ? h("tr", null, h("td", null, h("b", null, "Margin")), h("td", {class:"num"}, pct(c.estM)), h("td"), h("td"), h("td", {class:"num " + (c.fcM < c.estM - .02 ? "bad-t" : "")}, pct(c.fcM))) : null))),
+    h("p", {class:"muted small", style:"margin:8px 14px 0"}, "Cost to complete = forecast cost − spent to date. Labor spent comes from the weekly hours at the cost rate; the forecast follows hours used against % complete."
+      + (edit ? " Click a row to set its sell price, budget, spent and forecast." : "")),
     edit ? h("div", {class:"o-actions"}, h("button", {class:"btn small", onclick:() => openCost(p)}, "+ Cost line")) : null);
+}
+function openLabor(p) {
+  const d = {labor_sell: p.labor_sell == null ? null : Number(p.labor_sell), hours_budget:Number(p.hours_budget) || 0, labor_rate:Number(p.labor_rate) || 68};
+  drawerForm("Labor · " + p.number, d, [
+    fld(d, "labor_sell", "Labor sell price (what the customer pays for labor)", "number", {full:true}),
+    fld(d, "hours_budget", "Budgeted hours", "number"), fld(d, "labor_rate", "Cost rate ($/hr, loaded)", "number"),
+    h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Spent to date comes from the weekly labor hours. Changing the budget here changes the project's labor budget everywhere.")],
+    () => saveRow("projects", {labor_sell:nullify(d.labor_sell), hours_budget:Number(d.hours_budget) || 0, labor_rate:Number(d.labor_rate) || 68}, p.id));
 }
 const CO_ST = [["not_priced", "Not priced", "bad"], ["pending", "Waiting on customer", "warn"], ["approved", "Approved", "go"], ["rejected", "Rejected", ""]];
 function coPanel(p, c, edit, showMoney) {
@@ -770,10 +830,13 @@ function openCost(p, l) {
   const d = l ? {...l} : {code:"other", label:"", budget:0, committed:null, actual:0, forecast:null, sort:9};
   drawerForm(l ? l.label : "New cost line", d, [
     fld(d, "label", "Cost code", "text", {full:true}), fld(d, "code", "Type", "select", {options:[["material","Material"],["subcontract","Subcontract"],["equipment","Equipment"],["other","Other"]], blank:false}),
-    fld(d, "budget", "Budget", "number"), fld(d, "committed", "Committed (POs and subcontracts)", "number"), fld(d, "actual", "Actual to date", "number"),
-    fld(d, "forecast", "Forecast at completion (blank = budget)", "number")],
+    "labor_sell" in p ? fld(d, "sell", "Sell price (what the customer pays for this)", "number", {full:true}) : null,
+    fld(d, "budget", "Budget cost", "number"), fld(d, "committed", "Committed (POs and subcontracts)", "number"), fld(d, "actual", "Spent to date", "number"),
+    fld(d, "forecast", "Forecast cost at completion (blank = budget)", "number")].filter(Boolean),
     () => { if (!(d.label || "").trim()) { toast("Name the cost line."); return false; }
-      return saveRow("cost_lines", {project_id:p.id, code:d.code, label:d.label.trim(), budget:Number(d.budget) || 0, committed:nullify(d.committed), actual:Number(d.actual) || 0, forecast:nullify(d.forecast), sort:d.sort || 9}, l && l.id); },
+      const row = {project_id:p.id, code:d.code, label:d.label.trim(), budget:Number(d.budget) || 0, committed:nullify(d.committed), actual:Number(d.actual) || 0, forecast:nullify(d.forecast), sort:d.sort || 9};
+      if ("labor_sell" in p) row.sell = nullify(d.sell);
+      return saveRow("cost_lines", row, l && l.id); },
     l ? del("cost_lines", l.id) : null);
 }
 function openCO(p, x) {
