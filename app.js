@@ -322,6 +322,7 @@ async function start(session) {
   render();
   outlookConnect(session);
   openFromHash();
+  if (!window.__hashWatch) { window.__hashWatch = true; window.addEventListener("hashchange", () => openFromHash()); }
 }
 
 // ---------------------------------------------------------------- Outlook (email + calendar as the signed-in person)
@@ -418,6 +419,16 @@ function notifEsc(e) { if (e.key === "Escape") closeNotifPanel(); }
 }); }
 
 function openFromHash() {
+  // from a customer dashboard (RFIP staff signed in): #issue=12&from=customer, #newissue=<project>&from=customer, #newissue=all:<project>
+  const ci = location.hash.match(/^#(issue|newissue)=(?:(all):)?([0-9a-f-]{36}|\d+)(&from=customer)?$/);
+  if (ci) {
+    history.replaceState(null, "", location.pathname + location.search);
+    if (!OPS || !OPS.openIssueRef) { toast("Issues aren't set up here."); return; }
+    S.section = "ops";
+    const ok = ci[1] === "issue" ? OPS.openIssueRef(ci[3]) : OPS.newIssueFor(ci[3], ci[2] === "all");
+    if (ok && ci[4]) setTimeout(() => { S.fromCustomer = true; }, 0);   // closing the drawer sends them back to the customer view
+    return;
+  }
   if (location.hash === "#expense") { history.replaceState(null, "", location.pathname + location.search); if (OPS && OPS.startExpense) { S.section = hasOps() ? "ops" : "sales"; OPS.startExpense(); } return; }
   const m = location.hash.match(/^#(deal|project|request|expense)=([0-9a-f-]{36})$/);
   if (!m) return;
@@ -1447,7 +1458,12 @@ function openDrawer({title, tabs, body, foot, start}) {
   drawerRefresh = () => { if (tabs && !["d", "g", "f", "m"].includes(active)) show(); };
   const f = dr.querySelector("input,select,textarea"); if (f) setTimeout(() => f.focus(), 30);
 }
-function closeDrawer() { if (drawerClose) drawerClose(); }
+function closeDrawer() {
+  if (drawerClose) drawerClose();
+  // opened from the customer dashboard: refresh it and close this tab
+  if (S.fromCustomer) { S.fromCustomer = false;
+    try { if (window.opener && !window.opener.closed) { window.opener.postMessage("rfip-refresh", location.origin); window.opener.focus(); window.close(); } } catch (e) {} }
+}
 function refreshDrawer() { if (drawerRefresh) drawerRefresh(); }
 
 function fld(draft, key, label, type, opts = {}) {

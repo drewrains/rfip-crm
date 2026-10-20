@@ -46,6 +46,12 @@ section > h2{font-size:15px;margin:0;padding:12px 16px;border-bottom:1px solid v
 section > h2 span{font-weight:400;color:var(--muted);font-size:13px}
 section .more{padding:10px 16px;border-top:1px solid var(--line);font-size:14px}section .more a{color:var(--accent,#c8102e);text-decoration:none;font-weight:600}
 #isslog{margin:16px 0}
+.btn.tiny{font-size:12px;padding:3px 9px;border-radius:6px}
+.btn.staff{border-color:var(--data);color:var(--data);background:var(--data-soft)}
+.iss > .btn.staff{float:right;margin-left:10px}
+section > h2 .btn.staff{margin-left:8px;font-family:var(--f-body)}
+.staffbar{background:var(--data-soft);color:var(--data);font-size:13px;padding:7px 0;border-bottom:1px solid var(--line)}
+a.rp-link{color:inherit;text-decoration:none}a.rp-link:hover b{text-decoration:underline;color:var(--accent)}
 .rptlink{font-weight:600;text-decoration:none}
 .rp-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
 .rp-sum{display:flex;flex-wrap:wrap;gap:8px 26px;margin:14px 0 4px;font-size:14px;color:var(--muted)}.rp-sum b{font-family:var(--f-display);font-size:26px;color:var(--fg);margin-right:4px}
@@ -168,10 +174,28 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
   const qs = new URLSearchParams(location.search);
   const k = qs.get("k") || "", a = qs.get("a") || "";
   const isTok = t => /^[0-9a-f]{48}$/.test(t);
+  // RFIP staff signed in to RFIP in this browser get Update / Add buttons that open the issue in RFIP.
+  // The customer never sees them; anything they open still checks the person's RFIP access.
+  const STAFF = (() => { try { return Object.keys(localStorage).some(x => /^sb-[a-z0-9]+-auth-token$/.test(x) && (localStorage.getItem(x) || "").includes("access_token")); } catch (e) { return false; } })();
+  const APP = location.pathname.replace(/[^/]*$/, "") + "index.html";
+  const staffOpen = hash => { const w = window.open(APP + hash + "&from=customer", "rfip-meeting"); if (w) w.focus(); };
+  const staffBtn = (label, attr) => STAFF ? `<button class="btn tiny staff" ${attr}>${label}</button>` : "";
+  if (STAFF) {
+    const bn = document.createElement("div"); bn.className = "staffbar no-print";
+    bn.innerHTML = `<div class="wrap">You're signed in to RFIP, so you see <b>Update</b> and <b>Add</b> buttons on issues. They open in RFIP, and this page refreshes when you save. Customers see this page without them.</div>`;
+    document.body.insertBefore(bn, document.body.firstChild);
+    main.addEventListener("click", e => {
+      const u = e.target.closest("[data-iref]"), n = e.target.closest("[data-newiss]");
+      if (u) { e.preventDefault(); e.stopPropagation(); staffOpen("#issue=" + u.dataset.iref); }
+      else if (n) { e.preventDefault(); e.stopPropagation(); staffOpen("#newissue=" + n.dataset.newiss); }
+    }, true);
+    // RFIP tells us when the issue is saved: reload with the same view
+    window.addEventListener("message", e => { if (e.origin === location.origin && e.data === "rfip-refresh") location.reload(); });
+  }
 
   const issRow = (i, pj) => {
     const late = i.status !== "closed" && i.due && i.due < today;
-    return `<li class="iss"><div class="t">${pj === "all" ? `<span class="pj all">All sites</span>` : pj ? `<a href="#" class="pj" data-p="${esc(pj.id)}">Job ${esc(pj.number)} · ${esc(pj.name)}</a>` : ""}${i.priority === "high" && i.status !== "closed" ? chip(["High priority", "bad"]) + " " : ""}${esc(i.issue)}</div>
+    return `<li class="iss">${i.ref ? staffBtn(i.status === "closed" ? "Reopen" : "Update", `data-iref="${esc(i.ref)}" title="Open issue #${esc(i.ref)} in RFIP to update, reassign or close it"`) : ""}<div class="t">${pj === "all" ? `<span class="pj all">All sites</span>` : pj ? `<a href="#" class="pj" data-p="${esc(pj.id)}">Job ${esc(pj.number)} · ${esc(pj.name)}</a>` : ""}${i.priority === "high" && i.status !== "closed" ? chip(["High priority", "bad"]) + " " : ""}${esc(i.issue)}</div>
       <div class="d">Raised ${esc(short(i.opened))} · Owner <b>${esc(i.owner)}</b>${i.status === "closed" ? " · Closed " + esc(short(i.closed)) : ""}</div>
       ${i.status !== "closed" && i.next_step ? `<div class="nx${late ? " late" : ""}"><span>Next step${i.due ? (late ? " · was due " : " · by ") + esc(short(i.due)) : ""}</span>${esc(i.next_step)}</div>` : ""}
       ${i.status === "closed" && i.resolution ? `<div class="nx done"><span>Resolved</span>${esc(i.resolution)}</div>` : ""}</li>`;
@@ -214,9 +238,9 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
         <div class="tile"><div class="k">Planned completion</div><div class="v">${v.end_date ? esc(short(v.end_date)) : "—"}</div>
           <div class="s">${v.phase === "closed" ? "Complete" : days == null ? "" : days >= 0 ? days + " days from today" : "Past the planned date"}</div></div>
       </div>
-      ${iss.length ? `<section id="issues"><h2>Open issues <span>${issOpen.length ? issOpen.length + " being worked" : "none open"}${issDone.length ? " · " + issDone.length + " closed in the last 30 days" : ""}</span></h2>
-        ${issOpen.length ? `<ul class="rows">${issOpen.map(issRow).join("")}</ul>` : `<div class="empty">No open issues.</div>`}
-        ${issDone.length ? `<details class="older"><summary>Recently closed (${issDone.length})</summary><ul class="rows">${issDone.map(issRow).join("")}</ul></details>` : ""}</section>` : ""}
+      ${iss.length || STAFF ? `<section id="issues"><h2><div>Open issues ${staffBtn("+ Add issue", `data-newiss="${esc(v.id)}"`)}</div><span>${issOpen.length ? issOpen.length + " being worked" : "none open"}${issDone.length ? " · " + issDone.length + " closed in the last 30 days" : ""}</span></h2>
+        ${issOpen.length ? `<ul class="rows">${issOpen.map(i => issRow(i)).join("")}</ul>` : `<div class="empty">No open issues.</div>`}
+        ${issDone.length ? `<details class="older"><summary>Recently closed (${issDone.length})</summary><ul class="rows">${issDone.map(i => issRow(i)).join("")}</ul></details>` : ""}</section>` : ""}
       ${plan.length ? `<section><h2>Project plan <span>${plan.filter(p => p.status === "done").length} of ${plan.length} phases done</span></h2><ul class="rows">${plan.map(phaseRow).join("")}</ul></section>` : ""}
       ${ms.length ? `<section><h2>Milestones <span>${ms.filter(m => m.actual).length} of ${ms.length} done</span></h2><ul class="rows">${ms.map(msRow).join("")}</ul></section>` : ""}
       <section><h2>Weekly update ${latest ? `<span>from ${esc(v.pm ? v.pm.name : "your project manager")}</span>` : ""}</h2>
@@ -294,7 +318,8 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
           .sort((x, y) => ((y.i.due && y.i.due < today) - (x.i.due && x.i.due < today)) || ((x.i.priority === "high" ? 0 : 1) - (y.i.priority === "high" ? 0 : 1))
             || ((x.pj === "all" ? 0 : 1) - (y.pj === "all" ? 0 : 1)) || (x.i.due || "9999").localeCompare(y.i.due || "9999"));
         const closedN = issAll.length - issOpenAll.length, MAX = 8;
-        return `<section id="isslog"><h2>Issues across all sites <span>${rowsI.length ? rowsI.length + " open" : "None open"}${closedN ? " · " + closedN + " closed in the last 30 days" : ""}</span></h2>
+        const firstP = active[0];
+        return `<section id="isslog"><h2><div>Issues across all sites ${firstP ? staffBtn("+ Issue for all sites", `data-newiss="all:${esc(firstP.id)}"`) : ""}</div><span>${rowsI.length ? rowsI.length + " open" : "None open"}${closedN ? " · " + closedN + " closed in the last 30 days" : ""}</span></h2>
           ${rowsI.length ? `<ul class="rows">${rowsI.slice(0, MAX).map(r => issRow(r.i, r.pj)).join("")}</ul>` : `<div class="empty">No open issues on any of your sites.</div>`}
           ${rowsI.length > MAX || closedN ? `<div class="more"><a href="#" id="isslogAll">${rowsI.length > MAX ? "See all " + rowsI.length + " open issues" : "See the full issue log"}${closedN ? " and recently closed" : ""} →</a></div>` : ""}</section>`; })() : ""}
       <div class="tools">
@@ -460,7 +485,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
           <thead><tr><th>Job</th><th>Site / project</th><th>Status</th><th>Complete</th><th>Next milestone</th><th>Planned finish</th><th>Open issues</th><th>Latest update</th></tr></thead>
           <tbody>${rows.map(p => { const sc = s2(p), oi = openFor(p);
             return `<tr><td class="mono">${esc(p.number)}</td>
-              <td><b>${esc(p.name)}</b>${p.pm ? `<div class="sm">PM ${esc(p.pm.name)}</div>` : ""}</td>
+              <td><a href="#" class="pj rp-link" data-p="${esc(p.id)}"><b>${esc(p.name)}</b></a>${p.pm ? `<div class="sm">PM ${esc(p.pm.name)}</div>` : ""}</td>
               <td>${chip(PHASE[p.phase] || PHASE.in_progress)}${sc ? "<br>" + chip(SCHED[sc]) : ""}</td>
               <td>${pctBar(p)}${p.milestones ? `<div class="sm">${p.milestones_done} of ${p.milestones} milestones</div>` : ""}</td>
               <td>${p.next_milestone && p.next_milestone.name ? esc(p.next_milestone.name) + (p.next_milestone.planned ? `<div class="sm">${esc(short(p.next_milestone.planned))}</div>` : "") : "—"}</td>
@@ -473,7 +498,7 @@ form.req h2:first-child{border-top:0;padding-top:0;margin-top:0}
       <p class="foot">Prepared by RFIP, Inc. · ${esc(new Date(d.as_of).toLocaleString("en-US", {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}))} · Questions? Call 405-286-0928.</p>`;
     document.getElementById("back").onclick = e => { e.preventDefault(); go(""); };
     document.getElementById("print").onclick = () => window.print();
-    main.querySelectorAll("a.pj").forEach(x => x.onclick = e => { e.preventDefault(); openProject(x.dataset.p, false, true); });
+    main.querySelectorAll("a.pj").forEach(x => x.onclick = e => { e.preventDefault(); openProject(x.dataset.p, false, !x.classList.contains("rp-link")); });
     window.scrollTo(0, 0);
   }
   async function renderIssues() {

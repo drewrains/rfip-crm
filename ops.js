@@ -2951,7 +2951,7 @@ function openIssue(p, it, preset) {
   const acct = wideAcct || (p && p.account_id) || null;
   const edit = issCanEdit(p, it) || (!it && !!wideAcct && canPlanAccount(wideAcct)), full = wideAcct ? canPlanAccount(wideAcct) : !!(p && p.id && canPlan(p));
   const d = it ? {...it, share:it.share_with_customer ? "yes" : "no"} : {opened_on:TODAY, priority:"normal", status:"open", share:"yes", ...(preset || {})};
-  d.scope = wideAcct ? "all" : "one";
+  d.scope = wideAcct ? "all" : d.scope === "all" ? "all" : "one";
   const siblings = acct ? O.projects.filter(x => x.account_id === acct && x.phase !== "closed").length : 0;
   if (preset && preset.share_with_customer === false) d.share = "no";
   const before = it ? it.owner_id : null;
@@ -3191,6 +3191,11 @@ return {
   strip,
   openProject: id => { openProject(id); render(); },
   openRequest: id => { go("ops-requests"); openRequest(id); },
+  // from the customer dashboard during a meeting: open an issue by its number, or start one on a project / for all the customer's sites
+  openIssueRef: ref => { const i = O.issues.find(x => String(x.ref) === String(ref)); if (!i) { toast("Issue #" + ref + " isn't available to you."); return false; }
+    const p = i.project_id ? byId(O.projects, i.project_id) || proj(i.project_id) : null; go("ops-issues"); openIssue(p && p.id ? p : null, i); return true; },
+  newIssueFor: (pid, all) => { const p = byId(O.projects, pid); if (!p) { toast("That project isn't available to you."); return false; }
+    openProject(p.id); render(); openIssue(p, null, all ? {scope:"all"} : null); return true; },
   startExpense: () => { if (featureOn("exps")) { go("ops-expenses"); startExpense(); } },
   openExpense: id => { go("ops-expenses"); openExpenseById(id); },
 };
