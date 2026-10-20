@@ -2898,17 +2898,21 @@ const issOwner = i => i.owner_id ? personName(i.owner_id) : i.owner_name || "No 
 const issuesOf = pid => O.issues.filter(i => i.project_id === pid);
 const issSort = (a, b) => (issOpen(b) - issOpen(a)) || (issLate(b) - issLate(a)) || ((a.priority === "high" ? 0 : a.priority === "low" ? 2 : 1) - (b.priority === "high" ? 0 : b.priority === "low" ? 2 : 1))
   || (a.next_step_due || "9999").localeCompare(b.next_step_due || "9999") || a.opened_on.localeCompare(b.opened_on);
-const issCanEdit = (p, i) => (p && p.id && canPlan(p)) || (i && i.owner_id === S.me.id);
+// customer-wide issues (customer_issues.sql): no project, just the customer; they show on every one of its sites
+const issWide = i => !i.project_id && !!i.account_id;
+const canPlanAccount = a => !!a && (role() === "admin" || O.projects.some(p => p.account_id === a && p.phase !== "closed" && canPlan(p)));
+const allSites = a => "All " + (acctName(a) || "customer") + " sites";
+const issCanEdit = (p, i) => (p && p.id && canPlan(p)) || (i && issWide(i) && canPlanAccount(i.account_id)) || (i && i.owner_id === S.me.id);
 function issueTable(list, showProject) {
   if (!list.length) return h("div", {class:"empty"}, "No issues here.");
   return h("div", {class:"tbl-wrap flat"}, h("table", {class:"exp-tbl iss-tbl"},
     h("thead", null, h("tr", null, h("th", null, "Opened"), showProject ? h("th", null, "Project") : null, h("th", null, "Issue"), h("th", null, "Owner"), h("th", null, "Next step"), h("th", null, "Status"))),
     h("tbody", null, list.map(i => {
-      const p = byId(O.projects, i.project_id) || proj(i.project_id);
+      const p = i.project_id ? byId(O.projects, i.project_id) || proj(i.project_id) : null;
       const age = dayDiff(i.opened_on, issOpen(i) ? TODAY : i.closed_on || TODAY);
       return h("tr", {class:"click" + (issOpen(i) ? "" : " is-done"), tabindex:"0", onclick:() => openIssue(p, i), onkeydown: e => { if (e.key === "Enter") openIssue(p, i); }},
         h("td", {class:"mono nowrap"}, fmtDate(i.opened_on), h("div", {class:"muted small"}, "#" + i.ref)),
-        showProject ? h("td", null, p.number || "—", h("div", {class:"muted small"}, p.name || "")) : null,
+        showProject ? (p ? h("td", null, p.number || "—", h("div", {class:"muted small"}, p.name || "")) : h("td", null, h("b", {class:"iss-wide"}, "All sites"), h("div", {class:"muted small"}, acctName(i.account_id) || ""))) : null,
         h("td", null, i.priority === "high" && issOpen(i) ? chip("bad", "High") : null, " ", h("b", null, i.title),
           i.details ? h("div", {class:"muted small clamp2"}, i.details) : null, i.share_with_customer ? null : h("div", {class:"muted small"}, "Internal only")),
         h("td", null, issOwner(i), i.owner_name && !i.owner_id ? h("div", {class:"muted small"}, "outside RFIP") : null),
@@ -2921,21 +2925,33 @@ function issueTable(list, showProject) {
 }
 function issuePanel(p) {
   const all = issuesOf(p.id).sort(issSort), open = all.filter(issOpen), closed = all.filter(i => !issOpen(i));
+  const wide = p.account_id ? O.issues.filter(i => issWide(i) && i.account_id === p.account_id && issOpen(i)).sort(issSort) : [];
   const late = open.filter(issLate).length;
   return panel("Issue log", open.length ? plural(open.length, "open issue") + (late ? " · " + late + " overdue" : "") : "No open issues",
     h("div", {class:"o-pad"},
       canPlan(p) ? h("div", {class:"o-actions", style:"border:0;padding:0 0 8px"}, h("button", {class:"btn small primary", onclick:() => openIssue(p, null)}, "+ Log an issue"),
         h("span", {class:"muted small"}, "Shared issues show on the customer's status page.")) : null,
       open.length ? issueTable(open, false) : h("div", {class:"empty"}, "Nothing open. Log problems to be solved here so they get an owner and a next step."),
+      wide.length ? [h("div", {class:"section-h", style:"font-size:14px;margin:14px 0 6px"}, allSites(p.account_id) + " (" + wide.length + ")"), issueTable(wide, false)] : null,
       closed.length ? h("details", {class:"o-hist"}, h("summary", null, "Closed (" + closed.length + ")"), issueTable(closed, false)) : null));
 }
 function openIssue(p, it, preset) {
-  const edit = issCanEdit(p, it), full = !!(p && p.id && canPlan(p));
+  // a customer-wide issue has no project: p is null and the customer comes from the issue (or preset.account_id)
+  const wideAcct = it ? (issWide(it) ? it.account_id : null) : (!p || !p.id) && preset && preset.account_id ? preset.account_id : null;
+  if (wideAcct) p = null;
+  const acct = wideAcct || (p && p.account_id) || null;
+  const edit = issCanEdit(p, it) || (!it && !!wideAcct && canPlanAccount(wideAcct)), full = wideAcct ? canPlanAccount(wideAcct) : !!(p && p.id && canPlan(p));
   const d = it ? {...it, share:it.share_with_customer ? "yes" : "no"} : {opened_on:TODAY, priority:"normal", status:"open", share:"yes", ...(preset || {})};
+  d.scope = wideAcct ? "all" : "one";
+  const siblings = acct ? O.projects.filter(x => x.account_id === acct && x.phase !== "closed").length : 0;
   if (preset && preset.share_with_customer === false) d.share = "no";
   const before = it ? it.owner_id : null;
   const people = opsPeople().map(x => [x.id, x.full_name || x.email]);
   const fields = [
+    // on a new issue for a customer with several sites, it can apply to all of them
+    !it && p && p.id && acct && siblings > 1 && canPlanAccount(acct) ? fld(d, "scope", "Applies to", "select", {full:true, blank:false,
+      options:[["one", p.number + " · " + p.name + " only"], ["all", allSites(acct) + " (" + siblings + " active)"]]}) : null,
+    wideAcct ? h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, h("b", null, allSites(wideAcct)), " · shows on every one of their projects and on their dashboard's issue log") : null,
     fld(d, "title", "Issue", "text", {full:true, readonly:!full, placeholder:"e.g. Ceiling access blocked in IDF 3"}),
     fld(d, "details", "Details", "textarea", {full:true, readonly:!full}),
     fld(d, "opened_on", "Date raised", "date", {readonly:!full}),
@@ -2949,29 +2965,34 @@ function openIssue(p, it, preset) {
     featureOn("clinks") ? fld(d, "share", "Customer sees it?", "select", {options:[["yes", "Yes, show on their status page"], ["no", "No, internal only"]], blank:false, readonly:!full}) : null,
     it && it.closed_on ? h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "Closed " + fmtDate(it.closed_on) + " · open " + dayDiff(it.opened_on, it.closed_on) + " days") : null,
     !full && edit ? h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "You own this issue, so you can update the next step and close it.") : null].filter(Boolean);
-  drawerForm((it ? "Issue #" + it.ref : "Log an issue") + " · " + (p.number || ""), d, fields, async () => {
+  drawerForm((it ? "Issue #" + it.ref : "Log an issue") + " · " + (wideAcct ? allSites(wideAcct) : p.number || ""), d, fields, async () => {
     if (!edit) return true;
     const t = k => nullify(((d[k] || "") + "").trim());
     let row;
     if (full) {
       if (!(d.title || "").trim()) { toast("Describe the issue."); return false; }
-      row = {project_id:p.id, title:d.title.trim(), details:t("details"), opened_on:d.opened_on || TODAY, priority:d.priority || "normal",
+      const wide = wideAcct || (!it && d.scope === "all");
+      row = {project_id: wide ? null : p.id, title:d.title.trim(), details:t("details"), opened_on:d.opened_on || TODAY, priority:d.priority || "normal",
         owner_id:nullify(d.owner_id), owner_name:d.owner_id ? null : t("owner_name"), next_step:t("next_step"), next_step_due:nullify(d.next_step_due),
         status:d.status || "open", resolution:t("resolution"), share_with_customer:d.share !== "no"};
       if (!it && d.request_id) row.request_id = d.request_id;
+      if (!it && wide) row.account_id = acct;
+      if (it) delete row.project_id;
     } else row = {next_step:t("next_step"), next_step_due:nullify(d.next_step_due), status:d.status || "open", resolution:t("resolution")};
     if (row.status === "closed" && (!it || it.status !== "closed") && !row.resolution) { toast("Add a line on how it was resolved."); return false; }
     const res = await saveRow("project_issues", row, it && it.id);
+    const where = res && !res.project_id ? allSites(acct) : p ? p.number + " " + p.name : "";
     if (res && row.owner_id && row.owner_id !== S.me.id && row.owner_id !== before)
-      tell([row.owner_id], "Issue on " + p.number + " assigned to you: " + row.title, (S.me.full_name || S.me.email) + " made you the owner of an issue on " + p.number + " " + p.name + ":\n\n" + row.title +
-        (row.details ? "\n\n" + row.details : "") + (row.next_step ? "\n\nNext step: " + row.next_step + (row.next_step_due ? " (by " + fmtDate(row.next_step_due) + ")" : "") : ""), "#project=" + p.id);
+      tell([row.owner_id], "Issue on " + (res.project_id ? p.number : allSites(acct)) + " assigned to you: " + row.title, (S.me.full_name || S.me.email) + " made you the owner of an issue on " + where + ":\n\n" + row.title +
+        (row.details ? "\n\n" + row.details : "") + (row.next_step ? "\n\nNext step: " + row.next_step + (row.next_step_due ? " (by " + fmtDate(row.next_step_due) + ")" : "") : ""), res.project_id ? "#project=" + res.project_id : "");
     return res;
-  }, it && canEdit(p) ? del("project_issues", it.id) : null);
+  }, it && (p ? canEdit(p) : canPlanAccount(acct)) ? del("project_issues", it.id) : null);
 }
 function viewIssues() {
   const wrap = h("div", {class:"o-stack"});
   const v = O.issView, dp = O.issDept;
-  const inDept = i => { const p = byId(O.projects, i.project_id) || proj(i.project_id); return !dp || p.department === dp; };
+  const inDept = i => { if (!dp) return true; if (issWide(i)) return O.projects.some(p => p.account_id === i.account_id && p.department === dp);
+    const p = byId(O.projects, i.project_id) || proj(i.project_id); return p.department === dp; };
   const pool = O.issues.filter(inDept);
   const open = pool.filter(issOpen), late = open.filter(issLate);
   const closed30 = pool.filter(i => !issOpen(i) && i.closed_on >= addDays(TODAY, -30));
@@ -2984,10 +3005,14 @@ function viewIssues() {
       [["open", "Open"], ["late", "Next step overdue"], ["high", "High priority"], ["mine", "I own"], ["closed", "Closed, last 30 days"], ["all", "All"]].map(([k, t]) => h("option", {value:k, selected:v === k}, t))),
     role() !== "pm" && role() !== "field" ? h("select", {class:"inp", style:"max-width:180px", "aria-label":"Department", onchange: e => { O.issDept = e.target.value; render(); }},
       h("option", {value:""}, "All departments"), deptKeys().map(k => h("option", {value:k, selected:dp === k}, k))) : null,
-    editable.length ? h("select", {class:"inp", style:"max-width:260px", "aria-label":"Log an issue on", onchange: e => { const p = byId(O.projects, e.target.value); e.target.value = ""; if (p) openIssue(p, null); }},
-      h("option", {value:""}, "+ Log an issue on…"), editable.map(p => h("option", {value:p.id}, p.number + " · " + p.name))) : null));
+    editable.length ? h("select", {class:"inp", style:"max-width:260px", "aria-label":"Log an issue on", onchange: e => { const v = e.target.value; e.target.value = "";
+        if (v.startsWith("acct:")) openIssue(null, null, {account_id:v.slice(5)}); else { const p = byId(O.projects, v); if (p) openIssue(p, null); } }},
+      h("option", {value:""}, "+ Log an issue on…"),
+      (() => { const accts = [...new Set(editable.map(p => p.account_id).filter(Boolean))].filter(a => O.projects.filter(p => p.account_id === a && p.phase !== "closed").length > 1);
+        return accts.length ? h("optgroup", {label:"Customer-wide"}, accts.map(a => h("option", {value:"acct:" + a}, allSites(a)))) : null; })(),
+      h("optgroup", {label:"One project"}, editable.map(p => h("option", {value:p.id}, p.number + " · " + p.name)))) : null));
   wrap.append(h("div", {class:"o-tiles"},
-    tile("Open", String(open.length), plural(new Set(open.map(i => i.project_id)).size, "project")),
+    tile("Open", String(open.length), plural(new Set(open.filter(i => i.project_id).map(i => i.project_id)).size, "project") + (open.some(issWide) ? " + " + open.filter(issWide).length + " customer-wide" : "")),
     tile("Next step overdue", String(late.length), "", late.length ? "bad" : ""),
     tile("High priority", String(open.filter(i => i.priority === "high").length), "", open.some(i => i.priority === "high") ? "warn" : ""),
     tile("Closed, last 30 days", String(closed30.length), avgClose == null ? "" : "avg " + avgClose + " days to close")));
