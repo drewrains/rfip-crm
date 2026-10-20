@@ -1068,15 +1068,40 @@ function taskRow(t) {
       h("span", null, dealName(t.deal_id)), h("b", {"aria-hidden":"true"}, "›")) : null);
 }
 async function toggleTask(t, done) {
-  t.done = done; render(); refreshDrawer();
-  const ok = await run(sb.from("tasks").update({done, done_at: done ? new Date().toISOString() : null}).eq("id", t.id));
-  if (ok && done) tellTaskDone(t);
+  const finish = async note => {
+    t.done = done; render(); refreshDrawer();
+    const patch = {done, done_at: done ? new Date().toISOString() : null};
+    if ("done_note" in t) { patch.done_note = done ? note || null : t.done_note; if (done) t.done_note = patch.done_note; }
+    const ok = await run(sb.from("tasks").update(patch).eq("id", t.id));
+    if (ok && done) tellTaskDone(t, note);
+  };
+  if (!done) return finish();
+  const d = t.deal_id && byId(S.deals, t.deal_id);
+  const who = taskWaiters([t.created_by, d && d.owner_id, t.assignee_id]);
+  if (!who.length || !("done_note" in t)) return finish();
+  render();   // leave the box unticked until they confirm
+  finishWithNote({title:t.title, who, onDone:finish});
+}
+// the people who hear when a task is done, minus whoever is finishing it
+const taskWaiters = ids => [...new Set(ids.filter(x => x && x !== S.me.id))];
+// "Mark done" with an optional note for the people waiting on it; the note rides in their email and bell notice
+function finishWithNote({title, who, onDone}) {
+  const ta = h("textarea", {class:"inp", id:"f-donenote", rows:"4", placeholder:"e.g. Sent the revised pricing to the GC; they want an answer by Friday."});
+  const names = who.map(personName).join(", ");
+  openDrawer({title:"Mark done", body:h("div", null,
+      h("p", {style:"margin:0 0 6px;font-weight:600"}, title),
+      h("label", {for:"f-donenote", class:"muted small"}, "Note for " + names + " (optional)"), ta,
+      h("p", {class:"muted small", style:"margin:6px 0 0"}, names + " get" + (who.length === 1 ? "s" : "") + " an email and a notice that it's done, with this note.")),
+    foot:[h("button", {class:"btn spacer", onclick:() => closeDrawer()}, "Cancel"),
+      h("button", {class:"btn primary", onclick: async e => { e.currentTarget.disabled = true; const note = ta.value.trim(); closeDrawer(); await onDone(note); }}, "Mark done")]});
+  setTimeout(() => ta.focus(), 40);
 }
 // email the people waiting on a task when it's finished: who created it, the deal's account manager, who it was assigned to
-function tellTaskDone(t) {
+function tellTaskDone(t, note) {
   const d = t.deal_id && byId(S.deals, t.deal_id);
+  note = (note || t.done_note || "").trim();
   notify([t.created_by, d && d.owner_id, t.assignee_id], "Task done: " + t.title,
-    (S.me.full_name || S.me.email) + " completed a task" + (d ? " on " + d.name : "") + ":\n\n" + t.title, d ? "#deal=" + d.id : "");
+    (S.me.full_name || S.me.email) + " completed a task" + (d ? " on " + d.name : "") + ":\n\n" + t.title + (note ? "\n\nNote from " + (S.me.full_name || S.me.email) + ":\n" + note : ""), d ? "#deal=" + d.id : "");
 }
 function viewTasks() {
   const wrap = h("div");
@@ -2099,7 +2124,8 @@ function openTask(id, defaults) {
     fld(d, "due", "Due", "date"),
     fld(d, "assignee_id", "Assigned to", "select", {options:peopleOptions()}),
     fld(d, "deal_id", "Deal", "select", {options: S.deals.filter(x => isOpen(x) || x.id === d.deal_id).sort((a, b) => a.name.localeCompare(b.name)).map(x => [x.id, x.name]), full:true}),
-    fld(d, "notes", "Notes", "textarea", {full:true})]);
+    fld(d, "notes", "Notes", "textarea", {full:true}),
+    id && "done_note" in d ? fld(d, "done_note", d.done ? "Note when it was done" : "Note when done (goes to whoever's waiting on it when you mark it done)", "textarea", {full:true}) : null]);
 }
 $("#newDeal").addEventListener("click", () => openDeal());
 { const na = $("#newAccount"), nc = $("#newContact"); if (na) na.addEventListener("click", () => openAccount()); if (nc) nc.addEventListener("click", () => openContact()); }
@@ -2397,7 +2423,7 @@ function exportPanel() {
 // ---------------------------------------------------------------- operations side
 if (window.RFIP_OPS_INIT) {
   OPS = window.RFIP_OPS_INIT({h, sb, S, cfg, money, fmtDate, fmtDateTime, daysUntil, todayStr, run, toast, friendly, status, openDrawer, closeDrawer, refreshDrawer,
-    fld, deleteButton, render, renderNow, go, goTo, person, personName, activePeople, peopleOptions, isAdmin, byId, acctName, dealName, openDeal, emptyState,
+    fld, deleteButton, render, renderNow, go, goTo, finishWithNote, person, personName, activePeople, peopleOptions, isAdmin, byId, acctName, dealName, openDeal, emptyState,
     plural, nullify, metric, loadTable, STAGE, readSheet, normDate, spState, spLoad, spUpload, spDelete, notify, meetingsBox, fnCall, previewFile});
 }
 

@@ -2118,16 +2118,25 @@ async function cascadeFrom(ids) {
 }
 async function setItemStatus(i, status) {
   const was = i.status;
-  if (await run(sb.from("plan_items").update({status}).eq("id", i.id), status === "done" ? "Marked done" : "Reopened")) {
-    if (status === "done" && was !== "done") tellItemDone(i);
-    await reload("items"); render(); }
-  else render();
+  const finish = async note => {
+    const patch = {status}; if (status === "done" && "done_note" in i) patch.done_note = note || null;
+    if (await run(sb.from("plan_items").update(patch).eq("id", i.id), status === "done" ? "Marked done" : "Reopened")) {
+      if (status === "done" && was !== "done") tellItemDone(i, note);
+      await reload("items"); render(); }
+    else render();
+  };
+  // finishing a task someone else is waiting on: offer a note for them
+  const p = byId(O.projects, i.project_id) || {};
+  const who = [...new Set([i.created_by, p.pm_id, i.assignee_id].filter(x => x && x !== S.me.id))];
+  if (status === "done" && was !== "done" && who.length && "done_note" in i && core.finishWithNote) { render(); core.finishWithNote({title:i.title, who, onDone:finish}); return; }
+  return finish();
 }
 // email the people waiting on a plan task when it's finished: who created it, the project's PM, who it was assigned to
-function tellItemDone(i) {
+function tellItemDone(i, note) {
   const p = byId(O.projects, i.project_id); if (!p) return;
+  note = (note || i.done_note || "").trim();
   tell([i.created_by, p.pm_id, i.assignee_id], "Task done on " + p.number + ": " + i.title,
-    (S.me.full_name || S.me.email) + " completed a task on " + p.number + " " + p.name + ":\n\n" + i.title, "#project=" + p.id);
+    (S.me.full_name || S.me.email) + " completed a task on " + p.number + " " + p.name + ":\n\n" + i.title + (note ? "\n\nNote from " + (S.me.full_name || S.me.email) + ":\n" + note : ""), "#project=" + p.id);
 }
 function planPanel(p, edit) {
   const {rows, kids} = planTree(p.id);
@@ -2336,6 +2345,7 @@ function openPlanItem(p, it, parentId) {
     fld(d, "assignee_id", "Assigned to", "select", {options:opsPeople().map(x => [x.id, x.full_name || x.email]), blank:"Nobody yet", readonly:ro}),
     fld(d, "status", "Status", "select", {options:PLAN_ST.map(x => [x[0], x[1]]), blank:false}),
     fld(d, "start_date", "Start", "date", {readonly:ro}), fld(d, "due_date", "Due", "date", {readonly:ro}),
+    it && "done_note" in it ? fld(d, "done_note", d.status === "done" && it.status === "done" ? "Note when it was done" : "Note when done (goes to whoever's waiting on it)", "textarea", {full:true}) : null,
     predBox, P ? (() => { const f = fld(d, "lag_days", "Lag after those (days)", "number", {readonly:ro}); f.querySelector("input").addEventListener("input", drawHint); return f; })() : null,
     fld(d, "notes", "Notes", "textarea", {full:true}),
     ro ? h("p", {class:"muted small", style:"grid-column:1/-1;margin:0"}, "You can update the status and notes. " + personName(p.pm_id) + " (the PM) or someone the project is shared with changes the rest of the plan.") : null].filter(Boolean);
@@ -2345,6 +2355,7 @@ function openPlanItem(p, it, parentId) {
     const row = ro ? {status:d.status, notes:nullify((d.notes || "").trim())}
       : {project_id:p.id, title:d.title.trim(), parent_id:nullify(d.parent_id), assignee_id:nullify(d.assignee_id), start_date:nullify(d.start_date), due_date:nullify(d.due_date), status:d.status, notes:nullify((d.notes || "").trim())};
     if (!it && !ro) row.sort = Math.max(0, ...itemsOf(p.id).filter(x => (x.parent_id || null) === row.parent_id).map(x => x.sort)) + 1;
+    if (it && "done_note" in it) row.done_note = nullify((d.done_note || "").trim());
     let pushed = null;
     if (P && !ro && (d.predecessors.length || Number(d.lag_days) || (it && "predecessors" in it))) {
       row.predecessors = d.predecessors; row.lag_days = Math.max(-365, Math.min(365, Math.round(Number(d.lag_days) || 0)));

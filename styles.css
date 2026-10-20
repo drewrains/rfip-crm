@@ -774,3 +774,4 @@ button.metric.click .k::after,button.o-tile.click .k::after{content:" ›";opaci
 .task .go-to span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .task .go-to:hover{filter:brightness(.95)}
 .go-to-btn{width:100%;text-align:left;font-weight:600;color:var(--data);background:var(--data-soft);border-color:transparent}
+.np-txt span{white-space:pre-line}
