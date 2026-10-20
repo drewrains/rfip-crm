@@ -2093,14 +2093,14 @@ function viewTeam() {
   const wrap = h("div");
   const spMissing = S.deals.filter(d => "sharepoint_status" in d && d.sharepoint_status !== "ready").length;
   wrap.append(h("div", {class:"toolbar"}, h("h2", null, "Team"),
-      isAdmin() && spMissing ? h("button", {class:"btn small", title:"Creates SharePoint folders for every deal that doesn't have one yet and moves existing ones into Customer › Deal folders", onclick: async e => {
-        const btn = e.currentTarget; btn.disabled = true; btn.textContent = "Creating folders…";
+      isAdmin() && S.deals.some(d => "sharepoint_status" in d) ? h("button", {class:"btn small", title:"Creates SharePoint folders for every deal that doesn't have one yet, adds any standard folders missing from existing ones (like Vendor Quotes), and moves folders into Customer › Deal", onclick: async e => {
+        const btn = e.currentTarget; btn.disabled = true; btn.textContent = "Updating folders… (a minute or two)";
         const {data, error} = await sb.functions.invoke("sharepoint", {body:{action:"backfill"}});
-        btn.disabled = false; btn.textContent = "Create missing SharePoint folders (" + spMissing + ")";
+        btn.disabled = false; btn.textContent = spMissing ? "Create missing SharePoint folders (" + spMissing + ")" : "Update SharePoint folders";
         if (error) { let m = friendly(error); try { const j = await error.context.json(); if (j.error) m = j.error; } catch (x) {} toast(m); return; }
-        toast("Created " + data.ready + " folder" + (data.ready === 1 ? "" : "s") + (data.error ? ", " + data.error + " failed: " + (data.errors[0] || "") : ""));
+        toast("Checked " + data.ready + " deal folder" + (data.ready === 1 ? "" : "s") + (data.error ? ", " + data.error + " failed: " + (data.errors[0] || "") : ""));
         await loadAll(); render();
-      }}, "Create missing SharePoint folders (" + spMissing + ")") : null),
+      }}, spMissing ? "Create missing SharePoint folders (" + spMissing + ")" : "Update SharePoint folders") : null),
     h("p", {class:"muted", style:"margin:-6px 0 12px"}, "Everyone with a CRM login. Admins see every deal. A manager (anyone with people reporting to them) sees their team's deals, tasks and targets, plus a team dashboard and scorecard. Turning someone off blocks their access right away; their deals stay put so you can reassign them."));
   const list = S.profiles.slice().sort((a, b) => (b.active - a.active) || (a.full_name || a.email).localeCompare(b.full_name || b.email));
   wrap.append(h("div", {class:"tbl-wrap"}, h("table", null,
